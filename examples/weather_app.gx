@@ -1,0 +1,389 @@
+agent "weather_orchestrator" {
+  capabilities: ["orchestration", "data_aggregation", "alert_management"]
+  
+  memory {
+    weather_data = {}
+    alerts = []
+    last_update = null
+    api_status = "unknown"
+  }
+
+  input {
+    channel "weather_request" {
+      source: "user_interface"
+      type: "weather_query"
+      bind: memory.user_request
+      on_receive: mental.process_weather_request
+    }
+    
+    channel "weather_data" {
+      source: "weather_fetcher"
+      type: "weather_response"
+      bind: memory.weather_data
+      on_receive: mental.analyze_weather_data
+    }
+    
+    channel "alert_trigger" {
+      source: "weather_analyzer"
+      type: "alert_condition"
+      bind: memory.alert_data
+      on_receive: mental.process_alert
+    }
+  }
+
+  mental {
+    think {
+      if memory.user_request {
+        plan = {
+          action: "fetch_weather",
+          location: memory.user_request.location,
+          priority: "high"
+        }
+      } else if memory.weather_data {
+        plan = {
+          action: "analyze_conditions",
+          data: memory.weather_data,
+          priority: "normal"
+        }
+      } else if memory.alert_data {
+        plan = {
+          action: "send_alert",
+          alert: memory.alert_data,
+          priority: "high"
+        }
+      } else {
+        plan = {
+          action: "idle",
+          priority: "low"
+        }
+      }
+    }
+
+    act {
+      if plan.action == "fetch_weather" {
+        assign.agent("weather_fetcher").fetch_weather(plan.location)
+      } else if plan.action == "analyze_conditions" {
+        assign.agent("weather_analyzer").analyze_weather(plan.data)
+      } else if plan.action == "send_alert" {
+        assign.agent("alert_sender").send_alert(plan.alert)
+      }
+    }
+
+    save {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    reflect {
+      if plan.action == "send_alert" {
+        emit "alert_sent"
+      } else if plan.action == "analyze_conditions" {
+        emit "weather_analyzed"
+      }
+    }
+  }
+
+  goal "ensure_weather_updates" {
+    when memory.last_update and (get_timestamp() - memory.last_update) > 3600
+    then {
+      action: "refresh_weather_data",
+      reason: "Weather data is stale"
+    }
+  }
+
+  signal "alert_sent" {
+    do {
+      log("Weather alert sent successfully")
+      memory.alerts.push({
+        timestamp: get_timestamp(),
+        type: "weather_alert",
+        status: "sent"
+      })
+    }
+  }
+
+  signal "weather_analyzed" {
+    do {
+      log("Weather data analyzed and processed")
+      memory.last_update = get_timestamp()
+    }
+  }
+}
+
+agent "weather_fetcher" {
+  capabilities: ["api_calls", "data_fetching", "error_handling"]
+  
+  memory {
+    api_key = "your_openweathermap_api_key"
+    base_url = "https://api.openweathermap.org/data/2.5/weather"
+    last_fetch = null
+    fetch_errors = []
+  }
+
+  input {
+    channel "fetch_request" {
+      source: "weather_orchestrator"
+      type: "weather_fetch"
+      bind: memory.fetch_request
+      on_receive: mental.fetch_weather_data
+    }
+  }
+
+  mental {
+    think {
+      if memory.fetch_request {
+        plan = {
+          action: "make_api_call",
+          location: memory.fetch_request.location,
+          url: build_weather_url(memory.fetch_request.location)
+        }
+      } else {
+        plan = {
+          action: "idle"
+        }
+      }
+    }
+
+    act {
+      if plan.action == "make_api_call" {
+        try {
+          response = http_get(plan.url)
+          if response.status == 200 {
+            weather_data = parse_json(response.body)
+            assign.agent("weather_orchestrator").receive_weather_data(weather_data)
+          } else {
+            memory.fetch_errors.push("API call failed: " + response.status)
+          }
+        } catch error {
+          memory.fetch_errors.push("Fetch error: " + error)
+        }
+      }
+    }
+
+    save {
+      memory.last_fetch = get_timestamp()
+    }
+
+    reflect {
+      if memory.fetch_errors.length > 0 {
+        emit "fetch_error"
+      } else {
+        log("Weather data fetched successfully")
+      }
+    }
+  }
+
+  signal "fetch_error" {
+    do {
+      log("Weather fetch error: " + memory.fetch_errors[memory.fetch_errors.length - 1])
+    }
+  }
+}
+
+agent "weather_analyzer" {
+  capabilities: ["data_analysis", "pattern_recognition", "threshold_detection"]
+  
+  memory {
+    analysis_rules = {
+      storm_threshold: 60,  // mph
+      temperature_extreme: 100,  // fahrenheit
+      humidity_high: 80  // percentage
+    }
+    analysis_history = []
+  }
+
+  input {
+    channel "analysis_request" {
+      source: "weather_orchestrator"
+      type: "weather_analysis"
+      bind: memory.weather_data
+      on_receive: mental.analyze_weather_conditions
+    }
+  }
+
+  mental {
+    think {
+      if memory.weather_data {
+        plan = {
+          action: "analyze_conditions",
+          data: memory.weather_data,
+          rules: memory.analysis_rules
+        }
+      } else {
+        plan = {
+          action: "idle"
+        }
+      }
+    }
+
+    act {
+      if plan.action == "analyze_conditions" {
+        analysis_result = {
+          alerts: [],
+          conditions: {},
+          severity: "normal"
+        }
+        
+        weather = plan.data
+        
+        // Check wind speed for storms
+        if weather.wind_speed > plan.rules.storm_threshold {
+          analysis_result.alerts.push({
+            type: "storm_warning",
+            severity: "high",
+            message: "High winds detected: " + weather.wind_speed + " mph"
+          })
+          analysis_result.severity = "high"
+        }
+        
+        // Check temperature extremes
+        if weather.temperature > plan.rules.temperature_extreme {
+          analysis_result.alerts.push({
+            type: "temperature_warning",
+            severity: "medium",
+            message: "Extreme temperature: " + weather.temperature + "°F"
+          })
+        }
+        
+        // Check humidity
+        if weather.humidity > plan.rules.humidity_high {
+          analysis_result.alerts.push({
+            type: "humidity_warning",
+            severity: "low",
+            message: "High humidity: " + weather.humidity + "%"
+          })
+        }
+        
+        memory.analysis_history.push(analysis_result)
+        
+        if analysis_result.alerts.length > 0 {
+          assign.agent("weather_orchestrator").receive_alert(analysis_result)
+        }
+      }
+    }
+
+    save {
+      memory.last_analysis = get_timestamp()
+    }
+
+    reflect {
+      if memory.analysis_history.length > 0 {
+        latest_analysis = memory.analysis_history[memory.analysis_history.length - 1]
+        log("Weather analysis complete: " + count(latest_analysis.alerts) + " alerts generated")
+      }
+    }
+  }
+}
+
+agent "alert_sender" {
+  capabilities: ["notification", "message_sending", "user_communication"]
+  
+  memory {
+    notification_channels = ["email", "sms", "push"]
+    user_preferences = {}
+    sent_alerts = []
+  }
+
+  input {
+    channel "alert_request" {
+      source: "weather_orchestrator"
+      type: "alert_send"
+      bind: memory.alert_request
+      on_receive: mental.send_alert_notification
+    }
+  }
+
+  mental {
+    think {
+      if memory.alert_request {
+        plan = {
+          action: "send_notification",
+          alert: memory.alert_request,
+          channels: determine_channels(memory.alert_request.severity)
+        }
+      } else {
+        plan = {
+          action: "idle"
+        }
+      }
+    }
+
+    act {
+      if plan.action == "send_notification" {
+        alert = plan.alert
+        
+        for each channel in plan.channels {
+          try {
+            if channel == "email" {
+              send_email(alert.message, alert.severity)
+            } else if channel == "sms" {
+              send_sms(alert.message)
+            } else if channel == "push" {
+              send_push_notification(alert.message, alert.severity)
+            }
+            
+            memory.sent_alerts.push({
+              timestamp: get_timestamp(),
+              channel: channel,
+              alert: alert,
+              status: "sent"
+            })
+          } catch error {
+            log("Failed to send alert via " + channel + ": " + error)
+          }
+        }
+      }
+    }
+
+    save {
+      memory.last_alert_sent = get_timestamp()
+    }
+
+    reflect {
+      if memory.sent_alerts.length > 0 {
+        latest_alert = memory.sent_alerts[memory.sent_alerts.length - 1]
+        log("Alert sent via " + latest_alert.channel + ": " + latest_alert.alert.message)
+      }
+    }
+  }
+
+  function "determine_channels" {
+    input: severity
+    output: channels
+    
+    mental {
+      think {
+        if severity == "high" {
+          channels = ["email", "sms", "push"]
+        } else if severity == "medium" {
+          channels = ["email", "push"]
+        } else {
+          channels = ["push"]
+        }
+      }
+      
+      act {
+        return channels
+      }
+    }
+  }
+}
+
+render "weather_dashboard" {
+  type: "dashboard"
+  library: "gxchart"
+  style: {
+    theme: "dark"
+    layout: "grid"
+    columns: 3
+  }
+}
+
+view "weather_page" {
+  layout: "column"
+  components: ["weather_dashboard"]
+  bind {
+    weather_dashboard.data ↔ memory.weather_data
+    weather_dashboard.alerts ↔ memory.alerts
+  }
+} 

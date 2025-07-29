@@ -1,0 +1,160 @@
+agent "gx_kernel" {
+  capabilities: ["bootstrap", "memory", "agent_spawn", "mental_execution"]
+  
+  memory {
+    status = "initializing"
+    agents = {}
+    stdlib_loaded = false
+    panic_count = 0
+    kernel_version = "0.1.0"
+  }
+
+  input {
+    channel "system_boot" {
+      source: "bios"
+      type: "system_event"
+      on_receive: mental.boot_system
+    }
+    
+    channel "agent_request" {
+      source: "agent_mesh"
+      type: "spawn_request"
+      on_receive: mental.spawn_agent
+    }
+    
+    channel "panic_signal" {
+      source: "any_agent"
+      type: "error"
+      on_receive: mental.handle_panic
+    }
+  }
+
+  mental {
+    think {
+      if memory.status == "initializing" {
+        plan = {
+          action: "load_stdlib",
+          priority: "critical"
+        }
+      } else if memory.status == "ready" {
+        plan = {
+          action: "monitor_agents",
+          priority: "normal"
+        }
+      } else {
+        plan = {
+          action: "panic_recovery",
+          priority: "high"
+        }
+      }
+    }
+
+    act {
+      if plan.action == "load_stdlib" {
+        memory.stdlib_loaded = true
+        memory.status = "ready"
+        log("GX Kernel initialized successfully")
+      } else if plan.action == "monitor_agents" {
+        monitor_agent_health()
+      } else if plan.action == "panic_recovery" {
+        memory.panic_count += 1
+        if memory.panic_count > 3 {
+          memory.status = "failed"
+          log("Kernel panic: too many failures")
+        } else {
+          memory.status = "ready"
+        }
+      }
+    }
+
+    save {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    reflect {
+      if memory.status == "ready" {
+        emit "kernel_ready"
+      } else if memory.status == "failed" {
+        emit "kernel_panic"
+      }
+    }
+  }
+
+  goal "ensure_kernel_stability" {
+    when memory.panic_count > 5
+    then {
+      action: "emergency_shutdown"
+      reason: "Kernel instability detected"
+    }
+  }
+
+  signal "kernel_ready" {
+    do {
+      spawn_agent("gx_parser")
+      spawn_agent("gx_runtime")
+      spawn_agent("agent_orchestrator")
+    }
+  }
+
+  signal "kernel_panic" {
+    do {
+      log("Kernel panic detected - attempting recovery")
+      memory.status = "recovering"
+    }
+  }
+
+  function "spawn_agent" {
+    input: agent_name
+    output: agent_id
+    
+    mental {
+      think {
+        agent_config = load_agent_config(agent_name)
+        memory.agents[agent_name] = {
+          id: generate_uuid(),
+          status: "spawning",
+          config: agent_config
+        }
+      }
+      
+      act {
+        agent_id = memory.agents[agent_name].id
+        initialize_agent_memory(agent_id)
+        start_agent_execution(agent_id)
+      }
+      
+      save {
+        memory.agents[agent_name].status = "running"
+      }
+      
+      reflect {
+        log("Agent spawned: " + agent_name + " (ID: " + agent_id + ")")
+      }
+    }
+  }
+
+  function "monitor_agent_health" {
+    mental {
+      think {
+        unhealthy_agents = filter(memory.agents, agent.status == "failed")
+      }
+      
+      act {
+        for each agent in unhealthy_agents {
+          restart_agent(agent.id)
+        }
+      }
+      
+      save {
+        memory.health_check_timestamp = get_timestamp()
+      }
+      
+      reflect {
+        if count(unhealthy_agents) > 0 {
+          log("Restarted " + count(unhealthy_agents) + " unhealthy agents")
+        }
+      }
+    }
+  }
+} 

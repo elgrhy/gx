@@ -1,0 +1,473 @@
+agent "installer" {
+  capabilities: ["package_installation", "library_management", "version_control", "dependency_resolution"]
+  
+  memory {
+    installed_packages = {}
+    package_registry = {}
+    installation_queue = []
+    installation_errors = []
+    update_available = []
+  }
+
+  input {
+    channel "install_request" {
+      source: "configurator"
+      type: "package_install"
+      bind: memory.install_request
+      on_receive: mental.install_package
+    }
+    
+    channel "update_check" {
+      source: "gx_kernel"
+      type: "update_request"
+      bind: memory.update_request
+      on_receive: mental.check_for_updates
+    }
+    
+    channel "package_info" {
+      source: "gx_registry"
+      type: "package_metadata"
+      bind: memory.package_info
+      on_receive: mental.process_package_info
+    }
+  }
+
+  mental {
+    think {
+      if memory.install_request {
+        plan = {
+          action: "install_package",
+          package: memory.install_request,
+          priority: "high"
+        }
+      } else if memory.update_request {
+        plan = {
+          action: "check_updates",
+          request: memory.update_request,
+          priority: "normal"
+        }
+      } else if memory.installation_queue.length > 0 {
+        plan = {
+          action: "process_queue",
+          queue: memory.installation_queue,
+          priority: "normal"
+        }
+      } else {
+        plan = {
+          action: "idle",
+          priority: "low"
+        }
+      }
+    }
+
+    act {
+      if plan.action == "install_package" {
+        install_single_package(plan.package)
+      } else if plan.action == "check_updates" {
+        check_all_packages_for_updates()
+      } else if plan.action == "process_queue" {
+        process_installation_queue()
+      }
+    }
+
+    save {
+      memory.last_install_action = plan.action
+      memory.last_install_timestamp = get_timestamp()
+    }
+
+    reflect {
+      if memory.installation_errors.length > 0 {
+        emit "installation_error"
+      } else if plan.action == "install_package" {
+        emit "package_installed"
+      }
+    }
+  }
+
+  goal "ensure_package_compatibility" {
+    when memory.installation_errors.length > 0
+    then {
+      action: "resolve_conflicts",
+      errors: memory.installation_errors
+    }
+  }
+
+  signal "package_installed" {
+    do {
+      log("Package installed successfully")
+      memory.installed_packages[memory.last_installed_package] = {
+        version: memory.last_installed_version,
+        installed_at: get_timestamp(),
+        status: "active"
+      }
+    }
+  }
+
+  signal "installation_error" {
+    do {
+      log("Installation error: " + memory.installation_errors[memory.installation_errors.length - 1])
+      emit "install_failed"
+    }
+  }
+
+  function "install_single_package" {
+    input: package_request
+    output: installation_result
+    
+    mental {
+      think {
+        package_name = package_request.name
+        package_version = package_request.version || "latest"
+        package_source = package_request.source || "gx_registry"
+      }
+      
+      act {
+        try {
+          if package_source == "gx_registry" {
+            package_info = fetch_from_gx_registry(package_name, package_version)
+            download_package(package_info.download_url)
+            install_package_files(package_info)
+            register_package(package_name, package_info)
+          } else if package_source == "npm" {
+            npm_install_package(package_name, package_version)
+          } else if package_source == "pip" {
+            pip_install_package(package_name, package_version)
+          }
+          
+          installation_result = {
+            success: true,
+            package: package_name,
+            version: package_info.version,
+            source: package_source
+          }
+          
+          memory.last_installed_package = package_name
+          memory.last_installed_version = package_info.version
+          
+        } catch error {
+          installation_result = {
+            success: false,
+            error: error,
+            package: package_name
+          }
+          
+          memory.installation_errors.push("Failed to install " + package_name + ": " + error)
+        }
+      }
+      
+      save {
+        memory.last_installation_result = installation_result
+      }
+      
+      reflect {
+        if installation_result.success {
+          log("Successfully installed " + package_name + " v" + package_info.version)
+        } else {
+          log("Failed to install " + package_name + ": " + error)
+        }
+      }
+    }
+  }
+
+  function "install_core_packages" {
+    mental {
+      think {
+        core_packages = [
+          {
+            name: "gxchart",
+            version: "1.0.0",
+            source: "gx_registry"
+          },
+          {
+            name: "gxui", 
+            version: "1.0.0",
+            source: "gx_registry"
+          },
+          {
+            name: "gxnet",
+            version: "1.0.0", 
+            source: "gx_registry"
+          },
+          {
+            name: "gxdb",
+            version: "1.0.0",
+            source: "gx_registry"
+          }
+        ]
+      }
+      
+      act {
+        for each package in core_packages {
+          memory.installation_queue.push(package)
+        }
+        
+        process_installation_queue()
+      }
+      
+      save {
+        memory.core_packages_installed = true
+      }
+      
+      reflect {
+        log("Core packages installation initiated")
+      }
+    }
+  }
+
+  function "process_installation_queue" {
+    mental {
+      think {
+        queue = memory.installation_queue
+        processed = []
+      }
+      
+      act {
+        for each package in queue {
+          try {
+            result = install_single_package(package)
+            if result.success {
+              processed.push(package)
+            }
+          } catch error {
+            memory.installation_errors.push("Queue error for " + package.name + ": " + error)
+          }
+        }
+        
+        // Remove processed packages from queue
+        for each package in processed {
+          remove_from_queue(package)
+        }
+      }
+      
+      save {
+        memory.queue_processed = true
+        memory.last_queue_process = get_timestamp()
+      }
+      
+      reflect {
+        log("Processed " + count(processed) + " packages from installation queue")
+      }
+    }
+  }
+
+  function "check_all_packages_for_updates" {
+    mental {
+      think {
+        installed_packages = memory.installed_packages
+        updates_available = []
+      }
+      
+      act {
+        for each package_name, package_info in installed_packages {
+          try {
+            latest_version = get_latest_version(package_name)
+            if latest_version != package_info.version {
+              updates_available.push({
+                package: package_name,
+                current_version: package_info.version,
+                latest_version: latest_version
+              })
+            }
+          } catch error {
+            log("Failed to check updates for " + package_name + ": " + error)
+          }
+        }
+      }
+      
+      save {
+        memory.update_available = updates_available
+      }
+      
+      reflect {
+        if updates_available.length > 0 {
+          log("Found " + count(updates_available) + " package updates available")
+          emit "updates_available"
+        } else {
+          log("All packages are up to date")
+        }
+      }
+    }
+  }
+
+  function "fetch_from_gx_registry" {
+    input: package_name, version
+    output: package_info
+    
+    mental {
+      think {
+        registry_url = "https://registry.gx.dev/api/packages/" + package_name
+        if version == "latest" {
+          registry_url += "/latest"
+        } else {
+          registry_url += "/" + version
+        }
+      }
+      
+      act {
+        try {
+          response = http_get(registry_url)
+          if response.status == 200 {
+            package_info = parse_json(response.body)
+          } else {
+            throw "Package not found in registry"
+          }
+        } catch error {
+          throw "Failed to fetch package info: " + error
+        }
+      }
+      
+      reflect {
+        log("Fetched package info for " + package_name + " v" + package_info.version)
+      }
+    }
+  }
+
+  function "download_package" {
+    input: download_url
+    output: downloaded_file
+    
+    mental {
+      think {
+        temp_dir = "temp/downloads/"
+        filename = generate_filename_from_url(download_url)
+        filepath = temp_dir + filename
+      }
+      
+      act {
+        try {
+          create_directory(temp_dir)
+          downloaded_file = download_file(download_url, filepath)
+        } catch error {
+          throw "Failed to download package: " + error
+        }
+      }
+      
+      reflect {
+        log("Downloaded package to " + filepath)
+      }
+    }
+  }
+
+  function "install_package_files" {
+    input: package_info
+    output: installed_files
+    
+    mental {
+      think {
+        package_dir = "gx_stdlib/" + package_info.name + "/"
+        installed_files = []
+      }
+      
+      act {
+        try {
+          create_directory(package_dir)
+          
+          for each file in package_info.files {
+            file_content = extract_file_from_package(package_info.download_url, file.path)
+            write_file(package_dir + file.name, file_content)
+            installed_files.push(package_dir + file.name)
+          }
+          
+          // Install dependencies if any
+          if package_info.dependencies {
+            for each dep in package_info.dependencies {
+              memory.installation_queue.push(dep)
+            }
+          }
+          
+        } catch error {
+          throw "Failed to install package files: " + error
+        }
+      }
+      
+      reflect {
+        log("Installed " + count(installed_files) + " files for " + package_info.name)
+      }
+    }
+  }
+
+  function "register_package" {
+    input: package_name, package_info
+    output: registered
+    
+    mental {
+      think {
+        registration_data = {
+          name: package_name,
+          version: package_info.version,
+          installed_at: get_timestamp(),
+          dependencies: package_info.dependencies || [],
+          capabilities: package_info.capabilities || []
+        }
+      }
+      
+      act {
+        memory.installed_packages[package_name] = registration_data
+        write_package_registry(package_name, registration_data)
+        registered = true
+      }
+      
+      reflect {
+        log("Registered package " + package_name + " v" + package_info.version)
+      }
+    }
+  }
+
+  function "npm_install_package" {
+    input: package_name, version
+    output: npm_result
+    
+    mental {
+      think {
+        npm_command = "npm install " + package_name
+        if version != "latest" {
+          npm_command += "@" + version
+        }
+      }
+      
+      act {
+        try {
+          npm_result = execute_command(npm_command)
+          if npm_result.exit_code != 0 {
+            throw "npm install failed: " + npm_result.stderr
+          }
+        } catch error {
+          throw "npm installation error: " + error
+        }
+      }
+      
+      reflect {
+        log("npm package installed: " + package_name)
+      }
+    }
+  }
+
+  function "pip_install_package" {
+    input: package_name, version
+    output: pip_result
+    
+    mental {
+      think {
+        pip_command = "pip install " + package_name
+        if version != "latest" {
+          pip_command += "==" + version
+        }
+      }
+      
+      act {
+        try {
+          pip_result = execute_command(pip_command)
+          if pip_result.exit_code != 0 {
+            throw "pip install failed: " + pip_result.stderr
+          }
+        } catch error {
+          throw "pip installation error: " + error
+        }
+      }
+      
+      reflect {
+        log("pip package installed: " + package_name)
+      }
+    }
+  }
+} 

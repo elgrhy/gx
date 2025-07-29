@@ -1,0 +1,324 @@
+agent "gx_parser" {
+  capabilities: ["parse", "ast_build", "syntax_validation", "cognitive_grammar"]
+  
+  memory {
+    tokens = []
+    ast_nodes = {}
+    current_agent = null
+    parse_errors = []
+    grammar_version = "0.1.0"
+  }
+
+  input {
+    channel "parse_request" {
+      source: "file_system"
+      type: "gx_file"
+      bind: memory.source_code
+      on_receive: mental.parse_gx_file
+    }
+    
+    channel "syntax_check" {
+      source: "editor"
+      type: "validation_request"
+      bind: memory.code_snippet
+      on_receive: mental.validate_syntax
+    }
+  }
+
+  mental {
+    think {
+      if memory.source_code {
+        plan = {
+          action: "parse_complete_file",
+          tokens: tokenize(memory.source_code),
+          target: "ast_builder"
+        }
+      } else if memory.code_snippet {
+        plan = {
+          action: "validate_snippet",
+          tokens: tokenize(memory.code_snippet),
+          target: "syntax_validator"
+        }
+      } else {
+        plan = {
+          action: "idle",
+          target: "wait_for_input"
+        }
+      }
+    }
+
+    act {
+      if plan.action == "parse_complete_file" {
+        memory.tokens = plan.tokens
+        memory.ast_nodes = build_ast(memory.tokens)
+        memory.current_agent = extract_agent_info(memory.ast_nodes)
+      } else if plan.action == "validate_snippet" {
+        memory.tokens = plan.tokens
+        syntax_errors = validate_syntax(memory.tokens)
+        memory.parse_errors = syntax_errors
+      }
+    }
+
+    save {
+      memory.last_parse_timestamp = get_timestamp()
+      memory.parsed_agents_count = count(memory.ast_nodes.agents)
+    }
+
+    reflect {
+      if memory.parse_errors.length > 0 {
+        emit "parse_errors"
+      } else if memory.ast_nodes.agents {
+        emit "ast_ready"
+      }
+    }
+  }
+
+  goal "ensure_grammar_compliance" {
+    when memory.parse_errors.length > 0
+    then {
+      action: "report_errors",
+      details: memory.parse_errors
+    }
+  }
+
+  signal "ast_ready" {
+    do {
+      assign.agent("gx_runtime").load_ast(memory.ast_nodes)
+    }
+  }
+
+  signal "parse_errors" {
+    do {
+      log("Parse errors detected: " + memory.parse_errors)
+      emit "syntax_validation_failed"
+    }
+  }
+
+  function "tokenize" {
+    input: source_code
+    output: tokens
+    
+    mental {
+      think {
+        keywords = [
+          "agent", "mental", "input", "output", "memory", "goal", 
+          "signal", "render", "view", "bind", "style", "capabilities",
+          "think", "act", "save", "reflect", "when", "then", "do",
+          "channel", "source", "type", "on_receive", "assign.agent"
+        ]
+        
+        symbols = ["{", "}", "=", ":", "[", "]", "(", ")", "\"", "'"]
+      }
+      
+      act {
+        tokens = []
+        current_token = ""
+        in_string = false
+        string_delimiter = ""
+        
+        for each char in source_code {
+          if char == "\"" or char == "'" {
+            if not in_string {
+              in_string = true
+              string_delimiter = char
+              if current_token {
+                tokens.push({type: "identifier", value: current_token})
+                current_token = ""
+              }
+            } else if char == string_delimiter {
+              in_string = false
+              tokens.push({type: "string", value: current_token})
+              current_token = ""
+            } else {
+              current_token += char
+            }
+          } else if in_string {
+            current_token += char
+          } else if char in symbols {
+            if current_token {
+              tokens.push({type: "identifier", value: current_token})
+              current_token = ""
+            }
+            tokens.push({type: "symbol", value: char})
+          } else if char == " " or char == "\n" or char == "\t" {
+            if current_token {
+              tokens.push({type: "identifier", value: current_token})
+              current_token = ""
+            }
+          } else {
+            current_token += char
+          }
+        }
+        
+        if current_token {
+          tokens.push({type: "identifier", value: current_token})
+        }
+      }
+      
+      save {
+        memory.tokenization_success = true
+      }
+      
+      reflect {
+        log("Tokenized " + count(tokens) + " tokens")
+      }
+    }
+  }
+
+  function "build_ast" {
+    input: tokens
+    output: ast_nodes
+    
+    mental {
+      think {
+        ast = {
+          agents: {},
+          imports: [],
+          global_memory: {},
+          errors: []
+        }
+        
+        current_agent = null
+        current_block = null
+        block_stack = []
+      }
+      
+      act {
+        for i = 0 to tokens.length - 1 {
+          token = tokens[i]
+          
+          if token.value == "agent" {
+            agent_name = tokens[i + 1].value
+            current_agent = {
+              name: agent_name,
+              capabilities: [],
+              memory: {},
+              input: {},
+              mental: {},
+              goals: [],
+              signals: [],
+              render: {},
+              view: {}
+            }
+            ast.agents[agent_name] = current_agent
+            block_stack.push("agent")
+          } else if token.value == "mental" {
+            current_block = "mental"
+            block_stack.push("mental")
+          } else if token.value == "think" {
+            current_block = "think"
+            block_stack.push("think")
+          } else if token.value == "act" {
+            current_block = "act"
+            block_stack.push("act")
+          } else if token.value == "save" {
+            current_block = "save"
+            block_stack.push("save")
+          } else if token.value == "reflect" {
+            current_block = "reflect"
+            block_stack.push("reflect")
+          } else if token.value == "memory" {
+            current_block = "memory"
+            block_stack.push("memory")
+          } else if token.value == "input" {
+            current_block = "input"
+            block_stack.push("input")
+          } else if token.value == "goal" {
+            goal_name = tokens[i + 1].value
+            current_goal = {
+              name: goal_name,
+              when: "",
+              then: ""
+            }
+            current_agent.goals.push(current_goal)
+            block_stack.push("goal")
+          } else if token.value == "signal" {
+            signal_name = tokens[i + 1].value
+            current_signal = {
+              name: signal_name,
+              actions: []
+            }
+            current_agent.signals.push(current_signal)
+            block_stack.push("signal")
+          } else if token.value == "}" {
+            block_stack.pop()
+            if block_stack.length > 0 {
+              current_block = block_stack[block_stack.length - 1]
+            }
+          }
+        }
+      }
+      
+      save {
+        memory.ast_nodes = ast
+      }
+      
+      reflect {
+        log("Built AST with " + count(ast.agents) + " agents")
+      }
+    }
+  }
+
+  function "validate_syntax" {
+    input: tokens
+    output: errors
+    
+    mental {
+      think {
+        errors = []
+        brace_count = 0
+        bracket_count = 0
+        paren_count = 0
+      }
+      
+      act {
+        for each token in tokens {
+          if token.value == "{" {
+            brace_count += 1
+          } else if token.value == "}" {
+            brace_count -= 1
+            if brace_count < 0 {
+              errors.push("Unmatched closing brace")
+            }
+          } else if token.value == "[" {
+            bracket_count += 1
+          } else if token.value == "]" {
+            bracket_count -= 1
+            if bracket_count < 0 {
+              errors.push("Unmatched closing bracket")
+            }
+          } else if token.value == "(" {
+            paren_count += 1
+          } else if token.value == ")" {
+            paren_count -= 1
+            if paren_count < 0 {
+              errors.push("Unmatched closing parenthesis")
+            }
+          }
+        }
+        
+        if brace_count > 0 {
+          errors.push("Unmatched opening braces: " + brace_count)
+        }
+        if bracket_count > 0 {
+          errors.push("Unmatched opening brackets: " + bracket_count)
+        }
+        if paren_count > 0 {
+          errors.push("Unmatched opening parentheses: " + paren_count)
+        }
+      }
+      
+      save {
+        memory.syntax_errors = errors
+      }
+      
+      reflect {
+        if errors.length > 0 {
+          log("Syntax validation failed with " + count(errors) + " errors")
+        } else {
+          log("Syntax validation passed")
+        }
+      }
+    }
+  }
+} 

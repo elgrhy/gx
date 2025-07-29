@@ -1,0 +1,400 @@
+agent "main_orchestrator" {
+  capabilities: ["system_orchestration", "application_lifecycle", "error_handling", "monitoring"]
+  
+  memory {
+    system_status = "starting"
+    running_applications = {}
+    system_health = {
+      cpu_usage: 0,
+      memory_usage: 0,
+      agent_count: 0,
+      errors: []
+    }
+    startup_sequence = [
+      "gx_kernel",
+      "gx_parser", 
+      "gx_runtime",
+      "configurator",
+      "installer"
+    ]
+  }
+
+  input {
+    channel "system_boot" {
+      source: "gx.seed.asm"
+      type: "boot_event"
+      bind: memory.boot_event
+      on_receive: mental.initialize_system
+    }
+    
+    channel "application_request" {
+      source: "user_interface"
+      type: "app_start"
+      bind: memory.app_request
+      on_receive: mental.start_application
+    }
+    
+    channel "health_check" {
+      source: "system_monitor"
+      type: "health_status"
+      bind: memory.health_data
+      on_receive: mental.update_health_status
+    }
+  }
+
+  mental {
+    think {
+      if memory.system_status == "starting" {
+        plan = {
+          action: "bootstrap_system",
+          sequence: memory.startup_sequence,
+          priority: "critical"
+        }
+      } else if memory.app_request {
+        plan = {
+          action: "start_application",
+          app: memory.app_request,
+          priority: "high"
+        }
+      } else if memory.health_data {
+        plan = {
+          action: "update_health",
+          health: memory.health_data,
+          priority: "normal"
+        }
+      } else {
+        plan = {
+          action: "monitor_system",
+          priority: "low"
+        }
+      }
+    }
+
+    act {
+      if plan.action == "bootstrap_system" {
+        bootstrap_core_system(plan.sequence)
+      } else if plan.action == "start_application" {
+        start_user_application(plan.app)
+      } else if plan.action == "update_health" {
+        update_system_health(plan.health)
+      } else if plan.action == "monitor_system" {
+        monitor_system_status()
+      }
+    }
+
+    save {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    reflect {
+      if memory.system_status == "ready" {
+        emit "system_ready"
+      } else if memory.system_health.errors.length > 0 {
+        emit "system_error"
+      }
+    }
+  }
+
+  goal "maintain_system_stability" {
+    when memory.system_health.errors.length > 5
+    then {
+      action: "emergency_restart",
+      reason: "Too many system errors"
+    }
+  }
+
+  signal "system_ready" {
+    do {
+      log("GX System ready for applications")
+      memory.system_status = "ready"
+      emit "ready_for_applications"
+    }
+  }
+
+  signal "system_error" {
+    do {
+      log("System error detected - attempting recovery")
+      attempt_system_recovery()
+    }
+  }
+
+  function "bootstrap_core_system" {
+    input: startup_sequence
+    output: bootstrap_result
+    
+    mental {
+      think {
+        bootstrap_result = {
+          success: true,
+          started_agents: [],
+          errors: []
+        }
+      }
+      
+      act {
+        for each agent_name in startup_sequence {
+          try {
+            agent_id = spawn_agent(agent_name)
+            bootstrap_result.started_agents.push({
+              name: agent_name,
+              id: agent_id,
+              status: "running"
+            })
+            
+            // Wait for agent to initialize
+            wait_for_agent_ready(agent_id)
+            
+          } catch error {
+            bootstrap_result.success = false
+            bootstrap_result.errors.push("Failed to start " + agent_name + ": " + error)
+          }
+        }
+      }
+      
+      save {
+        memory.system_status = "initialized"
+        memory.core_agents_started = bootstrap_result.started_agents.length
+      }
+      
+      reflect {
+        if bootstrap_result.success {
+          log("Core system bootstrapped successfully with " + count(bootstrap_result.started_agents) + " agents")
+        } else {
+          log("Bootstrap failed with " + count(bootstrap_result.errors) + " errors")
+        }
+      }
+    }
+  }
+
+  function "start_user_application" {
+    input: app_request
+    output: app_result
+    
+    mental {
+      think {
+        app_name = app_request.name
+        app_file = app_request.file || app_name + ".gx"
+        app_config = app_request.config || {}
+      }
+      
+      act {
+        try {
+          // Parse the application file
+          assign.agent("gx_parser").parse_file(app_file)
+          
+          // Load the application into runtime
+          assign.agent("gx_runtime").load_application(app_name, app_config)
+          
+          // Start the application
+          app_id = start_application(app_name)
+          
+          app_result = {
+            success: true,
+            app_id: app_id,
+            app_name: app_name,
+            status: "running"
+          }
+          
+          memory.running_applications[app_name] = {
+            id: app_id,
+            started_at: get_timestamp(),
+            config: app_config,
+            status: "running"
+          }
+          
+        } catch error {
+          app_result = {
+            success: false,
+            error: error,
+            app_name: app_name
+          }
+          
+          memory.system_health.errors.push("Failed to start " + app_name + ": " + error)
+        }
+      }
+      
+      save {
+        memory.last_app_start = app_result
+      }
+      
+      reflect {
+        if app_result.success {
+          log("Application started successfully: " + app_name)
+        } else {
+          log("Failed to start application: " + app_name + " - " + error)
+        }
+      }
+    }
+  }
+
+  function "update_system_health" {
+    input: health_data
+    output: health_updated
+    
+    mental {
+      think {
+        health_updated = false
+      }
+      
+      act {
+        memory.system_health.cpu_usage = health_data.cpu_usage
+        memory.system_health.memory_usage = health_data.memory_usage
+        memory.system_health.agent_count = count(memory.running_applications)
+        
+        if health_data.errors {
+          for each error in health_data.errors {
+            memory.system_health.errors.push(error)
+          }
+        }
+        
+        health_updated = true
+      }
+      
+      save {
+        memory.last_health_update = get_timestamp()
+      }
+      
+      reflect {
+        log("System health updated - CPU: " + memory.system_health.cpu_usage + "%, Memory: " + memory.system_health.memory_usage + "%")
+      }
+    }
+  }
+
+  function "monitor_system_status" {
+    mental {
+      think {
+        current_time = get_timestamp()
+        system_uptime = current_time - memory.boot_event.timestamp
+      }
+      
+      act {
+        // Check for any failed agents
+        for each app_name, app_info in memory.running_applications {
+          if app_info.status == "failed" {
+            log("Application failed: " + app_name + " - attempting restart")
+            restart_application(app_name)
+          }
+        }
+        
+        // Log system status periodically
+        if system_uptime % 300 == 0 {  // Every 5 minutes
+          log("System status - Uptime: " + system_uptime + "s, Apps: " + count(memory.running_applications))
+        }
+      }
+      
+      save {
+        memory.last_monitor_check = current_time
+      }
+      
+      reflect {
+        // No specific reflection needed for monitoring
+      }
+    }
+  }
+
+  function "attempt_system_recovery" {
+    mental {
+      think {
+        recovery_actions = [
+          "restart_failed_agents",
+          "clear_error_logs", 
+          "reset_health_metrics"
+        ]
+      }
+      
+      act {
+        for each action in recovery_actions {
+          try {
+            if action == "restart_failed_agents" {
+              restart_all_failed_agents()
+            } else if action == "clear_error_logs" {
+              memory.system_health.errors = []
+            } else if action == "reset_health_metrics" {
+              memory.system_health.cpu_usage = 0
+              memory.system_health.memory_usage = 0
+            }
+          } catch error {
+            log("Recovery action failed: " + action + " - " + error)
+          }
+        }
+      }
+      
+      save {
+        memory.last_recovery_attempt = get_timestamp()
+      }
+      
+      reflect {
+        log("System recovery attempted")
+      }
+    }
+  }
+
+  function "restart_application" {
+    input: app_name
+    output: restart_result
+    
+    mental {
+      think {
+        app_info = memory.running_applications[app_name]
+      }
+      
+      act {
+        try {
+          stop_application(app_name)
+          wait(1000)  // Wait 1 second
+          start_user_application({
+            name: app_name,
+            config: app_info.config
+          })
+          
+          restart_result = {
+            success: true,
+            app_name: app_name
+          }
+          
+        } catch error {
+          restart_result = {
+            success: false,
+            app_name: app_name,
+            error: error
+          }
+        }
+      }
+      
+      reflect {
+        if restart_result.success {
+          log("Application restarted successfully: " + app_name)
+        } else {
+          log("Failed to restart application: " + app_name)
+        }
+      }
+    }
+  }
+}
+
+// Start the main orchestrator when the system boots
+mental {
+  think {
+    if memory.boot_event {
+      plan = {
+        action: "start_main_orchestrator",
+        priority: "critical"
+      }
+    }
+  }
+  
+  act {
+    if plan.action == "start_main_orchestrator" {
+      spawn_agent("main_orchestrator")
+    }
+  }
+  
+  save {
+    memory.main_orchestrator_started = true
+  }
+  
+  reflect {
+    log("Main orchestrator started - GX system initializing")
+  }
+} 
