@@ -1,0 +1,30 @@
+helper "hello_world" {
+  can_do: ["greeting", "output"]
+  
+  remember {
+    message = "Hello, Brain-First World!"
+    count = 0
+    timestamp = null
+  }
+
+  brain {
+    plan {
+      plan = { action: "display_greeting" }
+    }
+    
+    execute {
+      if plan.action == "display_greeting" {
+        output(memory.message)
+        memory.count += 1
+      }
+    }
+    
+    remember {
+      memory.timestamp = get_timestamp()
+    }
+    
+    communicate {
+      broadcast "greeting_complete"
+    }
+  }
+} 

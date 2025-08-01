@@ -1,0 +1,81 @@
+helper "compilation_tester" {
+  can_do: ["compilation", "parsing", "ast_generation"]
+  
+  remember {
+    test_results = []
+    compilation_count = 0
+    parse_success = 0
+    ast_generated = 0
+  }
+
+  brain {
+    plan {
+      if memory.compilation_count == 0 {
+        plan = { action: "test_basic_compilation" }
+      } else if memory.compilation_count == 1 {
+        plan = { action: "test_ast_generation" }
+      } else if memory.compilation_count == 2 {
+        plan = { action: "test_optimization" }
+      } else {
+        plan = { action: "test_final_compilation" }
+      }
+    }
+    
+    execute {
+      if plan.action == "test_basic_compilation" {
+        // Test basic compilation
+        source_code = "helper \"test\" { can_do: [\"test\"] }"
+        compiled = compile_gx_source(source_code)
+        
+        if compiled {
+          memory.parse_success += 1
+          memory.test_results.push("basic_compilation_success")
+        } else {
+          memory.test_results.push("basic_compilation_failed")
+        }
+        
+        memory.compilation_count += 1
+      } else if plan.action == "test_ast_generation" {
+        // Test AST generation
+        ast = generate_ast("helper \"test\" { can_do: [\"test\"] }")
+        
+        if ast && ast.helpers && ast.helpers.length > 0 {
+          memory.ast_generated += 1
+          memory.test_results.push("ast_generation_success")
+        } else {
+          memory.test_results.push("ast_generation_failed")
+        }
+        
+        memory.compilation_count += 1
+      } else if plan.action == "test_optimization" {
+        // Test optimization
+        optimized = optimize_code("helper \"test\" { can_do: [\"test\"] }")
+        
+        if optimized {
+          memory.test_results.push("optimization_success")
+        } else {
+          memory.test_results.push("optimization_failed")
+        }
+        
+        memory.compilation_count += 1
+      } else if plan.action == "test_final_compilation" {
+        // Final compilation test
+        memory.test_results.push("compilation_testing_complete")
+      }
+    }
+    
+    remember {
+      memory.last_test_time = get_timestamp()
+    }
+    
+    communicate {
+      if memory.compilation_count >= 3 {
+        broadcast "compilation_testing_complete" {
+          parse_success: memory.parse_success,
+          ast_generated: memory.ast_generated,
+          test_results: memory.test_results
+        }
+      }
+    }
+  }
+} 

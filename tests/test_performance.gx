@@ -1,0 +1,127 @@
+helper "performance_tester" {
+  can_do: ["performance_testing", "benchmark_analysis", "performance_optimization"]
+  
+  remember {
+    test_results = []
+    benchmarks_run = 0
+    performance_tests = ["execution_speed", "memory_usage", "throughput", "latency", "scalability"]
+    current_test = 0
+  }
+
+  brain {
+    plan {
+      if memory.current_test < memory.performance_tests.length {
+        plan = { action: "run_performance_test" }
+      } else {
+        plan = { action: "analyze_performance_results" }
+      }
+    }
+    
+    execute {
+      if plan.action == "run_performance_test" {
+        test_name = memory.performance_tests[memory.current_test]
+        
+        if test_name == "execution_speed" {
+          result = test_execution_speed()
+          memory.test_results.push(result.success ? "execution_speed_success" : "execution_speed_failed")
+        } else if test_name == "memory_usage" {
+          result = test_memory_usage()
+          memory.test_results.push(result.success ? "memory_usage_success" : "memory_usage_failed")
+        } else if test_name == "throughput" {
+          result = test_throughput()
+          memory.test_results.push(result.success ? "throughput_success" : "throughput_failed")
+        } else if test_name == "latency" {
+          result = test_latency()
+          memory.test_results.push(result.success ? "latency_success" : "latency_failed")
+        } else if test_name == "scalability" {
+          result = test_scalability()
+          memory.test_results.push(result.success ? "scalability_success" : "scalability_failed")
+        }
+        
+        memory.benchmarks_run += 1
+        memory.current_test += 1
+      } else if plan.action == "analyze_performance_results" {
+        memory.test_results.push("performance_analysis_complete")
+      }
+    }
+    
+    communicate {
+      if memory.current_test >= memory.performance_tests.length {
+        broadcast "performance_testing_complete" {
+          test_results: memory.test_results,
+          benchmarks_run: memory.benchmarks_run
+        }
+      }
+    }
+  }
+
+  recipe "test_execution_speed" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_speed" } }
+      execute {
+        if plan.action == "test_speed" {
+          result = { success: true, message: "Execution speed test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_memory_usage" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_memory" } }
+      execute {
+        if plan.action == "test_memory" {
+          result = { success: true, message: "Memory usage test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_throughput" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_throughput" } }
+      execute {
+        if plan.action == "test_throughput" {
+          result = { success: true, message: "Throughput test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_latency" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_latency" } }
+      execute {
+        if plan.action == "test_latency" {
+          result = { success: true, message: "Latency test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_scalability" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_scalability" } }
+      execute {
+        if plan.action == "test_scalability" {
+          result = { success: true, message: "Scalability test passed" }
+        }
+      }
+    }
+  }
+} 

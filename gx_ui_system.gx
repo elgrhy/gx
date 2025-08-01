@@ -1,0 +1,430 @@
+helper "gx_ui_system" {
+  can_do: ["ui_rendering", "brain_visualization", "helper_display", "performance_monitoring"]
+  
+  remember {
+    status = "initializing"
+    active_views = []
+    render_queue = []
+    ui_components = {
+      brain_visualizer: null,
+      helper_display: null,
+      performance_monitor: null,
+      message_flow: null
+    }
+    render_stats = {
+      frames_rendered: 0,
+      render_time: 0,
+      active_helpers: 0
+    }
+  }
+
+  receive {
+    from "gx_runtime" as "runtime_data" {
+      type: "runtime_update"
+      bind: memory.runtime_data
+      on_receive: brain.update_ui
+    }
+    
+    from "helper_mesh" as "helper_update" {
+      type: "helper_status"
+      bind: memory.helper_update
+      on_receive: brain.update_helper_display
+    }
+    
+    from "performance_monitor" as "performance_data" {
+      type: "performance_metrics"
+      bind: memory.performance_data
+      on_receive: brain.update_performance_display
+    }
+  }
+
+  brain {
+    plan {
+      if memory.status == "initializing" {
+        plan = { action: "initialize_ui_system" }
+      } else if memory.render_queue.length > 0 {
+        plan = { action: "process_render_queue" }
+      } else if memory.runtime_data {
+        plan = { action: "update_ui_components" }
+      } else {
+        plan = { action: "idle_rendering" }
+      }
+    }
+
+    execute {
+      if plan.action == "initialize_ui_system" {
+        // Initialize UI components
+        memory.ui_components.brain_visualizer = create_brain_visualizer()
+        memory.ui_components.helper_display = create_helper_display()
+        memory.ui_components.performance_monitor = create_performance_monitor()
+        memory.ui_components.message_flow = create_message_flow()
+        
+        memory.status = "ready"
+        log("🎨 GX UI System initialized")
+      } else if plan.action == "process_render_queue" {
+        // Process render queue
+        for each render_task in memory.render_queue {
+          render_component(render_task)
+          memory.render_stats.frames_rendered += 1
+        }
+        
+        memory.render_queue = []
+      } else if plan.action == "update_ui_components" {
+        // Update UI with runtime data
+        update_brain_visualizer(memory.runtime_data)
+        update_helper_display(memory.runtime_data.helpers)
+        update_performance_display(memory.performance_data)
+        update_message_flow(memory.runtime_data.messages)
+        
+        // Queue render
+        memory.render_queue.push({
+          type: "full_update",
+          components: ["brain", "helpers", "performance", "messages"]
+        })
+      } else if plan.action == "idle_rendering" {
+        // Monitor UI performance
+        monitor_ui_performance()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      if memory.render_stats.frames_rendered > 100 {
+        emit "ui_performance_warning"
+      }
+    }
+  }
+
+  recipe "create_brain_visualizer" {
+    needs: none
+    gives: brain_visualizer
+    
+    brain {
+      plan {
+        plan = { action: "create_visualizer" }
+      }
+      
+      execute {
+        if plan.action == "create_visualizer" {
+          brain_visualizer = {
+            canvas: create_canvas("brain_canvas", 800, 600),
+            brain_cycles: [],
+            current_cycle: null,
+            visualization_mode: "real_time",
+            color_scheme: {
+              plan: "#4CAF50",
+              execute: "#2196F3", 
+              remember: "#FF9800",
+              communicate: "#9C27B0"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "create_helper_display" {
+    needs: none
+    gives: helper_display
+    
+    brain {
+      plan {
+        plan = { action: "create_display" }
+      }
+      
+      execute {
+        if plan.action == "create_display" {
+          helper_display = {
+            container: create_container("helper_container"),
+            helper_cards: [],
+            layout: "grid",
+            display_mode: "compact"
+          }
+        }
+      }
+    }
+  }
+
+  recipe "create_performance_monitor" {
+    needs: none
+    gives: performance_monitor
+    
+    brain {
+      plan {
+        plan = { action: "create_monitor" }
+      }
+      
+      execute {
+        if plan.action == "create_monitor" {
+          performance_monitor = {
+            chart: create_chart("performance_chart"),
+            metrics: {
+              cpu_usage: [],
+              memory_usage: [],
+              brain_cycles: [],
+              message_throughput: []
+            },
+            update_interval: 1000 // 1 second
+          }
+        }
+      }
+    }
+  }
+
+  recipe "create_message_flow" {
+    needs: none
+    gives: message_flow
+    
+    brain {
+      plan {
+        plan = { action: "create_flow" }
+      }
+      
+      execute {
+        if plan.action == "create_flow" {
+          message_flow = {
+            canvas: create_canvas("message_canvas", 600, 400),
+            message_paths: [],
+            nodes: [],
+            connections: [],
+            animation_speed: 1.0
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_brain_visualizer" {
+    needs: runtime_data
+    gives: success
+    
+    brain {
+      plan {
+        plan = { action: "update_visualizer" }
+      }
+      
+      execute {
+        if plan.action == "update_visualizer" {
+          visualizer = memory.ui_components.brain_visualizer
+          
+          // Update brain cycle visualization
+          if runtime_data.current_brain_cycle {
+            cycle = runtime_data.current_brain_cycle
+            
+            // Draw brain cycle phases
+            draw_brain_phase(visualizer.canvas, "plan", cycle.plan, visualizer.color_scheme.plan)
+            draw_brain_phase(visualizer.canvas, "execute", cycle.execute, visualizer.color_scheme.execute)
+            draw_brain_phase(visualizer.canvas, "remember", cycle.remember, visualizer.color_scheme.remember)
+            draw_brain_phase(visualizer.canvas, "communicate", cycle.communicate, visualizer.color_scheme.communicate)
+            
+            // Add to history
+            visualizer.brain_cycles.push(cycle)
+            if visualizer.brain_cycles.length > 100 {
+              visualizer.brain_cycles.shift() // Keep last 100 cycles
+            }
+          }
+          
+          success = true
+        }
+      }
+    }
+  }
+
+  recipe "update_helper_display" {
+    needs: helpers
+    gives: success
+    
+    brain {
+      plan {
+        plan = { action: "update_display" }
+      }
+      
+      execute {
+        if plan.action == "update_display" {
+          display = memory.ui_components.helper_display
+          
+          // Clear existing cards
+          clear_container(display.container)
+          
+          // Create helper cards
+          for each helper in helpers {
+            card = create_helper_card(helper)
+            display.helper_cards.push(card)
+            add_to_container(display.container, card)
+          }
+          
+          memory.render_stats.active_helpers = helpers.length
+          success = true
+        }
+      }
+    }
+  }
+
+  recipe "update_performance_display" {
+    needs: performance_data
+    gives: success
+    
+    brain {
+      plan {
+        plan = { action: "update_performance" }
+      }
+      
+      execute {
+        if plan.action == "update_performance" {
+          monitor = memory.ui_components.performance_monitor
+          
+          // Update performance metrics
+          if performance_data.cpu_usage {
+            monitor.metrics.cpu_usage.push(performance_data.cpu_usage)
+          }
+          if performance_data.memory_usage {
+            monitor.metrics.memory_usage.push(performance_data.memory_usage)
+          }
+          if performance_data.brain_cycles {
+            monitor.metrics.brain_cycles.push(performance_data.brain_cycles)
+          }
+          if performance_data.message_throughput {
+            monitor.metrics.message_throughput.push(performance_data.message_throughput)
+          }
+          
+          // Update chart
+          update_performance_chart(monitor.chart, monitor.metrics)
+          
+          success = true
+        }
+      }
+    }
+  }
+
+  recipe "update_message_flow" {
+    needs: messages
+    gives: success
+    
+    brain {
+      plan {
+        plan = { action: "update_flow" }
+      }
+      
+      execute {
+        if plan.action == "update_flow" {
+          flow = memory.ui_components.message_flow
+          
+          // Update message flow visualization
+          for each message in messages {
+            // Add message path
+            path = create_message_path(message)
+            flow.message_paths.push(path)
+            
+            // Add nodes if they don't exist
+            if !node_exists(flow.nodes, message.sender) {
+              flow.nodes.push(create_node(message.sender))
+            }
+            if !node_exists(flow.nodes, message.recipient) {
+              flow.nodes.push(create_node(message.recipient))
+            }
+            
+            // Add connection
+            connection = create_connection(message.sender, message.recipient)
+            flow.connections.push(connection)
+          }
+          
+          // Redraw flow
+          redraw_message_flow(flow.canvas, flow.nodes, flow.connections, flow.message_paths)
+          
+          success = true
+        }
+      }
+    }
+  }
+
+  recipe "render_component" {
+    needs: render_task
+    gives: success
+    
+    brain {
+      plan {
+        plan = { action: "render_component" }
+      }
+      
+      execute {
+        if plan.action == "render_component" {
+          start_time = get_timestamp()
+          
+          if render_task.type == "full_update" {
+            // Render all components
+            render_brain_visualizer(memory.ui_components.brain_visualizer)
+            render_helper_display(memory.ui_components.helper_display)
+            render_performance_monitor(memory.ui_components.performance_monitor)
+            render_message_flow(memory.ui_components.message_flow)
+          } else if render_task.type == "brain_update" {
+            render_brain_visualizer(memory.ui_components.brain_visualizer)
+          } else if render_task.type == "helper_update" {
+            render_helper_display(memory.ui_components.helper_display)
+          }
+          
+          render_time = get_timestamp() - start_time
+          memory.render_stats.render_time = render_time
+          
+          success = true
+        }
+      }
+    }
+  }
+
+  recipe "create_helper_card" {
+    needs: helper
+    gives: card
+    
+    brain {
+      plan {
+        plan = { action: "create_card" }
+      }
+      
+      execute {
+        if plan.action == "create_card" {
+          card = {
+            element: create_element("div", "helper-card"),
+            name: helper.name,
+            status: helper.status,
+            capabilities: helper.capabilities,
+            brain_cycles: helper.brain_cycles || 0,
+            last_activity: helper.last_activity || get_timestamp()
+          }
+          
+          // Style the card
+          style_element(card.element, {
+            border: "1px solid #ccc",
+            padding: "10px",
+            margin: "5px",
+            borderRadius: "5px",
+            backgroundColor: get_status_color(helper.status)
+          })
+          
+          // Add content
+          add_content(card.element, "<h3>" + helper.name + "</h3>")
+          add_content(card.element, "<p>Status: " + helper.status + "</p>")
+          add_content(card.element, "<p>Brain Cycles: " + card.brain_cycles + "</p>")
+        }
+      }
+    }
+  }
+
+  objective "maintain_ui_performance" {
+    when memory.render_stats.render_time > 50
+    then {
+      action: "optimize_rendering",
+      reason: "High render time detected"
+    }
+  }
+
+  message "ui_performance_warning" {
+    do {
+      log("⚠️ UI Performance Warning: High frame count")
+      optimize_ui_rendering()
+    }
+  }
+} 

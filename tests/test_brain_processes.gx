@@ -1,0 +1,84 @@
+helper "brain_process_tester" {
+  can_do: ["testing", "brain_validation"]
+  
+  remember {
+    test_results = []
+    brain_cycle_count = 0
+    test_phase = "plan"
+    expected_phases = ["plan", "execute", "remember", "communicate"]
+    current_phase_index = 0
+  }
+
+  brain {
+    plan {
+      if memory.test_phase == "plan" {
+        plan = { action: "test_plan_phase" }
+      } else if memory.test_phase == "execute" {
+        plan = { action: "test_execute_phase" }
+      } else if memory.test_phase == "remember" {
+        plan = { action: "test_remember_phase" }
+      } else if memory.test_phase == "communicate" {
+        plan = { action: "test_communicate_phase" }
+      }
+    }
+    
+    execute {
+      if plan.action == "test_plan_phase" {
+        // Validate plan phase
+        if plan && plan.action {
+          memory.test_results.push("plan_phase_valid")
+        } else {
+          memory.test_results.push("plan_phase_invalid")
+        }
+        memory.test_phase = "execute"
+      } else if plan.action == "test_execute_phase" {
+        // Validate execute phase
+        if plan.action == "test_execute_phase" {
+          memory.test_results.push("execute_phase_valid")
+        } else {
+          memory.test_results.push("execute_phase_invalid")
+        }
+        memory.test_phase = "remember"
+      } else if plan.action == "test_remember_phase" {
+        // Validate remember phase
+        memory.test_results.push("remember_phase_valid")
+        memory.brain_cycle_count += 1
+        memory.test_phase = "communicate"
+      } else if plan.action == "test_communicate_phase" {
+        // Validate communicate phase
+        memory.test_results.push("communicate_phase_valid")
+        memory.test_phase = "plan" // Reset for next cycle
+      }
+    }
+    
+    remember {
+      memory.last_execution_time = get_timestamp()
+      memory.current_phase_index = (memory.current_phase_index + 1) % memory.expected_phases.length
+    }
+    
+    communicate {
+      if memory.brain_cycle_count > 0 {
+        broadcast "brain_cycle_complete" {
+          cycle_count: memory.brain_cycle_count,
+          test_results: memory.test_results
+        }
+      }
+    }
+  }
+
+  objective "validate_brain_cycle" {
+    when memory.brain_cycle_count >= 3
+    then {
+      action: "complete_brain_testing",
+      cycles_completed: memory.brain_cycle_count
+    }
+  }
+
+  message "brain_test_complete" {
+    do {
+      log("Brain process testing completed successfully")
+      log("Cycles completed: " + memory.brain_cycle_count)
+      log("Test results: " + memory.test_results)
+    }
+  }
+} 

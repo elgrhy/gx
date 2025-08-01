@@ -1,0 +1,108 @@
+helper "calculator" {
+  can_do: ["arithmetic", "computation", "math_operations"]
+  
+  remember {
+    operations = {
+      add: function(a, b) { return a + b },
+      subtract: function(a, b) { return a - b },
+      multiply: function(a, b) { return a * b },
+      divide: function(a, b) { return a / b },
+      power: function(a, b) { return a ** b }
+    }
+    results = []
+    last_operation = null
+  }
+
+  receive {
+    from "input" as "calculation_request" {
+      type: "math_operation"
+      bind: memory.request
+      on_receive: brain.calculate
+    }
+  }
+
+  brain {
+    plan {
+      if memory.request {
+        plan = {
+          action: "perform_calculation",
+          operation: memory.request.operation,
+          operands: memory.request.operands
+        }
+      }
+    }
+    
+    execute {
+      if plan.action == "perform_calculation" {
+        operation = plan.operation
+        operands = plan.operands
+        
+        if memory.operations[operation] {
+          result = memory.operations[operation](operands[0], operands[1])
+          memory.results.push({
+            operation: operation,
+            operands: operands,
+            result: result,
+            timestamp: get_timestamp()
+          })
+          memory.last_operation = result
+        } else {
+          memory.last_operation = "Invalid operation: " + operation
+        }
+      }
+    }
+    
+    remember {
+      memory.request = null
+    }
+    
+    communicate {
+      broadcast "calculation_complete" {
+        result: memory.last_operation
+      }
+    }
+  }
+
+  recipe "calculate_sum" {
+    needs: numbers
+    gives: sum
+    
+    brain {
+      plan {
+        plan = { action: "sum_numbers" }
+      }
+      
+      execute {
+        if plan.action == "sum_numbers" {
+          sum = 0
+          for each number in numbers {
+            sum += number
+          }
+        }
+      }
+    }
+  }
+
+  recipe "calculate_average" {
+    needs: numbers
+    gives: average
+    
+    brain {
+      plan {
+        plan = { action: "calculate_mean" }
+      }
+      
+      execute {
+        if plan.action == "calculate_mean" {
+          sum = 0
+          count = 0
+          for each number in numbers {
+            sum += number
+            count += 1
+          }
+          average = sum / count
+        }
+      }
+    }
+  }
+} 

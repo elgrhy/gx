@@ -1,0 +1,215 @@
+helper "data_processor" {
+  can_do: ["data_analysis", "pattern_recognition", "statistics"]
+  
+  remember {
+    data_points = []
+    patterns = []
+    statistics = {
+      mean: 0,
+      median: 0,
+      mode: 0,
+      variance: 0,
+      standard_deviation: 0
+    }
+    analysis_count = 0
+  }
+
+  receive {
+    from "input" as "data_stream" {
+      type: "raw_data"
+      bind: memory.incoming_data
+      on_receive: brain.analyze_data
+    }
+    
+    from "analysis_request" as "analysis_request" {
+      type: "statistical_analysis"
+      bind: memory.analysis_request
+      on_receive: brain.perform_analysis
+    }
+  }
+
+  brain {
+    plan {
+      if memory.incoming_data {
+        plan = {
+          action: "process_incoming_data",
+          data: memory.incoming_data
+        }
+      } else if memory.analysis_request {
+        plan = {
+          action: "perform_statistical_analysis",
+          request: memory.analysis_request
+        }
+      }
+    }
+    
+    execute {
+      if plan.action == "process_incoming_data" {
+        data = plan.data
+        
+        // Add to data points
+        memory.data_points.push(data)
+        
+        // Detect patterns
+        patterns = detect_patterns(data)
+        memory.patterns.push(patterns)
+        
+        // Update statistics
+        memory.statistics = calculate_statistics(memory.data_points)
+        
+        memory.analysis_count += 1
+      } else if plan.action == "perform_statistical_analysis" {
+        request = plan.request
+        
+        if request.type == "summary" {
+          result = generate_summary(memory.data_points, memory.statistics)
+        } else if request.type == "trend_analysis" {
+          result = analyze_trends(memory.data_points)
+        } else if request.type == "pattern_report" {
+          result = generate_pattern_report(memory.patterns)
+        }
+        
+        memory.last_analysis_result = result
+      }
+    }
+    
+    remember {
+      memory.incoming_data = null
+      memory.analysis_request = null
+    }
+    
+    communicate {
+      if memory.analysis_count > 0 {
+        broadcast "data_processed" {
+          points_processed: memory.analysis_count,
+          patterns_found: memory.patterns.length,
+          statistics: memory.statistics
+        }
+      }
+      
+      if memory.last_analysis_result {
+        broadcast "analysis_complete" {
+          result: memory.last_analysis_result
+        }
+      }
+    }
+  }
+
+  recipe "detect_patterns" {
+    needs: data
+    gives: patterns
+    
+    brain {
+      plan {
+        plan = { action: "pattern_detection" }
+      }
+      
+      execute {
+        if plan.action == "pattern_detection" {
+          patterns = []
+          
+          // Detect numerical patterns
+          if is_numeric(data) {
+            if is_increasing(data) {
+              patterns.push("increasing_sequence")
+            } else if is_decreasing(data) {
+              patterns.push("decreasing_sequence")
+            } else if is_cyclic(data) {
+              patterns.push("cyclic_pattern")
+            }
+          }
+          
+          // Detect categorical patterns
+          if is_categorical(data) {
+            if has_repetition(data) {
+              patterns.push("repetitive_pattern")
+            }
+          }
+          
+          // Detect temporal patterns
+          if is_temporal(data) {
+            if has_seasonality(data) {
+              patterns.push("seasonal_pattern")
+            } else if has_trend(data) {
+              patterns.push("trend_pattern")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "calculate_statistics" {
+    needs: data_points
+    gives: statistics
+    
+    brain {
+      plan {
+        plan = { action: "statistical_calculation" }
+      }
+      
+      execute {
+        if plan.action == "statistical_calculation" {
+          // Calculate mean
+          sum = 0
+          count = 0
+          for each point in data_points {
+            if is_numeric(point) {
+              sum += point
+              count += 1
+            }
+          }
+          mean = sum / count
+          
+          // Calculate median
+          sorted_data = sort(data_points)
+          if count % 2 == 0 {
+            median = (sorted_data[count/2 - 1] + sorted_data[count/2]) / 2
+          } else {
+            median = sorted_data[Math.floor(count/2)]
+          }
+          
+          // Calculate variance and standard deviation
+          variance_sum = 0
+          for each point in data_points {
+            if is_numeric(point) {
+              variance_sum += (point - mean) ** 2
+            }
+          }
+          variance = variance_sum / count
+          standard_deviation = sqrt(variance)
+          
+          statistics = {
+            mean: mean,
+            median: median,
+            variance: variance,
+            standard_deviation: standard_deviation,
+            count: count
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_summary" {
+    needs: data_points, statistics
+    gives: summary
+    
+    brain {
+      plan {
+        plan = { action: "summary_generation" }
+      }
+      
+      execute {
+        if plan.action == "summary_generation" {
+          summary = {
+            total_points: data_points.length,
+            statistics: statistics,
+            patterns_found: memory.patterns.length,
+            analysis_timestamp: get_timestamp()
+          }
+        }
+      }
+    }
+  }
+} 

@@ -1,0 +1,646 @@
+helper "data_binding_system" {
+  can_do: ["reactive_binding", "two_way_binding", "computed_properties", "binding_validation"]
+  
+  remember {
+    // Active bindings
+    active_bindings = {}
+    binding_counter = 0
+    
+    // Computed properties
+    computed_properties = {}
+    computed_dependencies = {}
+    
+    // Binding watchers
+    binding_watchers = {}
+    watcher_callbacks = {}
+    
+    // Validation rules
+    binding_validation_rules = {}
+    
+    // Performance tracking
+    binding_stats = {
+      total_bindings: 0,
+      active_bindings: 0,
+      computed_properties: 0,
+      binding_updates: 0
+    }
+  }
+
+  receive {
+    from "binding_request" as "binding_req" {
+      type: "create_binding"
+      bind: memory.binding_request
+      on_receive: brain.create_binding
+    }
+    
+    from "computed_property_request" as "computed_req" {
+      type: "create_computed"
+      bind: memory.computed_request
+      on_receive: brain.create_computed_property
+    }
+    
+    from "binding_update" as "binding_update" {
+      type: "update_binding"
+      bind: memory.binding_update
+      on_receive: brain.update_binding
+    }
+    
+    from "watcher_request" as "watcher_req" {
+      type: "add_watcher"
+      bind: memory.watcher_request
+      on_receive: brain.add_watcher
+    }
+  }
+
+  brain {
+    plan {
+      if memory.binding_request {
+        plan = { action: "create_binding" }
+      } else if memory.computed_request {
+        plan = { action: "create_computed_property" }
+      } else if memory.binding_update {
+        plan = { action: "update_binding" }
+      } else if memory.watcher_request {
+        plan = { action: "add_watcher" }
+      } else {
+        plan = { action: "maintain_binding_system" }
+      }
+    }
+
+    execute {
+      if plan.action == "create_binding" {
+        request = memory.binding_request
+        source_path = request.source_path
+        target_path = request.target_path
+        binding_type = request.type || "one_way"
+        validation_rules = request.validation || {}
+        
+        // Create binding
+        binding_id = create_binding(source_path, target_path, binding_type, validation_rules)
+        
+        // Emit binding created
+        emit "binding_created" { 
+          binding_id: binding_id,
+          source_path: source_path,
+          target_path: target_path,
+          type: binding_type,
+          timestamp: get_timestamp()
+        }
+        
+        memory.binding_stats.total_bindings += 1
+        memory.binding_stats.active_bindings += 1
+        memory.binding_request = null
+        
+      } else if plan.action == "create_computed_property" {
+        request = memory.computed_request
+        property_name = request.property_name
+        dependencies = request.dependencies || []
+        computation_function = request.computation_function
+        
+        // Create computed property
+        computed_id = create_computed_property(property_name, dependencies, computation_function)
+        
+        // Emit computed property created
+        emit "computed_property_created" { 
+          computed_id: computed_id,
+          property_name: property_name,
+          dependencies: dependencies,
+          timestamp: get_timestamp()
+        }
+        
+        memory.binding_stats.computed_properties += 1
+        memory.computed_request = null
+        
+      } else if plan.action == "update_binding" {
+        update = memory.binding_update
+        binding_id = update.binding_id
+        new_value = update.value
+        
+        // Update binding value
+        if update_binding_value(binding_id, new_value) {
+          // Trigger watchers
+          trigger_binding_watchers(binding_id, new_value)
+          
+          // Emit binding updated
+          emit "binding_updated" { 
+            binding_id: binding_id,
+            value: new_value,
+            timestamp: get_timestamp()
+          }
+          
+          memory.binding_stats.binding_updates += 1
+        }
+        
+        memory.binding_update = null
+        
+      } else if plan.action == "add_watcher" {
+        request = memory.watcher_request
+        binding_id = request.binding_id
+        callback_function = request.callback
+        watcher_options = request.options || {}
+        
+        // Add watcher to binding
+        watcher_id = add_binding_watcher(binding_id, callback_function, watcher_options)
+        
+        // Emit watcher added
+        emit "watcher_added" { 
+          watcher_id: watcher_id,
+          binding_id: binding_id,
+          timestamp: get_timestamp()
+        }
+        
+        memory.watcher_request = null
+        
+      } else if plan.action == "maintain_binding_system" {
+        // Clean up inactive bindings
+        cleanup_inactive_bindings()
+        
+        // Update computed properties
+        update_computed_properties()
+        
+        // Validate bindings
+        validate_active_bindings()
+        
+        // Update statistics
+        update_binding_statistics()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      // Emit binding system statistics
+      emit "binding_stats_update" {
+        total_bindings: memory.binding_stats.total_bindings,
+        active_bindings: memory.binding_stats.active_bindings,
+        computed_properties: memory.binding_stats.computed_properties,
+        binding_updates: memory.binding_stats.binding_updates
+      }
+    }
+  }
+
+  // Binding management
+  recipe "create_binding" {
+    needs: source_path, target_path, binding_type, validation_rules
+    gives: binding_id
+    
+    brain {
+      plan { action: "create_binding" }
+      execute {
+        binding_id = generate_binding_id()
+        
+        // Create binding object
+        binding = {
+          id: binding_id,
+          source_path: source_path,
+          target_path: target_path,
+          type: binding_type,
+          validation_rules: validation_rules,
+          current_value: null,
+          last_update: null,
+          is_active: true,
+          watchers: []
+        }
+        
+        memory.active_bindings[binding_id] = binding
+        
+        // Set up validation rules
+        if validation_rules {
+          memory.binding_validation_rules[binding_id] = validation_rules
+        }
+        
+        binding_id = binding_id
+      }
+    }
+  }
+
+  recipe "create_computed_property" {
+    needs: property_name, dependencies, computation_function
+    gives: computed_id
+    
+    brain {
+      plan { action: "create_computed" }
+      execute {
+        computed_id = generate_computed_id()
+        
+        // Create computed property object
+        computed_property = {
+          id: computed_id,
+          name: property_name,
+          dependencies: dependencies,
+          computation_function: computation_function,
+          current_value: null,
+          last_computed: null,
+          is_dirty: true
+        }
+        
+        memory.computed_properties[computed_id] = computed_property
+        
+        // Set up dependency tracking
+        memory.computed_dependencies[computed_id] = dependencies
+        
+        computed_id = computed_id
+      }
+    }
+  }
+
+  recipe "update_binding_value" {
+    needs: binding_id, new_value
+    gives: update_successful
+    
+    brain {
+      plan { action: "update_value" }
+      execute {
+        binding = memory.active_bindings[binding_id]
+        
+        if binding {
+          // Validate value if validation rules exist
+          if memory.binding_validation_rules[binding_id] {
+            if !validate_binding_value(binding_id, new_value) {
+              update_successful = false
+              return
+            }
+          }
+          
+          // Update binding value
+          old_value = binding.current_value
+          binding.current_value = new_value
+          binding.last_update = get_timestamp()
+          
+          // Handle two-way binding
+          if binding.type == "two_way" {
+            update_source_value(binding.source_path, new_value)
+          }
+          
+          update_successful = true
+        } else {
+          update_successful = false
+        }
+      }
+    }
+  }
+
+  recipe "add_binding_watcher" {
+    needs: binding_id, callback_function, watcher_options
+    gives: watcher_id
+    
+    brain {
+      plan { action: "add_watcher" }
+      execute {
+        binding = memory.active_bindings[binding_id]
+        
+        if binding {
+          watcher_id = generate_watcher_id()
+          
+          // Create watcher object
+          watcher = {
+            id: watcher_id,
+            binding_id: binding_id,
+            callback: callback_function,
+            options: watcher_options,
+            is_active: true,
+            last_triggered: null
+          }
+          
+          // Add watcher to binding
+          binding.watchers.push(watcher_id)
+          memory.binding_watchers[watcher_id] = watcher
+          memory.watcher_callbacks[watcher_id] = callback_function
+          
+          watcher_id = watcher_id
+        } else {
+          watcher_id = null
+        }
+      }
+    }
+  }
+
+  // Validation methods
+  recipe "validate_binding_value" {
+    needs: binding_id, value
+    gives: is_valid
+    
+    brain {
+      plan { action: "validate_value" }
+      execute {
+        validation_rules = memory.binding_validation_rules[binding_id]
+        
+        if !validation_rules {
+          is_valid = true
+          return
+        }
+        
+        is_valid = true
+        
+        // Check required field
+        if validation_rules.required && (value == null || value == "") {
+          is_valid = false
+        }
+        
+        // Check type validation
+        if validation_rules.type && typeof value != validation_rules.type {
+          is_valid = false
+        }
+        
+        // Check min/max values
+        if validation_rules.min !== undefined && value < validation_rules.min {
+          is_valid = false
+        }
+        
+        if validation_rules.max !== undefined && value > validation_rules.max {
+          is_valid = false
+        }
+        
+        // Check pattern validation
+        if validation_rules.pattern && !value.match(validation_rules.pattern) {
+          is_valid = false
+        }
+        
+        // Check custom validation function
+        if validation_rules.custom_validator {
+          is_valid = validation_rules.custom_validator(value)
+        }
+      }
+    }
+  }
+
+  // Watcher management
+  recipe "trigger_binding_watchers" {
+    needs: binding_id, new_value
+    gives: watchers_triggered
+    
+    brain {
+      plan { action: "trigger_watchers" }
+      execute {
+        binding = memory.active_bindings[binding_id]
+        
+        if binding && binding.watchers.length > 0 {
+          for each watcher_id in binding.watchers {
+            watcher = memory.binding_watchers[watcher_id]
+            
+            if watcher && watcher.is_active {
+              // Call watcher callback
+              try {
+                watcher.callback(new_value, binding.current_value)
+                watcher.last_triggered = get_timestamp()
+              } catch error {
+                emit "watcher_error" { 
+                  watcher_id: watcher_id,
+                  binding_id: binding_id,
+                  error: error.message
+                }
+              }
+            }
+          }
+        }
+        
+        watchers_triggered = true
+      }
+    }
+  }
+
+  // Computed property management
+  recipe "update_computed_properties" {
+    needs: none
+    gives: computed_updated
+    
+    brain {
+      plan { action: "update_computed" }
+      execute {
+        for each computed_id in Object.keys(memory.computed_properties) {
+          computed_property = memory.computed_properties[computed_id]
+          
+          // Check if dependencies have changed
+          if has_dependencies_changed(computed_id) {
+            // Recompute property
+            new_value = compute_property_value(computed_id)
+            computed_property.current_value = new_value
+            computed_property.last_computed = get_timestamp()
+            computed_property.is_dirty = false
+            
+            // Emit computed property updated
+            emit "computed_property_updated" { 
+              computed_id: computed_id,
+              property_name: computed_property.name,
+              value: new_value,
+              timestamp: get_timestamp()
+            }
+          }
+        }
+        
+        computed_updated = true
+      }
+    }
+  }
+
+  recipe "has_dependencies_changed" {
+    needs: computed_id
+    gives: dependencies_changed
+    
+    brain {
+      plan { action: "check_dependencies" }
+      execute {
+        computed_property = memory.computed_properties[computed_id]
+        dependencies = memory.computed_dependencies[computed_id]
+        
+        dependencies_changed = false
+        
+        for each dependency in dependencies {
+          // Check if dependency binding has been updated
+          dependency_binding = find_binding_by_path(dependency)
+          if dependency_binding && dependency_binding.last_update > computed_property.last_computed {
+            dependencies_changed = true
+            break
+          }
+        }
+      }
+    }
+  }
+
+  recipe "compute_property_value" {
+    needs: computed_id
+    gives: computed_value
+    
+    brain {
+      plan { action: "compute_value" }
+      execute {
+        computed_property = memory.computed_properties[computed_id]
+        computation_function = computed_property.computation_function
+        
+        // Get dependency values
+        dependency_values = get_dependency_values(computed_id)
+        
+        // Execute computation function
+        computed_value = computation_function(dependency_values)
+      }
+    }
+  }
+
+  // Utility methods
+  recipe "generate_binding_id" {
+    needs: none
+    gives: binding_id
+    
+    brain {
+      plan { action: "generate_binding_id" }
+      execute {
+        memory.binding_counter += 1
+        binding_id = "binding_" + get_timestamp() + "_" + memory.binding_counter
+      }
+    }
+  }
+
+  recipe "generate_computed_id" {
+    needs: none
+    gives: computed_id
+    
+    brain {
+      plan { action: "generate_computed_id" }
+      execute {
+        computed_id = "computed_" + get_timestamp() + "_" + Math.random().toString(36).substring(2, 8)
+      }
+    }
+  }
+
+  recipe "generate_watcher_id" {
+    needs: none
+    gives: watcher_id
+    
+    brain {
+      plan { action: "generate_watcher_id" }
+      execute {
+        watcher_id = "watcher_" + get_timestamp() + "_" + Math.random().toString(36).substring(2, 8)
+      }
+    }
+  }
+
+  recipe "cleanup_inactive_bindings" {
+    needs: none
+    gives: cleanup_complete
+    
+    brain {
+      plan { action: "cleanup_bindings" }
+      execute {
+        // Remove inactive bindings
+        for each binding_id in Object.keys(memory.active_bindings) {
+          binding = memory.active_bindings[binding_id]
+          if !binding.is_active {
+            delete memory.active_bindings[binding_id]
+            memory.binding_stats.active_bindings -= 1
+          }
+        }
+        
+        cleanup_complete = true
+      }
+    }
+  }
+
+  recipe "validate_active_bindings" {
+    needs: none
+    gives: validation_complete
+    
+    brain {
+      plan { action: "validate_bindings" }
+      execute {
+        // Validate all active bindings
+        for each binding_id in Object.keys(memory.active_bindings) {
+          binding = memory.active_bindings[binding_id]
+          
+          if binding.current_value != null {
+            if !validate_binding_value(binding_id, binding.current_value) {
+              // Mark binding as invalid
+              binding.is_valid = false
+              emit "binding_validation_failed" { 
+                binding_id: binding_id,
+                value: binding.current_value
+              }
+            } else {
+              binding.is_valid = true
+            }
+          }
+        }
+        
+        validation_complete = true
+      }
+    }
+  }
+
+  recipe "update_binding_statistics" {
+    needs: none
+    gives: stats_updated
+    
+    brain {
+      plan { action: "update_stats" }
+      execute {
+        // Update binding statistics
+        memory.binding_stats.active_bindings = Object.keys(memory.active_bindings).length
+        memory.binding_stats.computed_properties = Object.keys(memory.computed_properties).length
+        
+        stats_updated = true
+      }
+    }
+  }
+
+  recipe "find_binding_by_path" {
+    needs: path
+    gives: binding
+    
+    brain {
+      plan { action: "find_binding" }
+      execute {
+        binding = null
+        
+        for each binding_id in Object.keys(memory.active_bindings) {
+          active_binding = memory.active_bindings[binding_id]
+          if active_binding.source_path == path || active_binding.target_path == path {
+            binding = active_binding
+            break
+          }
+        }
+      }
+    }
+  }
+
+  recipe "get_dependency_values" {
+    needs: computed_id
+    gives: dependency_values
+    
+    brain {
+      plan { action: "get_dependencies" }
+      execute {
+        dependencies = memory.computed_dependencies[computed_id]
+        dependency_values = {}
+        
+        for each dependency in dependencies {
+          binding = find_binding_by_path(dependency)
+          if binding {
+            dependency_values[dependency] = binding.current_value
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_source_value" {
+    needs: source_path, new_value
+    gives: source_updated
+    
+    brain {
+      plan { action: "update_source" }
+      execute {
+        // Update the source value (this would typically update the model)
+        // In a real implementation, this would trigger model updates
+        emit "source_value_update" { 
+          path: source_path,
+          value: new_value,
+          timestamp: get_timestamp()
+        }
+        
+        source_updated = true
+      }
+    }
+  }
+} 

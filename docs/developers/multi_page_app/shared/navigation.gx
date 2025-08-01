@@ -1,0 +1,463 @@
+helper "navigation_controller" {
+  can_do: ["page_navigation", "deep_linking", "state_management", "history_tracking"]
+  
+  remember {
+    status = "initializing"
+    current_page = "home"
+    page_stack = []
+    navigation_history = []
+    deep_link_queue = []
+    
+    // Page Registry
+    registered_pages = {
+      home: {
+        path: "/",
+        viewmodel: "home_viewmodel",
+        requires_auth: false,
+        cache_enabled: true
+      },
+      user_profile: {
+        path: "/profile",
+        viewmodel: "profile_viewmodel",
+        requires_auth: true,
+        cache_enabled: true
+      },
+      data_analytics: {
+        path: "/analytics",
+        viewmodel: "analytics_viewmodel",
+        requires_auth: true,
+        cache_enabled: false
+      },
+      settings: {
+        path: "/settings",
+        viewmodel: "settings_viewmodel",
+        requires_auth: true,
+        cache_enabled: true
+      }
+    }
+    
+    // Navigation State
+    navigation_state = {
+      is_transitioning: false,
+      transition_animation: "slide",
+      transition_duration: 300,
+      preserve_scroll_position: true
+    }
+    
+    // Performance Tracking
+    navigation_metrics = {
+      total_navigations: 0,
+      average_load_time: 0,
+      cache_hits: 0,
+      deep_link_resolves: 0
+    }
+  }
+
+  receive {
+    from "navigation_request" as "nav_request" {
+      type: "page_navigation"
+      bind: memory.navigation_request
+      on_receive: brain.handle_navigation_request
+    }
+    
+    from "deep_link" as "deep_link_request" {
+      type: "url_navigation"
+      bind: memory.deep_link_request
+      on_receive: brain.handle_deep_link
+    }
+    
+    from "back_navigation" as "back_request" {
+      type: "go_back"
+      bind: memory.back_request
+      on_receive: brain.handle_back_navigation
+    }
+    
+    from "page_ready" as "page_status" {
+      type: "page_loaded"
+      bind: memory.page_status
+      on_receive: brain.handle_page_ready
+    }
+  }
+
+  brain {
+    plan {
+      if memory.status == "initializing" {
+        plan = { action: "initialize_navigation" }
+      } else if memory.navigation_request {
+        plan = { action: "process_navigation_request" }
+      } else if memory.deep_link_request {
+        plan = { action: "process_deep_link" }
+      } else if memory.back_request {
+        plan = { action: "process_back_navigation" }
+      } else if memory.page_status {
+        plan = { action: "handle_page_ready" }
+      } else {
+        plan = { action: "monitor_navigation" }
+      }
+    }
+
+    execute {
+      if plan.action == "initialize_navigation" {
+        // Initialize navigation system
+        setup_navigation_routes()
+        initialize_deep_linking()
+        setup_history_tracking()
+        
+        memory.status = "ready"
+        memory.current_page = "home"
+        
+        log("🧭 Navigation Controller initialized")
+      } else if plan.action == "process_navigation_request" {
+        request = memory.navigation_request
+        target_page = request.page
+        navigation_data = request.data || {}
+        
+        // Validate navigation request
+        if validate_navigation_request(target_page, navigation_data) {
+          // Preserve current page state
+          preserve_current_page_state()
+          
+          // Perform navigation
+          perform_page_navigation(target_page, navigation_data)
+          
+          // Update navigation history
+          update_navigation_history(target_page, navigation_data)
+          
+          memory.navigation_metrics.total_navigations += 1
+        } else {
+          log("❌ Invalid navigation request: " + target_page)
+        }
+        
+        memory.navigation_request = null
+        
+      } else if plan.action == "process_deep_link" {
+        deep_link = memory.deep_link_request
+        
+        // Parse deep link URL
+        parsed_url = parse_deep_link_url(deep_link.url)
+        
+        if parsed_url.is_valid {
+          // Resolve page from URL
+          target_page = resolve_page_from_url(parsed_url.path)
+          
+          if target_page {
+            // Extract navigation data from URL parameters
+            navigation_data = extract_navigation_data_from_url(parsed_url.params)
+            
+            // Perform navigation
+            perform_page_navigation(target_page, navigation_data)
+            
+            memory.navigation_metrics.deep_link_resolves += 1
+          }
+        }
+        
+        memory.deep_link_request = null
+        
+      } else if plan.action == "process_back_navigation" {
+        // Handle back navigation
+        if memory.page_stack.length > 0 {
+          previous_page = memory.page_stack.pop()
+          
+          // Restore previous page state
+          restore_page_state(previous_page)
+          
+          // Navigate back
+          perform_page_navigation(previous_page.page, previous_page.state)
+        }
+        
+        memory.back_request = null
+        
+      } else if plan.action == "handle_page_ready" {
+        status = memory.page_status
+        
+        // Update navigation state
+        memory.navigation_state.is_transitioning = false
+        
+        // Update performance metrics
+        update_navigation_performance(status.load_time)
+        
+        // Emit page ready event
+        emit_page_ready_event(status.page, status.load_time)
+        
+        memory.page_status = null
+        
+      } else if plan.action == "monitor_navigation" {
+        // Monitor navigation performance
+        monitor_navigation_performance()
+        
+        // Check for pending deep links
+        process_pending_deep_links()
+        
+        // Clean up old navigation history
+        cleanup_old_navigation_history()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      // Emit navigation events
+      emit "navigation_state_update" {
+        current_page: memory.current_page,
+        is_transitioning: memory.navigation_state.is_transitioning,
+        metrics: memory.navigation_metrics
+      }
+      
+      // Emit performance updates
+      if memory.navigation_metrics.total_navigations > 0 {
+        emit "navigation_performance_update" {
+          total_navigations: memory.navigation_metrics.total_navigations,
+          average_load_time: memory.navigation_metrics.average_load_time,
+          cache_hits: memory.navigation_metrics.cache_hits
+        }
+      }
+    }
+  }
+
+  // Navigation Methods
+  recipe "perform_page_navigation" {
+    needs: target_page, navigation_data
+    gives: navigation_complete
+    
+    brain {
+      plan { action: "navigate_to_page" }
+      execute {
+        // Set transition state
+        memory.navigation_state.is_transitioning = true
+        
+        // Validate page exists
+        if !memory.registered_pages[target_page] {
+          throw "Page not registered: " + target_page
+        }
+        
+        // Check authentication requirements
+        page_config = memory.registered_pages[target_page]
+        if page_config.requires_auth && !is_user_authenticated() {
+          // Redirect to login
+          redirect_to_login_page()
+          return
+        }
+        
+        // Check if page is cached
+        if page_config.cache_enabled && is_page_cached(target_page) {
+          // Load from cache
+          load_page_from_cache(target_page)
+          memory.navigation_metrics.cache_hits += 1
+        } else {
+          // Load page normally
+          load_page_from_source(target_page)
+        }
+        
+        // Update current page
+        memory.current_page = target_page
+        
+        // Initialize page with data
+        initialize_page_with_data(target_page, navigation_data)
+        
+        navigation_complete = true
+      }
+    }
+  }
+
+  recipe "preserve_current_page_state" {
+    needs: none
+    gives: state_preserved
+    
+    brain {
+      plan { action: "save_page_state" }
+      execute {
+        if memory.current_page {
+          current_page = memory.current_page
+          
+          // Get current page state
+          page_state = get_current_page_state()
+          
+          // Store in navigation stack
+          memory.page_stack.push({
+            page: current_page,
+            state: page_state,
+            timestamp: get_timestamp()
+          })
+        }
+        
+        state_preserved = true
+      }
+    }
+  }
+
+  recipe "restore_page_state" {
+    needs: page_info
+    gives: state_restored
+    
+    brain {
+      plan { action: "restore_state" }
+      execute {
+        // Restore page state
+        if page_info.state {
+          restore_page_state_from_data(page_info.page, page_info.state)
+        }
+        
+        state_restored = true
+      }
+    }
+  }
+
+  // Deep Linking
+  recipe "parse_deep_link_url" {
+    needs: url
+    gives: parsed_url
+    
+    brain {
+      plan { action: "parse_url" }
+      execute {
+        // Parse URL components
+        url_parts = url.split("?")
+        path = url_parts[0]
+        params_string = url_parts[1] || ""
+        
+        // Parse query parameters
+        params = {}
+        if params_string {
+          param_pairs = params_string.split("&")
+          for each pair in param_pairs {
+            key_value = pair.split("=")
+            if key_value.length == 2 {
+              params[key_value[0]] = decodeURIComponent(key_value[1])
+            }
+          }
+        }
+        
+        parsed_url = {
+          path: path,
+          params: params,
+          is_valid: path.length > 0
+        }
+      }
+    }
+  }
+
+  recipe "resolve_page_from_url" {
+    needs: url_path
+    gives: target_page
+    
+    brain {
+      plan { action: "resolve_page" }
+      execute {
+        // Map URL paths to page names
+        path_to_page = {
+          "/": "home",
+          "/profile": "user_profile",
+          "/analytics": "data_analytics",
+          "/settings": "settings"
+        }
+        
+        target_page = path_to_page[url_path] || null
+      }
+    }
+  }
+
+  // Performance Monitoring
+  recipe "update_navigation_performance" {
+    needs: load_time
+    gives: performance_updated
+    
+    brain {
+      plan { action: "update_performance" }
+      execute {
+        // Update average load time
+        current_average = memory.navigation_metrics.average_load_time
+        total_navigations = memory.navigation_metrics.total_navigations
+        
+        new_average = (current_average * (total_navigations - 1) + load_time) / total_navigations
+        memory.navigation_metrics.average_load_time = new_average
+        
+        performance_updated = true
+      }
+    }
+  }
+
+  recipe "monitor_navigation_performance" {
+    needs: none
+    gives: monitoring_complete
+    
+    brain {
+      plan { action: "monitor_performance" }
+      execute {
+        // Check for performance issues
+        if memory.navigation_metrics.average_load_time > 2000 {
+          log("⚠️ Navigation performance warning: Average load time is " + memory.navigation_metrics.average_load_time + "ms")
+        }
+        
+        // Check cache efficiency
+        cache_efficiency = memory.navigation_metrics.cache_hits / memory.navigation_metrics.total_navigations
+        if cache_efficiency < 0.3 {
+          log("⚠️ Low cache efficiency: " + (cache_efficiency * 100) + "%")
+        }
+        
+        monitoring_complete = true
+      }
+    }
+  }
+
+  // Utility Methods
+  recipe "validate_navigation_request" {
+    needs: target_page, navigation_data
+    gives: is_valid
+    
+    brain {
+      plan { action: "validate_request" }
+      execute {
+        // Check if page is registered
+        if !memory.registered_pages[target_page] {
+          is_valid = false
+          return
+        }
+        
+        // Check authentication requirements
+        page_config = memory.registered_pages[target_page]
+        if page_config.requires_auth && !is_user_authenticated() {
+          is_valid = false
+          return
+        }
+        
+        // Validate navigation data
+        if navigation_data && !validate_navigation_data(navigation_data) {
+          is_valid = false
+          return
+        }
+        
+        is_valid = true
+      }
+    }
+  }
+
+  recipe "is_user_authenticated" {
+    needs: none
+    gives: authenticated
+    
+    brain {
+      plan { action: "check_auth" }
+      execute {
+        // Check user authentication status
+        // This would integrate with the authentication system
+        authenticated = check_authentication_status()
+      }
+    }
+  }
+
+  recipe "is_page_cached" {
+    needs: page_name
+    gives: cached
+    
+    brain {
+      plan { action: "check_cache" }
+      execute {
+        // Check if page is available in cache
+        cached = check_page_cache(page_name)
+      }
+    }
+  }
+} 

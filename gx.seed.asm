@@ -2,6 +2,7 @@
 ; Universal Assembly seed for GX kernel loading
 ; Supports x86, ARM64, and RISC-V architectures
 
+; Architecture detection and conditional compilation
 %ifdef X86_64
     [bits 64]
     section .text

@@ -1,0 +1,13 @@
+🧠 GX Language Runtime v0.1.0 (Self-Hosting)
+=============================================
+
+  📝 Loading GX file: examples/calculator.gx
+  📊 File size: 2293 bytes
+
+  🚀 Executing GX Runtime: examples/calculator.gx
+  🧠 Initializing cognitive runtime...
+  📊 Found 1 helpers with 3 brain processes
+  🧠 Brain cycle: Plan → Execute → Remember → Communicate
+  ✅ GX Runtime execution completed successfully!
+
+🎉 GX Runtime completed successfully!

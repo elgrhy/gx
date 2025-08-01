@@ -1,457 +1,426 @@
 helper "gx_runtime" {
-  capabilities: ["mental_execution", "agent_orchestration", "memory_management", "signal_dispatch"]
+  can_do: ["gx_execution", "helper_management", "brain_cycle_execution", "memory_management", "message_routing"]
   
-  memory {
-    running_agents = {}
-    agent_memory = {}
-    signal_queue = []
+  remember {
+    status = "initializing"
+    loaded_helpers = {}
+    active_helpers = []
+    memory_pool = {}
+    message_queue = []
     execution_cycle = 0
-    runtime_status = "initializing"
+    performance_metrics = {
+      helpers_executed: 0,
+      brain_cycles: 0,
+      messages_processed: 0,
+      memory_allocated: 0
+    }
   }
 
   receive {
-    channel "ast_load" {
-      source: "gx_parser"
-      type: "ast_data"
-      bind: memory.ast_nodes
-      on_receive: brain.load_agents_from_ast
+    from "file_system" as "gx_source" {
+      type: "gx_file"
+      bind: memory.source_file
+      on_receive: brain.load_and_execute
     }
     
-    channel "agent_signal" {
-      source: "agent_mesh"
+    from "helper_mesh" as "helper_message" {
       type: "message"
-      bind: memory.incoming_signals
-      on_receive: brain.process_signal
+      bind: memory.incoming_message
+      on_receive: brain.route_message
     }
     
-    channel "memory_update" {
-      source: "any_agent"
-      type: "memory_change"
-      bind: memory.memory_updates
-      on_receive: brain.sync_memory
+    from "memory_manager" as "memory_request" {
+      type: "allocation_request"
+      bind: memory.memory_request
+      on_receive: brain.allocate_memory
     }
   }
 
   brain {
     plan {
-      if memory.runtime_status == "initializing" {
-        plan = {
-          action: "initialize_runtime",
-          priority: "critical"
-        }
-      } else if memory.ast_nodes {
-        plan = {
-          action: "load_and_start_agents",
-          priority: "high"
-        }
-      } else if memory.signal_queue.length > 0 {
-        plan = {
-          action: "process_signals",
-          priority: "normal"
-        }
+      if memory.status == "initializing" {
+        plan = { action: "bootstrap_runtime" }
+      } else if memory.source_file {
+        plan = { action: "load_and_execute_file" }
+      } else if memory.message_queue.length > 0 {
+        plan = { action: "process_messages" }
+      } else if memory.active_helpers.length > 0 {
+        plan = { action: "execute_brain_cycles" }
       } else {
-        plan = {
-          action: "execute_mental_cycles",
-          priority: "normal"
-        }
+        plan = { action: "idle_monitoring" }
       }
     }
 
     execute {
-      if plan.action == "initialize_runtime" {
-        memory.runtime_status = "ready"
-        log("GX Runtime initialized")
-      } else if plan.action == "load_and_start_agents" {
-        load_agents_from_ast(memory.ast_nodes)
-        start_all_agents()
-      } else if plan.action == "process_signals" {
-        process_signal_queue()
-      } else if plan.action == "execute_mental_cycles" {
-        execute_mental_cycle_for_all_agents()
+      if plan.action == "bootstrap_runtime" {
+        memory.status = "ready"
+        memory.execution_cycle = 0
+        
+        // Initialize core subsystems
+        initialize_memory_manager()
+        initialize_message_router()
+        initialize_helper_manager()
+        
+        log("🧠 GX Runtime initialized successfully")
+      } else if plan.action == "load_and_execute_file" {
+        try {
+          // Parse GX file
+          parsed_helpers = parse_gx_file(memory.source_file)
+          
+          // Load helpers into runtime
+          for each helper in parsed_helpers {
+            memory.loaded_helpers[helper.name] = helper
+            memory.active_helpers.push(helper.name)
+          }
+          
+          // Execute initial brain cycles
+          execute_initial_brain_cycles(parsed_helpers)
+          
+          memory.performance_metrics.helpers_executed += parsed_helpers.length
+          
+        } catch error {
+          log("❌ Error loading GX file: " + error)
+        }
+      } else if plan.action == "process_messages" {
+        // Process queued messages
+        for each message in memory.message_queue {
+          route_message_to_helper(message)
+          memory.performance_metrics.messages_processed += 1
+        }
+        
+        memory.message_queue = []
+      } else if plan.action == "execute_brain_cycles" {
+        // Execute brain cycles for all active helpers
+        for each helper_name in memory.active_helpers {
+          helper = memory.loaded_helpers[helper_name]
+          if helper && helper.brain {
+            execute_brain_cycle(helper)
+            memory.performance_metrics.brain_cycles += 1
+          }
+        }
+        
+        memory.execution_cycle += 1
+      } else if plan.action == "idle_monitoring" {
+        // Monitor system health
+        monitor_system_health()
       }
     }
 
     remember {
-      memory.last_execution_cycle = memory.execution_cycle
-      memory.execution_cycle += 1
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
     }
 
     communicate {
-      if memory.running_agents.length > 0 {
-        log("Runtime executing " + count(memory.running_agents) + " agents")
-      }
-      if memory.signal_queue.length > 0 {
-        log("Signal queue has " + count(memory.signal_queue) + " pending signals")
+      if memory.status == "ready" {
+        emit "runtime_ready"
+      } else if memory.performance_metrics.brain_cycles > 1000 {
+        emit "performance_warning"
       }
     }
   }
 
-  objective "maintain_agent_health" {
-    when any helper in memory.running_agents has status == "failed"
+  recipe "parse_gx_file" {
+    needs: file_path
+    gives: parsed_helpers
+    
+    brain {
+      plan {
+        plan = { action: "parse_gx_source" }
+      }
+      
+      execute {
+        if plan.action == "parse_gx_source" {
+          // Read file content
+          file_content = read_file(file_path)
+          
+          // Parse helpers from content
+          parsed_helpers = []
+          
+          // Split by helper blocks
+          helper_blocks = split_by_helper_blocks(file_content)
+          
+          for each block in helper_blocks {
+            helper = parse_helper_block(block)
+            if helper {
+              parsed_helpers.push(helper)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "parse_helper_block" {
+    needs: block_content
+    gives: helper
+    
+    brain {
+      plan {
+        plan = { action: "extract_helper_info" }
+      }
+      
+      execute {
+        if plan.action == "extract_helper_info" {
+          helper = {
+            name: extract_helper_name(block_content),
+            capabilities: extract_capabilities(block_content),
+            brain: extract_brain_section(block_content),
+            memory: extract_memory_section(block_content),
+            receive: extract_receive_section(block_content)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "execute_brain_cycle" {
+    needs: helper
+    gives: result
+    
+    brain {
+      plan {
+        plan = { action: "execute_plan_execute_remember_communicate" }
+      }
+      
+      execute {
+        if plan.action == "execute_plan_execute_remember_communicate" {
+          // Execute brain cycle: Plan → Execute → Remember → Communicate
+          
+          // 1. Plan phase
+          plan_result = execute_plan_phase(helper)
+          
+          // 2. Execute phase
+          execute_result = execute_execute_phase(helper, plan_result)
+          
+          // 3. Remember phase
+          remember_result = execute_remember_phase(helper, execute_result)
+          
+          // 4. Communicate phase
+          communicate_result = execute_communicate_phase(helper, remember_result)
+          
+          result = {
+            plan: plan_result,
+            execute: execute_result,
+            remember: remember_result,
+            communicate: communicate_result
+          }
+        }
+      }
+    }
+  }
+
+  recipe "execute_plan_phase" {
+    needs: helper
+    gives: plan_result
+    
+    brain {
+      plan {
+        plan = { action: "evaluate_plan_logic" }
+      }
+      
+      execute {
+        if plan.action == "evaluate_plan_logic" {
+          if helper.brain && helper.brain.plan {
+            // Execute plan logic
+            plan_logic = helper.brain.plan
+            plan_result = evaluate_plan_conditions(plan_logic, helper.memory)
+          } else {
+            plan_result = { action: "default_action" }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "execute_execute_phase" {
+    needs: helper, plan_result
+    gives: execute_result
+    
+    brain {
+      plan {
+        plan = { action: "execute_actions" }
+      }
+      
+      execute {
+        if plan.action == "execute_actions" {
+          if helper.brain && helper.brain.execute {
+            execute_logic = helper.brain.execute
+            
+            // Execute the planned actions
+            execute_result = execute_actions(execute_logic, plan_result, helper.memory)
+          } else {
+            execute_result = { status: "no_execute_logic" }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "execute_remember_phase" {
+    needs: helper, execute_result
+    gives: remember_result
+    
+    brain {
+      plan {
+        plan = { action: "update_memory" }
+      }
+      
+      execute {
+        if plan.action == "update_memory" {
+          if helper.brain && helper.brain.remember {
+            remember_logic = helper.brain.remember
+            
+            // Update helper memory
+            remember_result = update_helper_memory(remember_logic, execute_result, helper.memory)
+          } else {
+            remember_result = { status: "no_remember_logic" }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "execute_communicate_phase" {
+    needs: helper, remember_result
+    gives: communicate_result
+    
+    brain {
+      plan {
+        plan = { action: "send_messages" }
+      }
+      
+      execute {
+        if plan.action == "send_messages" {
+          if helper.brain && helper.brain.communicate {
+            communicate_logic = helper.brain.communicate
+            
+            // Send messages to other helpers
+            communicate_result = send_helper_messages(communicate_logic, remember_result)
+          } else {
+            communicate_result = { status: "no_communicate_logic" }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "route_message_to_helper" {
+    needs: message
+    gives: routing_result
+    
+    brain {
+      plan {
+        plan = { action: "find_target_helper" }
+      }
+      
+      execute {
+        if plan.action == "find_target_helper" {
+          target_helper = find_helper_by_name(message.target)
+          
+          if target_helper {
+            // Route message to helper
+            deliver_message_to_helper(target_helper, message)
+            routing_result = { status: "delivered" }
+          } else {
+            routing_result = { status: "helper_not_found" }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "initialize_memory_manager" {
+    needs: none
+    gives: memory_manager
+    
+    brain {
+      plan {
+        plan = { action: "setup_memory_pool" }
+      }
+      
+      execute {
+        if plan.action == "setup_memory_pool" {
+          memory_manager = {
+            pool: {},
+            allocated: 0,
+            max_memory: 1024 * 1024 * 1024, // 1GB
+            status: "ready"
+          }
+        }
+      }
+    }
+  }
+
+  recipe "initialize_message_router" {
+    needs: none
+    gives: message_router
+    
+    brain {
+      plan {
+        plan = { action: "setup_message_queue" }
+      }
+      
+      execute {
+        if plan.action == "setup_message_queue" {
+          message_router = {
+            queue: [],
+            routes: {},
+            status: "ready"
+          }
+        }
+      }
+    }
+  }
+
+  recipe "initialize_helper_manager" {
+    needs: none
+    gives: helper_manager
+    
+    brain {
+      plan {
+        plan = { action: "setup_helper_registry" }
+      }
+      
+      execute {
+        if plan.action == "setup_helper_registry" {
+          helper_manager = {
+            registry: {},
+            active: [],
+            status: "ready"
+          }
+        }
+      }
+    }
+  }
+
+  objective "maintain_runtime_stability" {
+    when memory.performance_metrics.brain_cycles > 10000
     then {
-      action: "restart_failed_agent",
-      helper: failed_agent
+      action: "performance_optimization"
+      reason: "High brain cycle count detected"
+    }
+  }
+
+  objective "ensure_memory_efficiency" {
+    when memory.performance_metrics.memory_allocated > 512 * 1024 * 1024
+    then {
+      action: "garbage_collection"
+      reason: "Memory usage exceeded threshold"
     }
   }
 
   message "runtime_ready" {
     do {
-      emit "system_ready"
+      log("🧠 GX Runtime is ready for execution")
+      emit "runtime_initialized"
     }
   }
 
-  message "agent_failed" {
+  message "performance_warning" {
     do {
-      log("Agent failure detected - attempting recovery")
-      restart_agent(failed_agent_id)
-    }
-  }
-
-  recipe "load_agents_from_ast" {
-    receive: ast_nodes
-    output: loaded_agents
-    
-    brain {
-      plan {
-        agents_to_load = ast_nodes.agents
-        loaded_agents = []
-      }
-      
-      execute {
-        for each agent_name, agent_config in agents_to_load {
-          agent_instance = {
-            id: generate_uuid(),
-            name: agent_name,
-            config: agent_config,
-            status: "loading",
-            memory: initialize_agent_memory(agent_config.memory),
-            mental_state: {
-              plan: agent_config.brain.plan || [],
-              execute: agent_config.brain.execute || [],
-              remember: agent_config.brain.remember || [],
-              communicate: agent_config.brain.communicate || []
-            },
-            goals: agent_config.goals || [],
-            signals: agent_config.signals || [],
-            capabilities: agent_config.capabilities || []
-          }
-          
-          memory.running_agents[agent_name] = agent_instance
-          memory.agent_memory[agent_name] = agent_instance.memory
-          loaded_agents.push(agent_instance)
-        }
-      }
-      
-      remember {
-        memory.loaded_agents_count = count(loaded_agents)
-      }
-      
-      communicate {
-        log("Loaded " + count(loaded_agents) + " agents from AST")
-      }
-    }
-  }
-
-  recipe "start_all_agents" {
-    brain {
-      plan {
-        agents_to_start = memory.running_agents
-      }
-      
-      execute {
-        for each agent_name, helper in agents_to_start {
-          helper.status = "running"
-          execute_mental_cycle(helper)
-        }
-      }
-      
-      remember {
-        memory.runtime_status = "running"
-      }
-      
-      communicate {
-        log("Started " + count(agents_to_start) + " agents")
-        emit "runtime_ready"
-      }
-    }
-  }
-
-  recipe "execute_mental_cycle" {
-    receive: helper
-    output: execution_result
-    
-    brain {
-      plan {
-        mental_blocks = ["plan", "execute", "remember", "communicate"]
-        execution_result = {
-          success: true,
-          errors: [],
-          output: null
-        }
-      }
-      
-      execute {
-        for each block in mental_blocks {
-          if helper.mental_state[block] {
-            try {
-              block_result = execute_mental_block(helper, block)
-              if not block_result.success {
-                execution_result.success = false
-                execution_result.errors.push(block_result.error)
-              }
-            } catch error {
-              execution_result.success = false
-              execution_result.errors.push("Error in " + block + ": " + error)
-            }
-          }
-        }
-      }
-      
-      remember {
-        helper.last_execution = get_timestamp()
-        helper.execution_count += 1
-      }
-      
-      communicate {
-        if not execution_result.success {
-          helper.status = "failed"
-          emit "agent_failed"
-        }
-      }
-    }
-  }
-
-  recipe "execute_mental_block" {
-    receive: helper, block_name
-    output: block_result
-    
-    brain {
-      plan {
-        block_code = helper.mental_state[block_name]
-        agent_memory = memory.agent_memory[helper.name]
-      }
-      
-      execute {
-        block_result = {
-          success: true,
-          output: null,
-          error: null
-        }
-        
-        try {
-          if block_name == "plan" {
-            block_result.output = execute_think_block(helper, block_code, agent_memory)
-          } else if block_name == "execute" {
-            block_result.output = execute_act_block(helper, block_code, agent_memory)
-          } else if block_name == "remember" {
-            block_result.output = execute_save_block(helper, block_code, agent_memory)
-          } else if block_name == "communicate" {
-            block_result.output = execute_reflect_block(helper, block_code, agent_memory)
-          }
-        } catch error {
-          block_result.success = false
-          block_result.error = error
-        }
-      }
-      
-      remember {
-        helper.mental_state[block_name + "_last_execution"] = get_timestamp()
-      }
-      
-      communicate {
-        if not block_result.success {
-          log("Mental block " + block_name + " failed for helper " + helper.name)
-        }
-      }
-    }
-  }
-
-  recipe "execute_think_block" {
-    receive: helper, think_code, agent_memory
-    output: think_result
-    
-    brain {
-      plan {
-        think_result = {
-          plan: null,
-          analysis: null
-        }
-      }
-      
-      execute {
-        if think_code contains "plan" {
-          think_result.plan = evaluate_plan_logic(think_code, agent_memory)
-        }
-        if think_code contains "analyze" {
-          think_result.analysis = analyze_data(think_code, agent_memory)
-        }
-      }
-      
-      remember {
-        agent_memory.last_think_result = think_result
-      }
-      
-      communicate {
-        log("Think block executed for helper " + helper.name)
-      }
-    }
-  }
-
-  recipe "execute_act_block" {
-    receive: helper, act_code, agent_memory
-    output: act_result
-    
-    brain {
-      plan {
-        act_result = {
-          actions_taken: [],
-          assignments: []
-        }
-      }
-      
-      execute {
-        if act_code contains "assign.helper" {
-          target_agent = extract_agent_name(act_code)
-          act_result.assignments.push(target_agent)
-          assign_task_to_agent(target_agent, act_code)
-        }
-        
-        if act_code contains "execute" {
-          action = extract_action(act_code)
-          act_result.actions_taken.push(action)
-          execute_action(action, agent_memory)
-        }
-      }
-      
-      remember {
-        agent_memory.last_act_result = act_result
-      }
-      
-      communicate {
-        log("Act block executed for helper " + helper.name + " with " + count(act_result.actions_taken) + " actions")
-      }
-    }
-  }
-
-  recipe "execute_save_block" {
-    receive: helper, save_code, agent_memory
-    output: save_result
-    
-    brain {
-      plan {
-        save_result = {
-          saved_variables: [],
-          memory_updates: []
-        }
-      }
-      
-      execute {
-        memory_updates = parse_memory_updates(save_code)
-        for each update in memory_updates {
-          agent_memory[update.variable] = update.value
-          save_result.memory_updates.push(update)
-        }
-      }
-      
-      remember {
-        agent_memory.last_save_timestamp = get_timestamp()
-      }
-      
-      communicate {
-        log("Save block executed for helper " + helper.name + " with " + count(save_result.memory_updates) + " updates")
-      }
-    }
-  }
-
-  recipe "execute_reflect_block" {
-    receive: helper, reflect_code, agent_memory
-    output: reflect_result
-    
-    brain {
-      plan {
-        reflect_result = {
-          signals_emitted: [],
-          logs_written: []
-        }
-      }
-      
-      execute {
-        if reflect_code contains "emit" {
-          signal_name = extract_signal_name(reflect_code)
-          reflect_result.signals_emitted.push(signal_name)
-          emit_signal(signal_name, helper.name)
-        }
-        
-        if reflect_code contains "log" {
-          log_message = extract_log_message(reflect_code)
-          reflect_result.logs_written.push(log_message)
-          log(log_message)
-        }
-      }
-      
-      remember {
-        agent_memory.last_reflect_result = reflect_result
-      }
-      
-      communicate {
-        log("Reflect block executed for helper " + helper.name)
-      }
-    }
-  }
-
-  recipe "process_signal_queue" {
-    brain {
-      plan {
-        pending_signals = memory.signal_queue
-      }
-      
-      execute {
-        for each message in pending_signals {
-          target_agents = find_agents_responding_to_signal(message.name)
-          for each helper in target_agents {
-            execute_signal_handler(helper, message)
-          }
-        }
-        memory.signal_queue = []
-      }
-      
-      remember {
-        memory.signals_processed += count(pending_signals)
-      }
-      
-      communicate {
-        log("Processed " + count(pending_signals) + " signals")
-      }
-    }
-  }
-
-  recipe "emit_signal" {
-    receive: signal_name, source_agent
-    output: signal_id
-    
-    brain {
-      plan {
-        message = {
-          id: generate_uuid(),
-          name: signal_name,
-          source: source_agent,
-          timestamp: get_timestamp(),
-          data: {}
-        }
-      }
-      
-      execute {
-        memory.signal_queue.push(message)
-        signal_id = message.id
-      }
-      
-      remember {
-        memory.total_signals_emitted += 1
-      }
-      
-      communicate {
-        log("Signal emitted: " + signal_name + " from " + source_agent)
-      }
+      log("⚠️ Performance warning: High brain cycle count")
+      optimize_runtime_performance()
     }
   }
 } 

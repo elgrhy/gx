@@ -1,0 +1,341 @@
+helper "memory_tester" {
+  can_do: ["memory_management", "garbage_collection", "memory_allocation", "memory_optimization"]
+  
+  remember {
+    test_results = []
+    memory_allocations = []
+    garbage_collections = 0
+    memory_usage = 0
+    memory_tests = [
+      "allocation_test",
+      "deallocation_test",
+      "garbage_collection_test",
+      "memory_pool_test",
+      "memory_optimization_test"
+    ]
+    current_test = 0
+  }
+
+  brain {
+    plan {
+      if memory.current_test < memory.memory_tests.length {
+        plan = { action: "run_memory_test" }
+      } else {
+        plan = { action: "analyze_memory_results" }
+      }
+    }
+    
+    execute {
+      if plan.action == "run_memory_test" {
+        test_name = memory.memory_tests[memory.current_test]
+        
+        if test_name == "allocation_test" {
+          // Test memory allocation
+          allocation_result = test_memory_allocation()
+          if allocation_result.success {
+            memory.test_results.push("allocation_success")
+          } else {
+            memory.test_results.push("allocation_failed")
+          }
+        } else if test_name == "deallocation_test" {
+          // Test memory deallocation
+          deallocation_result = test_memory_deallocation()
+          if deallocation_result.success {
+            memory.test_results.push("deallocation_success")
+          } else {
+            memory.test_results.push("deallocation_failed")
+          }
+        } else if test_name == "garbage_collection_test" {
+          // Test garbage collection
+          gc_result = test_garbage_collection()
+          if gc_result.success {
+            memory.garbage_collections += 1
+            memory.test_results.push("garbage_collection_success")
+          } else {
+            memory.test_results.push("garbage_collection_failed")
+          }
+        } else if test_name == "memory_pool_test" {
+          // Test memory pool
+          pool_result = test_memory_pool()
+          if pool_result.success {
+            memory.test_results.push("memory_pool_success")
+          } else {
+            memory.test_results.push("memory_pool_failed")
+          }
+        } else if test_name == "memory_optimization_test" {
+          // Test memory optimization
+          optimization_result = test_memory_optimization()
+          if optimization_result.success {
+            memory.test_results.push("memory_optimization_success")
+          } else {
+            memory.test_results.push("memory_optimization_failed")
+          }
+        }
+        
+        memory.current_test += 1
+      } else if plan.action == "analyze_memory_results" {
+        // Analyze memory test results
+        memory_analysis = analyze_memory_performance()
+        memory.memory_usage = memory_analysis.current_usage
+        memory.test_results.push("memory_analysis_complete")
+      }
+    }
+    
+    remember {
+      memory.last_test_time = get_timestamp()
+    }
+    
+    communicate {
+      if memory.current_test >= memory.memory_tests.length {
+        broadcast "memory_testing_complete" {
+          test_results: memory.test_results,
+          garbage_collections: memory.garbage_collections,
+          memory_usage: memory.memory_usage
+        }
+      }
+    }
+  }
+
+  recipe "test_memory_allocation" {
+    needs: none
+    gives: allocation_result
+    
+    brain {
+      plan {
+        plan = { action: "allocate_memory" }
+      }
+      
+      execute {
+        if plan.action == "allocate_memory" {
+          // Test memory allocation
+          try {
+            // Allocate various memory blocks
+            small_block = allocate_memory(1024) // 1KB
+            medium_block = allocate_memory(1024 * 1024) // 1MB
+            large_block = allocate_memory(10 * 1024 * 1024) // 10MB
+            
+            if small_block && medium_block && large_block {
+              memory.memory_allocations.push({
+                size: 1024,
+                address: small_block,
+                timestamp: get_timestamp()
+              })
+              
+              allocation_result = {
+                success: true,
+                allocated_blocks: 3,
+                total_size: 11 * 1024 * 1024 + 1024
+              }
+            } else {
+              allocation_result = {
+                success: false,
+                error: "Memory allocation failed"
+              }
+            }
+          } catch error {
+            allocation_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_memory_deallocation" {
+    needs: none
+    gives: deallocation_result
+    
+    brain {
+      plan {
+        plan = { action: "deallocate_memory" }
+      }
+      
+      execute {
+        if plan.action == "deallocate_memory" {
+          try {
+            // Allocate and then deallocate memory
+            test_block = allocate_memory(1024 * 1024) // 1MB
+            
+            if test_block {
+              deallocate_memory(test_block)
+              
+              deallocation_result = {
+                success: true,
+                deallocated_size: 1024 * 1024
+              }
+            } else {
+              deallocation_result = {
+                success: false,
+                error: "Allocation failed before deallocation test"
+              }
+            }
+          } catch error {
+            deallocation_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_garbage_collection" {
+    needs: none
+    gives: gc_result
+    
+    brain {
+      plan {
+        plan = { action: "trigger_garbage_collection" }
+      }
+      
+      execute {
+        if plan.action == "trigger_garbage_collection" {
+          try {
+            // Create some temporary objects that should be garbage collected
+            for i in range(100) {
+              temp_object = create_temporary_object()
+            }
+            
+            // Trigger garbage collection
+            gc_stats = trigger_garbage_collection()
+            
+            if gc_stats.collected_objects > 0 {
+              gc_result = {
+                success: true,
+                collected_objects: gc_stats.collected_objects,
+                freed_memory: gc_stats.freed_memory
+              }
+            } else {
+              gc_result = {
+                success: false,
+                error: "No objects collected"
+              }
+            }
+          } catch error {
+            gc_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_memory_pool" {
+    needs: none
+    gives: pool_result
+    
+    brain {
+      plan {
+        plan = { action: "test_memory_pool" }
+      }
+      
+      execute {
+        if plan.action == "test_memory_pool" {
+          try {
+            // Test memory pool functionality
+            pool = create_memory_pool(1024 * 1024) // 1MB pool
+            
+            // Allocate from pool
+            block1 = pool.allocate(1024)
+            block2 = pool.allocate(2048)
+            block3 = pool.allocate(512)
+            
+            // Return blocks to pool
+            pool.free(block2)
+            pool.free(block1)
+            
+            pool_stats = pool.get_statistics()
+            
+            if pool_stats.allocated_blocks == 1 && pool_stats.free_blocks == 2 {
+              pool_result = {
+                success: true,
+                pool_efficiency: pool_stats.efficiency
+              }
+            } else {
+              pool_result = {
+                success: false,
+                error: "Memory pool test failed"
+              }
+            }
+          } catch error {
+            pool_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_memory_optimization" {
+    needs: none
+    gives: optimization_result
+    
+    brain {
+      plan {
+        plan = { action: "optimize_memory" }
+      }
+      
+      execute {
+        if plan.action == "optimize_memory" {
+          try {
+            // Test memory optimization
+            before_optimization = get_memory_usage()
+            
+            // Perform memory optimization
+            optimization_stats = optimize_memory_usage()
+            
+            after_optimization = get_memory_usage()
+            
+            if after_optimization < before_optimization {
+              optimization_result = {
+                success: true,
+                memory_saved: before_optimization - after_optimization,
+                optimization_percentage: ((before_optimization - after_optimization) / before_optimization) * 100
+              }
+            } else {
+              optimization_result = {
+                success: false,
+                error: "No memory optimization achieved"
+              }
+            }
+          } catch error {
+            optimization_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "analyze_memory_performance" {
+    needs: none
+    gives: memory_analysis
+    
+    brain {
+      plan {
+        plan = { action: "analyze_memory" }
+      }
+      
+      execute {
+        if plan.action == "analyze_memory" {
+          memory_analysis = {
+            current_usage: get_memory_usage(),
+            peak_usage: get_peak_memory_usage(),
+            allocation_count: memory.memory_allocations.length,
+            gc_count: memory.garbage_collections,
+            efficiency: calculate_memory_efficiency()
+          }
+        }
+      }
+    }
+  }
+} 

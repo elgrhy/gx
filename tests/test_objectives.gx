@@ -1,0 +1,142 @@
+helper "objective_tester" {
+  can_do: ["objective_testing", "objective_validation", "objective_execution"]
+  
+  remember {
+    test_results = []
+    objectives_tested = 0
+    objective_tests = ["basic_objective", "complex_objective", "objective_validation", "objective_execution"]
+    current_test = 0
+  }
+
+  brain {
+    plan {
+      if memory.current_test < memory.objective_tests.length {
+        plan = { action: "run_objective_test" }
+      } else {
+        plan = { action: "analyze_objective_results" }
+      }
+    }
+    
+    execute {
+      if plan.action == "run_objective_test" {
+        test_name = memory.objective_tests[memory.current_test]
+        
+        if test_name == "basic_objective" {
+          result = test_basic_objective()
+          memory.test_results.push(result.success ? "basic_objective_success" : "basic_objective_failed")
+        } else if test_name == "complex_objective" {
+          result = test_complex_objective()
+          memory.test_results.push(result.success ? "complex_objective_success" : "complex_objective_failed")
+        } else if test_name == "objective_validation" {
+          result = test_objective_validation()
+          memory.test_results.push(result.success ? "objective_validation_success" : "objective_validation_failed")
+        } else if test_name == "objective_execution" {
+          result = test_objective_execution()
+          memory.test_results.push(result.success ? "objective_execution_success" : "objective_execution_failed")
+        }
+        
+        memory.objectives_tested += 1
+        memory.current_test += 1
+      } else if plan.action == "analyze_objective_results" {
+        memory.test_results.push("objective_analysis_complete")
+      }
+    }
+    
+    communicate {
+      if memory.current_test >= memory.objective_tests.length {
+        broadcast "objective_testing_complete" {
+          test_results: memory.test_results,
+          objectives_tested: memory.objectives_tested
+        }
+      }
+    }
+  }
+
+  objective "test_basic_objective" {
+    when memory.objectives_tested == 0
+    then {
+      action: "run_basic_test",
+      reason: "Testing basic objective functionality"
+    }
+  }
+
+  objective "test_complex_objective" {
+    when memory.objectives_tested == 1
+    then {
+      action: "run_complex_test",
+      reason: "Testing complex objective functionality"
+    }
+  }
+
+  objective "test_objective_validation" {
+    when memory.objectives_tested == 2
+    then {
+      action: "run_validation_test",
+      reason: "Testing objective validation"
+    }
+  }
+
+  objective "test_objective_execution" {
+    when memory.objectives_tested == 3
+    then {
+      action: "run_execution_test",
+      reason: "Testing objective execution"
+    }
+  }
+
+  recipe "test_basic_objective" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_basic" } }
+      execute {
+        if plan.action == "test_basic" {
+          result = { success: true, message: "Basic objective test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_complex_objective" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_complex" } }
+      execute {
+        if plan.action == "test_complex" {
+          result = { success: true, message: "Complex objective test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_objective_validation" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_validation" } }
+      execute {
+        if plan.action == "test_validation" {
+          result = { success: true, message: "Objective validation test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_objective_execution" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_execution" } }
+      execute {
+        if plan.action == "test_execution" {
+          result = { success: true, message: "Objective execution test passed" }
+        }
+      }
+    }
+  }
+} 

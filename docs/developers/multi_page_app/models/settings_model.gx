@@ -1,0 +1,394 @@
+helper "settings_model" {
+  can_do: ["configuration_management", "user_preferences", "settings_validation", "settings_persistence"]
+  
+  remember {
+    application_settings = {}
+    user_preferences = {}
+    default_settings = {
+      theme: "light",
+      language: "en",
+      notifications: true,
+      auto_save: true,
+      performance_mode: "balanced",
+      data_retention: "30d"
+    }
+    
+    // Settings categories
+    settings_categories = {
+      appearance: ["theme", "font_size", "color_scheme"],
+      behavior: ["auto_save", "notifications", "confirmations"],
+      performance: ["performance_mode", "cache_size", "data_retention"],
+      privacy: ["data_sharing", "analytics", "cookies"]
+    }
+    
+    // Validation rules
+    validation_rules = {
+      theme: { allowed_values: ["light", "dark", "auto"] },
+      language: { allowed_values: ["en", "es", "fr", "de", "zh"] },
+      font_size: { min: 12, max: 24, default: 16 },
+      performance_mode: { allowed_values: ["performance", "balanced", "battery"] }
+    }
+    
+    // Settings statistics
+    model_stats = {
+      total_settings: 0,
+      user_preferences_count: 0,
+      last_updated: null
+    }
+  }
+
+  receive {
+    from "settings_update" as "settings_change" {
+      type: "update_settings"
+      bind: memory.settings_update
+      on_receive: brain.update_settings
+    }
+    
+    from "preferences_update" as "preferences_change" {
+      type: "update_preferences"
+      bind: memory.preferences_update
+      on_receive: brain.update_preferences
+    }
+    
+    from "settings_query" as "settings_request" {
+      type: "query_settings"
+      bind: memory.settings_query
+      on_receive: brain.query_settings
+    }
+    
+    from "settings_reset" as "reset_request" {
+      type: "reset_settings"
+      bind: memory.reset_request
+      on_receive: brain.reset_settings
+    }
+  }
+
+  brain {
+    plan {
+      if memory.settings_update {
+        plan = { action: "update_application_settings" }
+      } else if memory.preferences_update {
+        plan = { action: "update_user_preferences" }
+      } else if memory.settings_query {
+        plan = { action: "query_settings_data" }
+      } else if memory.reset_request {
+        plan = { action: "reset_settings_data" }
+      } else {
+        plan = { action: "maintain_settings" }
+      }
+    }
+
+    execute {
+      if plan.action == "update_application_settings" {
+        update_data = memory.settings_update
+        category = update_data.category
+        settings = update_data.settings
+        
+        // Validate settings before updating
+        if validate_settings(category, settings) {
+          // Update application settings
+          if !memory.application_settings[category] {
+            memory.application_settings[category] = {}
+          }
+          
+          for each setting_name in Object.keys(settings) {
+            memory.application_settings[category][setting_name] = settings[setting_name]
+          }
+          
+          memory.model_stats.total_settings += Object.keys(settings).length
+          memory.model_stats.last_updated = get_timestamp()
+          
+          // Emit settings updated event
+          emit "settings_updated" { 
+            category: category,
+            settings: settings,
+            timestamp: get_timestamp()
+          }
+        } else {
+          emit "settings_update_failed" { 
+            reason: "validation_failed",
+            category: category,
+            errors: get_validation_errors(category, settings)
+          }
+        }
+        
+        memory.settings_update = null
+        
+      } else if plan.action == "update_user_preferences" {
+        update_data = memory.preferences_update
+        user_id = update_data.user_id
+        preferences = update_data.preferences
+        
+        // Validate user preferences
+        if validate_user_preferences(preferences) {
+          // Update user preferences
+          if !memory.user_preferences[user_id] {
+            memory.user_preferences[user_id] = {}
+          }
+          
+          for each pref_name in Object.keys(preferences) {
+            memory.user_preferences[user_id][pref_name] = preferences[pref_name]
+          }
+          
+          memory.model_stats.user_preferences_count += Object.keys(preferences).length
+          memory.model_stats.last_updated = get_timestamp()
+          
+          // Emit preferences updated event
+          emit "preferences_updated" { 
+            user_id: user_id,
+            preferences: preferences,
+            timestamp: get_timestamp()
+          }
+        } else {
+          emit "preferences_update_failed" { 
+            reason: "validation_failed",
+            user_id: user_id,
+            errors: get_preference_validation_errors(preferences)
+          }
+        }
+        
+        memory.preferences_update = null
+        
+      } else if plan.action == "query_settings_data" {
+        query = memory.settings_query
+        
+        if query.category {
+          // Query specific category
+          category_settings = memory.application_settings[query.category] || {}
+          emit "settings_query_result" { 
+            category: query.category,
+            settings: category_settings
+          }
+        } else if query.user_id {
+          // Query user preferences
+          user_prefs = memory.user_preferences[query.user_id] || {}
+          emit "preferences_query_result" { 
+            user_id: query.user_id,
+            preferences: user_prefs
+          }
+        } else {
+          // Query all settings
+          emit "settings_query_result" { 
+            application_settings: memory.application_settings,
+            user_preferences_count: Object.keys(memory.user_preferences).length
+          }
+        }
+        
+        memory.settings_query = null
+        
+      } else if plan.action == "reset_settings_data" {
+        reset_request = memory.reset_request
+        
+        if reset_request.type == "application" {
+          // Reset application settings to defaults
+          memory.application_settings = {}
+          memory.model_stats.total_settings = 0
+          
+          emit "settings_reset" { 
+            type: "application",
+            timestamp: get_timestamp()
+          }
+        } else if reset_request.type == "user" {
+          // Reset user preferences
+          user_id = reset_request.user_id
+          if memory.user_preferences[user_id] {
+            delete memory.user_preferences[user_id]
+            memory.model_stats.user_preferences_count -= 1
+          }
+          
+          emit "preferences_reset" { 
+            user_id: user_id,
+            timestamp: get_timestamp()
+          }
+        }
+        
+        memory.reset_request = null
+        
+      } else if plan.action == "maintain_settings" {
+        // Ensure default settings are available
+        ensure_default_settings()
+        
+        // Clean up orphaned user preferences
+        cleanup_orphaned_preferences()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      // Emit settings statistics
+      emit "settings_stats" {
+        total_settings: memory.model_stats.total_settings,
+        user_preferences_count: memory.model_stats.user_preferences_count,
+        last_updated: memory.model_stats.last_updated
+      }
+    }
+  }
+
+  // Validation methods
+  recipe "validate_settings" {
+    needs: category, settings
+    gives: is_valid
+    
+    brain {
+      plan { action: "validate_settings" }
+      execute {
+        is_valid = true
+        errors = []
+        
+        for each setting_name in Object.keys(settings) {
+          setting_value = settings[setting_name]
+          
+          // Check if setting exists in validation rules
+          if memory.validation_rules[setting_name] {
+            rule = memory.validation_rules[setting_name]
+            
+            // Validate allowed values
+            if rule.allowed_values && !rule.allowed_values.includes(setting_value) {
+              errors.push("Invalid value for " + setting_name + ": " + setting_value)
+              is_valid = false
+            }
+            
+            // Validate numeric ranges
+            if rule.min !== undefined && setting_value < rule.min {
+              errors.push(setting_name + " must be at least " + rule.min)
+              is_valid = false
+            }
+            
+            if rule.max !== undefined && setting_value > rule.max {
+              errors.push(setting_name + " must be at most " + rule.max)
+              is_valid = false
+            }
+          }
+        }
+        
+        memory.validation_errors = errors
+      }
+    }
+  }
+
+  recipe "validate_user_preferences" {
+    needs: preferences
+    gives: is_valid
+    
+    brain {
+      plan { action: "validate_preferences" }
+      execute {
+        is_valid = true
+        errors = []
+        
+        for each pref_name in Object.keys(preferences) {
+          pref_value = preferences[pref_name]
+          
+          // Basic type validation
+          if pref_name == "theme" && !["light", "dark", "auto"].includes(pref_value) {
+            errors.push("Invalid theme: " + pref_value)
+            is_valid = false
+          }
+          
+          if pref_name == "language" && !["en", "es", "fr", "de", "zh"].includes(pref_value) {
+            errors.push("Invalid language: " + pref_value)
+            is_valid = false
+          }
+          
+          if pref_name == "font_size" && (typeof pref_value != "number" || pref_value < 8 || pref_value > 32) {
+            errors.push("Font size must be between 8 and 32")
+            is_valid = false
+          }
+          
+          if pref_name == "notifications" && typeof pref_value != "boolean" {
+            errors.push("Notifications must be true or false")
+            is_valid = false
+          }
+        }
+        
+        memory.preference_validation_errors = errors
+      }
+    }
+  }
+
+  // Utility methods
+  recipe "ensure_default_settings" {
+    needs: none
+    gives: defaults_ensured
+    
+    brain {
+      plan { action: "ensure_defaults" }
+      execute {
+        // Ensure all default settings are available
+        for each setting_name in Object.keys(memory.default_settings) {
+          if !memory.application_settings[setting_name] {
+            memory.application_settings[setting_name] = memory.default_settings[setting_name]
+          }
+        }
+        
+        defaults_ensured = true
+      }
+    }
+  }
+
+  recipe "cleanup_orphaned_preferences" {
+    needs: none
+    gives: cleanup_complete
+    
+    brain {
+      plan { action: "cleanup_preferences" }
+      execute {
+        // Remove user preferences for non-existent users
+        // This would typically check against a user database
+        current_time = get_timestamp()
+        for each user_id in Object.keys(memory.user_preferences) {
+          // Simulate checking if user still exists
+          // In real implementation, this would query user database
+          if !user_exists(user_id) {
+            delete memory.user_preferences[user_id]
+            memory.model_stats.user_preferences_count -= 1
+          }
+        }
+        
+        cleanup_complete = true
+      }
+    }
+  }
+
+  recipe "get_validation_errors" {
+    needs: category, settings
+    gives: errors
+    
+    brain {
+      plan { action: "get_errors" }
+      execute {
+        errors = memory.validation_errors || []
+      }
+    }
+  }
+
+  recipe "get_preference_validation_errors" {
+    needs: preferences
+    gives: errors
+    
+    brain {
+      plan { action: "get_pref_errors" }
+      execute {
+        errors = memory.preference_validation_errors || []
+      }
+    }
+  }
+
+  recipe "user_exists" {
+    needs: user_id
+    gives: exists
+    
+    brain {
+      plan { action: "check_user" }
+      execute {
+        // Simulate user existence check
+        // In real implementation, this would query user database
+        exists = memory.user_preferences[user_id] != null
+      }
+    }
+  }
+} 

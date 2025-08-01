@@ -1,0 +1,431 @@
+helper "message_tester" {
+  can_do: ["message_passing", "communication_testing", "message_routing", "message_validation"]
+  
+  remember {
+    test_results = []
+    messages_sent = 0
+    messages_received = 0
+    message_queue = []
+    communication_tests = [
+      "basic_message_test",
+      "message_routing_test", 
+      "message_validation_test",
+      "message_priority_test",
+      "message_broadcast_test"
+    ]
+    current_test = 0
+  }
+
+  brain {
+    plan {
+      if memory.current_test < memory.communication_tests.length {
+        plan = { action: "run_message_test" }
+      } else {
+        plan = { action: "analyze_message_results" }
+      }
+    }
+    
+    execute {
+      if plan.action == "run_message_test" {
+        test_name = memory.communication_tests[memory.current_test]
+        
+        if test_name == "basic_message_test" {
+          // Test basic message passing
+          message_result = test_basic_message()
+          if message_result.success {
+            memory.test_results.push("basic_message_success")
+          } else {
+            memory.test_results.push("basic_message_failed")
+          }
+        } else if test_name == "message_routing_test" {
+          // Test message routing
+          routing_result = test_message_routing()
+          if routing_result.success {
+            memory.test_results.push("message_routing_success")
+          } else {
+            memory.test_results.push("message_routing_failed")
+          }
+        } else if test_name == "message_validation_test" {
+          // Test message validation
+          validation_result = test_message_validation()
+          if validation_result.success {
+            memory.test_results.push("message_validation_success")
+          } else {
+            memory.test_results.push("message_validation_failed")
+          }
+        } else if test_name == "message_priority_test" {
+          // Test message priority
+          priority_result = test_message_priority()
+          if priority_result.success {
+            memory.test_results.push("message_priority_success")
+          } else {
+            memory.test_results.push("message_priority_failed")
+          }
+        } else if test_name == "message_broadcast_test" {
+          // Test message broadcasting
+          broadcast_result = test_message_broadcast()
+          if broadcast_result.success {
+            memory.test_results.push("message_broadcast_success")
+          } else {
+            memory.test_results.push("message_broadcast_failed")
+          }
+        }
+        
+        memory.current_test += 1
+      } else if plan.action == "analyze_message_results" {
+        // Analyze message test results
+        message_analysis = analyze_message_performance()
+        memory.test_results.push("message_analysis_complete")
+      }
+    }
+    
+    remember {
+      memory.last_test_time = get_timestamp()
+    }
+    
+    communicate {
+      if memory.current_test >= memory.communication_tests.length {
+        broadcast "message_testing_complete" {
+          test_results: memory.test_results,
+          messages_sent: memory.messages_sent,
+          messages_received: memory.messages_received
+        }
+      }
+    }
+  }
+
+  recipe "test_basic_message" {
+    needs: none
+    gives: message_result
+    
+    brain {
+      plan {
+        plan = { action: "send_basic_message" }
+      }
+      
+      execute {
+        if plan.action == "send_basic_message" {
+          try {
+            // Create a basic message
+            test_message = {
+              type: "test_message",
+              content: "Hello from message tester",
+              sender: "message_tester",
+              recipient: "test_receiver",
+              timestamp: get_timestamp(),
+              priority: "normal"
+            }
+            
+            // Send the message
+            send_result = send_message(test_message)
+            
+            if send_result.success {
+              memory.messages_sent += 1
+              
+              // Wait for response
+              response = wait_for_response(test_message.id, 5000) // 5 second timeout
+              
+              if response {
+                memory.messages_received += 1
+                message_result = {
+                  success: true,
+                  message_id: test_message.id,
+                  response_received: true
+                }
+              } else {
+                message_result = {
+                  success: false,
+                  error: "No response received"
+                }
+              }
+            } else {
+              message_result = {
+                success: false,
+                error: "Failed to send message"
+              }
+            }
+          } catch error {
+            message_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_message_routing" {
+    needs: none
+    gives: routing_result
+    
+    brain {
+      plan {
+        plan = { action: "test_routing" }
+      }
+      
+      execute {
+        if plan.action == "test_routing" {
+          try {
+            // Test message routing to different helpers
+            helpers = ["helper1", "helper2", "helper3"]
+            routing_results = []
+            
+            for each helper in helpers {
+              message = {
+                type: "routing_test",
+                content: "Routing test message",
+                sender: "message_tester",
+                recipient: helper,
+                timestamp: get_timestamp()
+              }
+              
+              route_result = route_message(message)
+              routing_results.push(route_result)
+            }
+            
+            // Check if all messages were routed successfully
+            successful_routes = routing_results.filter(r => r.success).length
+            
+            if successful_routes == helpers.length {
+              routing_result = {
+                success: true,
+                routes_tested: helpers.length,
+                successful_routes: successful_routes
+              }
+            } else {
+              routing_result = {
+                success: false,
+                error: "Some routes failed"
+              }
+            }
+          } catch error {
+            routing_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_message_validation" {
+    needs: none
+    gives: validation_result
+    
+    brain {
+      plan {
+        plan = { action: "validate_messages" }
+      }
+      
+      execute {
+        if plan.action == "validate_messages" {
+          try {
+            // Test various message validation scenarios
+            test_messages = [
+              {
+                type: "valid_message",
+                content: "Valid content",
+                sender: "sender1",
+                recipient: "recipient1"
+              },
+              {
+                type: "invalid_message",
+                // Missing required fields
+                content: "Invalid content"
+              },
+              {
+                type: "malformed_message",
+                content: null,
+                sender: "",
+                recipient: "recipient2"
+              }
+            ]
+            
+            validation_results = []
+            
+            for each message in test_messages {
+              validation_result = validate_message(message)
+              validation_results.push(validation_result)
+            }
+            
+            // Check validation results
+            valid_count = validation_results.filter(r => r.valid).length
+            invalid_count = validation_results.filter(r => !r.valid).length
+            
+            if valid_count == 1 && invalid_count == 2 {
+              validation_result = {
+                success: true,
+                valid_messages: valid_count,
+                invalid_messages: invalid_count
+              }
+            } else {
+              validation_result = {
+                success: false,
+                error: "Validation test failed"
+              }
+            }
+          } catch error {
+            validation_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_message_priority" {
+    needs: none
+    gives: priority_result
+    
+    brain {
+      plan {
+        plan = { action: "test_priority" }
+      }
+      
+      execute {
+        if plan.action == "test_priority" {
+          try {
+            // Test message priority handling
+            priority_messages = [
+              {
+                type: "low_priority",
+                content: "Low priority message",
+                priority: "low",
+                timestamp: get_timestamp()
+              },
+              {
+                type: "high_priority",
+                content: "High priority message",
+                priority: "high",
+                timestamp: get_timestamp()
+              },
+              {
+                type: "normal_priority",
+                content: "Normal priority message",
+                priority: "normal",
+                timestamp: get_timestamp()
+              }
+            ]
+            
+            // Send messages in reverse priority order
+            for each message in priority_messages.reverse() {
+              send_message(message)
+            }
+            
+            // Check processing order
+            processing_order = get_message_processing_order()
+            
+            // High priority should be processed first
+            if processing_order[0].priority == "high" {
+              priority_result = {
+                success: true,
+                priority_handling: "correct"
+              }
+            } else {
+              priority_result = {
+                success: false,
+                error: "Priority handling incorrect"
+              }
+            }
+          } catch error {
+            priority_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_message_broadcast" {
+    needs: none
+    gives: broadcast_result
+    
+    brain {
+      plan {
+        plan = { action: "test_broadcast" }
+      }
+      
+      execute {
+        if plan.action == "test_broadcast" {
+          try {
+            // Test message broadcasting
+            broadcast_message = {
+              type: "broadcast_test",
+              content: "Broadcast test message",
+              sender: "message_tester",
+              broadcast: true,
+              timestamp: get_timestamp()
+            }
+            
+            // Send broadcast
+            broadcast_result = broadcast_message(broadcast_message)
+            
+            if broadcast_result.success {
+              // Check if all helpers received the broadcast
+              recipients = get_active_helpers()
+              received_count = 0
+              
+              for each helper in recipients {
+                if helper.received_broadcast {
+                  received_count += 1
+                }
+              }
+              
+              if received_count == recipients.length {
+                broadcast_result = {
+                  success: true,
+                  broadcast_received: received_count,
+                  total_recipients: recipients.length
+                }
+              } else {
+                broadcast_result = {
+                  success: false,
+                  error: "Not all helpers received broadcast"
+                }
+              }
+            } else {
+              broadcast_result = {
+                success: false,
+                error: "Broadcast failed"
+              }
+            }
+          } catch error {
+            broadcast_result = {
+              success: false,
+              error: error
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "analyze_message_performance" {
+    needs: none
+    gives: message_analysis
+    
+    brain {
+      plan {
+        plan = { action: "analyze_messages" }
+      }
+      
+      execute {
+        if plan.action == "analyze_messages" {
+          message_analysis = {
+            messages_sent: memory.messages_sent,
+            messages_received: memory.messages_received,
+            delivery_rate: (memory.messages_received / memory.messages_sent) * 100,
+            average_latency: calculate_average_latency(),
+            throughput: calculate_message_throughput()
+          }
+        }
+      }
+    }
+  }
+} 

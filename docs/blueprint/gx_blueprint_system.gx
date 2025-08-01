@@ -1,0 +1,672 @@
+helper "gx_blueprint_system" {
+  can_do: ["blueprint_parsing", "application_generation", "pattern_recognition", "code_generation"]
+  
+  remember {
+    status = "ready"
+    blueprint_templates = {
+      ecommerce: load_ecommerce_template(),
+      social_media: load_social_media_template(),
+      dashboard: load_dashboard_template(),
+      crud: load_crud_template(),
+      api: load_api_template()
+    }
+    
+    // Pattern recognition rules
+    pattern_rules = {
+      authentication: ["user", "login", "auth", "signin", "register"],
+      payment: ["payment", "stripe", "paypal", "checkout", "billing"],
+      realtime: ["real-time", "live", "instant", "websocket", "streaming"],
+      analytics: ["analytics", "dashboard", "metrics", "reporting", "insights"],
+      ai_ml: ["ai", "machine learning", "ml", "prediction", "recommendation"]
+    }
+    
+    // Architecture patterns
+    architecture_patterns = {
+      mvvm: {
+        models: ["user_model", "data_model", "settings_model"],
+        viewmodels: ["home_viewmodel", "profile_viewmodel", "settings_viewmodel"],
+        views: ["home_page", "profile_page", "settings_page"]
+      },
+      microservices: {
+        services: ["auth_service", "user_service", "payment_service"],
+        api_gateway: true,
+        service_discovery: true
+      },
+      event_driven: {
+        events: ["user_created", "payment_processed", "order_updated"],
+        handlers: ["email_handler", "notification_handler", "analytics_handler"]
+      }
+    }
+    
+    // Generation statistics
+    generation_stats = {
+      blueprints_processed: 0,
+      applications_generated: 0,
+      patterns_applied: 0,
+      lines_generated: 0
+    }
+  }
+
+  receive {
+    from "blueprint_file" as "blueprint_input" {
+      type: "blueprint_parse"
+      bind: memory.blueprint_input
+      on_receive: brain.parse_blueprint
+    }
+    
+    from "generation_request" as "gen_request" {
+      type: "generate_application"
+      bind: memory.generation_request
+      on_receive: brain.generate_application
+    }
+    
+    from "template_request" as "template_req" {
+      type: "get_template"
+      bind: memory.template_request
+      on_receive: brain.get_blueprint_template
+    }
+    
+    from "validation_request" as "validation_req" {
+      type: "validate_blueprint"
+      bind: memory.validation_request
+      on_receive: brain.validate_blueprint
+    }
+  }
+
+  brain {
+    plan {
+      if memory.blueprint_input {
+        plan = { action: "parse_blueprint_file" }
+      } else if memory.generation_request {
+        plan = { action: "generate_complete_application" }
+      } else if memory.template_request {
+        plan = { action: "provide_blueprint_template" }
+      } else if memory.validation_request {
+        plan = { action: "validate_blueprint_syntax" }
+      } else {
+        plan = { action: "maintain_blueprint_system" }
+      }
+    }
+
+    execute {
+      if plan.action == "parse_blueprint_file" {
+        blueprint_text = memory.blueprint_input.content
+        
+        // Parse blueprint structure
+        parsed_blueprint = parse_blueprint_structure(blueprint_text)
+        
+        // Extract requirements
+        requirements = extract_requirements(parsed_blueprint)
+        
+        // Identify patterns
+        patterns = identify_patterns(requirements)
+        
+        // Generate architecture
+        architecture = generate_architecture(parsed_blueprint, patterns)
+        
+        // Store parsed blueprint
+        memory.parsed_blueprint = {
+          original: parsed_blueprint,
+          requirements: requirements,
+          patterns: patterns,
+          architecture: architecture
+        }
+        
+        memory.generation_stats.blueprints_processed += 1
+        
+        // Emit blueprint parsed
+        emit "blueprint_parsed" { 
+          requirements: requirements,
+          patterns: patterns,
+          architecture: architecture
+        }
+        
+        memory.blueprint_input = null
+        
+      } else if plan.action == "generate_complete_application" {
+        request = memory.generation_request
+        blueprint_data = memory.parsed_blueprint
+        
+        // Generate application structure
+        app_structure = generate_application_structure(blueprint_data)
+        
+        // Generate models
+        models = generate_models(blueprint_data.requirements)
+        
+        // Generate viewmodels
+        viewmodels = generate_viewmodels(models, blueprint_data.requirements)
+        
+        // Generate UI components
+        ui_components = generate_ui_components(blueprint_data.requirements)
+        
+        // Generate business logic
+        business_logic = generate_business_logic(blueprint_data.requirements)
+        
+        // Generate database schemas
+        database_schemas = generate_database_schemas(models)
+        
+        // Generate API endpoints
+        api_endpoints = generate_api_endpoints(blueprint_data.requirements)
+        
+        // Generate configuration files
+        config_files = generate_config_files(blueprint_data.architecture)
+        
+        // Create complete application
+        complete_app = create_complete_application({
+          structure: app_structure,
+          models: models,
+          viewmodels: viewmodels,
+          ui_components: ui_components,
+          business_logic: business_logic,
+          database_schemas: database_schemas,
+          api_endpoints: api_endpoints,
+          config_files: config_files
+        })
+        
+        memory.generation_stats.applications_generated += 1
+        memory.generation_stats.lines_generated += count_generated_lines(complete_app)
+        
+        // Emit application generated
+        emit "application_generated" { 
+          app: complete_app,
+          stats: memory.generation_stats
+        }
+        
+        memory.generation_request = null
+        
+      } else if plan.action == "provide_blueprint_template" {
+        request = memory.template_request
+        template_type = request.type
+        
+        if memory.blueprint_templates[template_type] {
+          template = memory.blueprint_templates[template_type]
+          
+          // Emit template
+          emit "blueprint_template" { 
+            type: template_type,
+            template: template
+          }
+        }
+        
+        memory.template_request = null
+        
+      } else if plan.action == "validate_blueprint_syntax" {
+        request = memory.validation_request
+        blueprint_text = request.content
+        
+        // Validate blueprint syntax
+        validation_result = validate_blueprint_syntax(blueprint_text)
+        
+        // Emit validation result
+        emit "blueprint_validated" { 
+          is_valid: validation_result.is_valid,
+          errors: validation_result.errors,
+          warnings: validation_result.warnings
+        }
+        
+        memory.validation_request = null
+        
+      } else if plan.action == "maintain_blueprint_system" {
+        // Update generation statistics
+        update_generation_statistics()
+        
+        // Clean up old parsed blueprints
+        cleanup_old_blueprints()
+        
+        // Monitor system performance
+        monitor_blueprint_system()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      // Emit system statistics
+      emit "blueprint_system_stats" {
+        blueprints_processed: memory.generation_stats.blueprints_processed,
+        applications_generated: memory.generation_stats.applications_generated,
+        patterns_applied: memory.generation_stats.patterns_applied,
+        lines_generated: memory.generation_stats.lines_generated
+      }
+    }
+  }
+
+  // Blueprint parsing methods
+  recipe "parse_blueprint_structure" {
+    needs: blueprint_text
+    gives: parsed_structure
+    
+    brain {
+      plan { action: "parse_structure" }
+      execute {
+        // Parse markdown structure
+        lines = blueprint_text.split("\n")
+        parsed_structure = {
+          title: "",
+          application_type: "",
+          target_users: "",
+          platform: "",
+          core_features: [],
+          design_pattern: "",
+          database: "",
+          authentication: "",
+          ui_framework: "",
+          pages: [],
+          business_logic: []
+        }
+        
+        current_section = ""
+        
+        for each line in lines {
+          if line.startsWith("# ") {
+            parsed_structure.title = line.substring(2)
+          } else if line.startsWith("## Application Type:") {
+            parsed_structure.application_type = line.split(":")[1].trim()
+          } else if line.startsWith("## Target Users:") {
+            parsed_structure.target_users = line.split(":")[1].trim()
+          } else if line.startsWith("## Platform:") {
+            parsed_structure.platform = line.split(":")[1].trim()
+          } else if line.startsWith("## Core Features:") {
+            current_section = "core_features"
+          } else if line.startsWith("## Design Pattern:") {
+            parsed_structure.design_pattern = line.split(":")[1].trim()
+          } else if line.startsWith("## Database:") {
+            parsed_structure.database = line.split(":")[1].trim()
+          } else if line.startsWith("## Authentication:") {
+            parsed_structure.authentication = line.split(":")[1].trim()
+          } else if line.startsWith("## UI Framework:") {
+            parsed_structure.ui_framework = line.split(":")[1].trim()
+          } else if line.startsWith("## Pages:") {
+            current_section = "pages"
+          } else if line.startsWith("## Business Logic:") {
+            current_section = "business_logic"
+          } else if line.startsWith("- ") && current_section == "core_features" {
+            parsed_structure.core_features.push(line.substring(2))
+          } else if line.startsWith("- ") && current_section == "business_logic" {
+            parsed_structure.business_logic.push(line.substring(2))
+          } else if line.match(/^\d+\./) && current_section == "pages" {
+            page_info = line.split(" - ")
+            if page_info.length == 2 {
+              parsed_structure.pages.push({
+                name: page_info[0].split(". ")[1],
+                description: page_info[1]
+              })
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "extract_requirements" {
+    needs: parsed_blueprint
+    gives: requirements
+    
+    brain {
+      plan { action: "extract_reqs" }
+      execute {
+        requirements = {
+          application_type: parsed_blueprint.application_type,
+          features: parsed_blueprint.core_features,
+          pages: parsed_blueprint.pages,
+          business_logic: parsed_blueprint.business_logic,
+          technical_requirements: {
+            database: parsed_blueprint.database,
+            authentication: parsed_blueprint.authentication,
+            ui_framework: parsed_blueprint.ui_framework,
+            design_pattern: parsed_blueprint.design_pattern
+          }
+        }
+      }
+    }
+  }
+
+  recipe "identify_patterns" {
+    needs: requirements
+    gives: patterns
+    
+    brain {
+      plan { action: "identify_patterns" }
+      execute {
+        patterns = {
+          authentication: false,
+          payment: false,
+          realtime: false,
+          analytics: false,
+          ai_ml: false,
+          crud: false,
+          dashboard: false
+        }
+        
+        // Check for authentication patterns
+        for each feature in requirements.features {
+          for each auth_keyword in memory.pattern_rules.authentication {
+            if feature.toLowerCase().includes(auth_keyword) {
+              patterns.authentication = true
+              break
+            }
+          }
+        }
+        
+        // Check for payment patterns
+        for each feature in requirements.features {
+          for each payment_keyword in memory.pattern_rules.payment {
+            if feature.toLowerCase().includes(payment_keyword) {
+              patterns.payment = true
+              break
+            }
+          }
+        }
+        
+        // Check for real-time patterns
+        for each feature in requirements.features {
+          for each realtime_keyword in memory.pattern_rules.realtime {
+            if feature.toLowerCase().includes(realtime_keyword) {
+              patterns.realtime = true
+              break
+            }
+          }
+        }
+        
+        // Check for analytics patterns
+        for each feature in requirements.features {
+          for each analytics_keyword in memory.pattern_rules.analytics {
+            if feature.toLowerCase().includes(analytics_keyword) {
+              patterns.analytics = true
+              break
+            }
+          }
+        }
+        
+        // Check for AI/ML patterns
+        for each feature in requirements.features {
+          for each ai_keyword in memory.pattern_rules.ai_ml {
+            if feature.toLowerCase().includes(ai_keyword) {
+              patterns.ai_ml = true
+              break
+            }
+          }
+        }
+        
+        // Determine if it's a CRUD application
+        if requirements.application_type.toLowerCase().includes("crud") {
+          patterns.crud = true
+        }
+        
+        // Determine if it's a dashboard
+        if requirements.application_type.toLowerCase().includes("dashboard") {
+          patterns.dashboard = true
+        }
+        
+        memory.generation_stats.patterns_applied += Object.keys(patterns).filter(key => patterns[key]).length
+      }
+    }
+  }
+
+  recipe "generate_architecture" {
+    needs: parsed_blueprint, patterns
+    gives: architecture
+    
+    brain {
+      plan { action: "generate_arch" }
+      execute {
+        architecture = {
+          design_pattern: parsed_blueprint.design_pattern || "MVVM",
+          components: [],
+          services: [],
+          database: parsed_blueprint.database || "PostgreSQL",
+          authentication: parsed_blueprint.authentication || "JWT",
+          ui_framework: parsed_blueprint.ui_framework || "React"
+        }
+        
+        // Add components based on patterns
+        if patterns.authentication {
+          architecture.components.push("auth_service")
+          architecture.components.push("user_model")
+          architecture.components.push("login_page")
+          architecture.components.push("register_page")
+        }
+        
+        if patterns.payment {
+          architecture.components.push("payment_service")
+          architecture.components.push("payment_model")
+          architecture.components.push("checkout_page")
+        }
+        
+        if patterns.analytics {
+          architecture.components.push("analytics_service")
+          architecture.components.push("analytics_model")
+          architecture.components.push("dashboard_page")
+        }
+        
+        if patterns.realtime {
+          architecture.components.push("websocket_service")
+          architecture.components.push("realtime_handler")
+        }
+        
+        if patterns.ai_ml {
+          architecture.components.push("ai_service")
+          architecture.components.push("ml_model")
+          architecture.components.push("prediction_service")
+        }
+      }
+    }
+  }
+
+  // Code generation methods
+  recipe "generate_models" {
+    needs: requirements
+    gives: models
+    
+    brain {
+      plan { action: "generate_models" }
+      execute {
+        models = []
+        
+        // Generate user model if authentication is required
+        if requirements.technical_requirements.authentication {
+          models.push(generate_user_model())
+        }
+        
+        // Generate models based on features
+        for each feature in requirements.features {
+          if feature.includes("product") {
+            models.push(generate_product_model())
+          }
+          
+          if feature.includes("order") {
+            models.push(generate_order_model())
+          }
+          
+          if feature.includes("payment") {
+            models.push(generate_payment_model())
+          }
+          
+          if feature.includes("analytics") {
+            models.push(generate_analytics_model())
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_viewmodels" {
+    needs: models, requirements
+    gives: viewmodels
+    
+    brain {
+      plan { action: "generate_viewmodels" }
+      execute {
+        viewmodels = []
+        
+        // Generate viewmodels for each page
+        for each page in requirements.pages {
+          viewmodel = generate_viewmodel_for_page(page, models)
+          viewmodels.push(viewmodel)
+        }
+        
+        // Generate shared viewmodels
+        if requirements.technical_requirements.authentication {
+          viewmodels.push(generate_auth_viewmodel())
+        }
+        
+        if requirements.features.some(f => f.includes("payment")) {
+          viewmodels.push(generate_payment_viewmodel())
+        }
+      }
+    }
+  }
+
+  recipe "generate_ui_components" {
+    needs: requirements
+    gives: ui_components
+    
+    brain {
+      plan { action: "generate_ui" }
+      execute {
+        ui_components = []
+        
+        // Generate UI components for each page
+        for each page in requirements.pages {
+          component = generate_ui_component_for_page(page)
+          ui_components.push(component)
+        }
+        
+        // Generate shared components
+        ui_components.push(generate_navigation_component())
+        ui_components.push(generate_footer_component())
+        
+        if requirements.technical_requirements.authentication {
+          ui_components.push(generate_login_form())
+          ui_components.push(generate_register_form())
+        }
+      }
+    }
+  }
+
+  recipe "generate_business_logic" {
+    needs: requirements
+    gives: business_logic
+    
+    brain {
+      plan { action: "generate_logic" }
+      execute {
+        business_logic = []
+        
+        // Generate business logic based on requirements
+        for each logic in requirements.business_logic {
+          if logic.includes("authentication") {
+            business_logic.push(generate_auth_business_logic())
+          }
+          
+          if logic.includes("payment") {
+            business_logic.push(generate_payment_business_logic())
+          }
+          
+          if logic.includes("analytics") {
+            business_logic.push(generate_analytics_business_logic())
+          }
+          
+          if logic.includes("inventory") {
+            business_logic.push(generate_inventory_business_logic())
+          }
+        }
+      }
+    }
+  }
+
+  // Utility methods
+  recipe "validate_blueprint_syntax" {
+    needs: blueprint_text
+    gives: validation_result
+    
+    brain {
+      plan { action: "validate_syntax" }
+      execute {
+        validation_result = {
+          is_valid: true,
+          errors: [],
+          warnings: []
+        }
+        
+        // Check for required sections
+        required_sections = ["Application Type", "Core Features", "Pages"]
+        
+        for each section in required_sections {
+          if !blueprint_text.includes("## " + section + ":") {
+            validation_result.errors.push("Missing required section: " + section)
+            validation_result.is_valid = false
+          }
+        }
+        
+        // Check for valid application types
+        valid_types = ["E-commerce", "Social Network", "Dashboard", "CRUD", "API", "Mobile App"]
+        found_type = false
+        
+        for each valid_type in valid_types {
+          if blueprint_text.includes("Application Type: " + valid_type) {
+            found_type = true
+            break
+          }
+        }
+        
+        if !found_type {
+          validation_result.warnings.push("Application type not recognized")
+        }
+      }
+    }
+  }
+
+  recipe "update_generation_statistics" {
+    needs: none
+    gives: stats_updated
+    
+    brain {
+      plan { action: "update_stats" }
+      execute {
+        // Update generation statistics
+        memory.generation_stats.last_update = get_timestamp()
+        
+        stats_updated = true
+      }
+    }
+  }
+
+  recipe "cleanup_old_blueprints" {
+    needs: none
+    gives: cleanup_complete
+    
+    brain {
+      plan { action: "cleanup" }
+      execute {
+        // Clean up old parsed blueprints
+        current_time = get_timestamp()
+        
+        cleanup_complete = true
+      }
+    }
+  }
+
+  recipe "monitor_blueprint_system" {
+    needs: none
+    gives: monitoring_complete
+    
+    brain {
+      plan { action: "monitor" }
+      execute {
+        // Monitor system performance
+        if memory.generation_stats.applications_generated > 100 {
+          emit "blueprint_system_milestone" { 
+            message: "Generated 100+ applications!",
+            stats: memory.generation_stats
+          }
+        }
+        
+        monitoring_complete = true
+      }
+    }
+  }
+} 

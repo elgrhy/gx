@@ -1,0 +1,491 @@
+helper "home_viewmodel" {
+  can_do: ["dashboard_management", "data_aggregation", "ui_state_management", "user_interaction_handling"]
+  
+  remember {
+    // UI State
+    is_loading = false
+    error_message = null
+    current_view = "dashboard"
+    
+    // Dashboard Data
+    dashboard_data = {
+      user_stats: null,
+      recent_activity: [],
+      performance_metrics: null,
+      notifications: []
+    }
+    
+    // User Interaction State
+    user_interactions = {
+      selected_tab: "overview",
+      filter_settings: {},
+      sort_preferences: {}
+    }
+    
+    // Data Sources
+    data_sources = {
+      user_model: null,
+      analytics_model: null,
+      settings_model: null
+    }
+    
+    // ViewModel Statistics
+    viewmodel_stats = {
+      data_updates: 0,
+      ui_interactions: 0,
+      last_update: null
+    }
+  }
+
+  receive {
+    from "user_model" as "user_data" {
+      type: "user_update"
+      bind: memory.user_data_update
+      on_receive: brain.handle_user_data_update
+    }
+    
+    from "analytics_model" as "analytics_data" {
+      type: "analytics_update"
+      bind: memory.analytics_data_update
+      on_receive: brain.handle_analytics_data_update
+    }
+    
+    from "settings_model" as "settings_data" {
+      type: "settings_update"
+      bind: memory.settings_data_update
+      on_receive: brain.handle_settings_data_update
+    }
+    
+    from "ui_interaction" as "user_action" {
+      type: "user_input"
+      bind: memory.user_action
+      on_receive: brain.handle_user_interaction
+    }
+    
+    from "page_activation" as "activation_data" {
+      type: "page_activated"
+      bind: memory.page_activation
+      on_receive: brain.handle_page_activation
+    }
+  }
+
+  brain {
+    plan {
+      if memory.page_activation {
+        plan = { action: "initialize_dashboard" }
+      } else if memory.user_data_update {
+        plan = { action: "update_user_data" }
+      } else if memory.analytics_data_update {
+        plan = { action: "update_analytics_data" }
+      } else if memory.settings_data_update {
+        plan = { action: "update_settings_data" }
+      } else if memory.user_action {
+        plan = { action: "handle_user_interaction" }
+      } else {
+        plan = { action: "maintain_viewmodel" }
+      }
+    }
+
+    execute {
+      if plan.action == "initialize_dashboard" {
+        activation_data = memory.page_activation
+        
+        // Set loading state
+        memory.is_loading = true
+        memory.error_message = null
+        
+        // Initialize data sources
+        initialize_data_sources(activation_data.data_sources)
+        
+        // Load initial dashboard data
+        load_dashboard_data()
+        
+        memory.viewmodel_stats.last_update = get_timestamp()
+        memory.page_activation = null
+        
+      } else if plan.action == "update_user_data" {
+        user_update = memory.user_data_update
+        
+        // Update dashboard user statistics
+        if user_update.type == "user_stats" {
+          memory.dashboard_data.user_stats = user_update.data
+        } else if user_update.type == "recent_activity" {
+          memory.dashboard_data.recent_activity = user_update.data
+        }
+        
+        // Trigger UI update
+        trigger_ui_update("user_data")
+        
+        memory.viewmodel_stats.data_updates += 1
+        memory.user_data_update = null
+        
+      } else if plan.action == "update_analytics_data" {
+        analytics_update = memory.analytics_data_update
+        
+        // Update dashboard analytics
+        if analytics_update.type == "performance_metrics" {
+          memory.dashboard_data.performance_metrics = analytics_update.data
+        } else if analytics_update.type == "analytics_stats" {
+          update_analytics_stats(analytics_update.data)
+        }
+        
+        // Trigger UI update
+        trigger_ui_update("analytics_data")
+        
+        memory.viewmodel_stats.data_updates += 1
+        memory.analytics_data_update = null
+        
+      } else if plan.action == "update_settings_data" {
+        settings_update = memory.settings_data_update
+        
+        // Update dashboard settings
+        if settings_update.type == "user_preferences" {
+          update_user_preferences(settings_update.data)
+        } else if settings_update.type == "application_settings" {
+          update_application_settings(settings_update.data)
+        }
+        
+        // Trigger UI update
+        trigger_ui_update("settings_data")
+        
+        memory.viewmodel_stats.data_updates += 1
+        memory.settings_data_update = null
+        
+      } else if plan.action == "handle_user_interaction" {
+        user_action = memory.user_action
+        
+        // Handle different types of user interactions
+        if user_action.type == "tab_selection" {
+          handle_tab_selection(user_action.data)
+        } else if user_action.type == "filter_change" {
+          handle_filter_change(user_action.data)
+        } else if user_action.type == "sort_change" {
+          handle_sort_change(user_action.data)
+        } else if user_action.type == "refresh_request" {
+          handle_refresh_request()
+        }
+        
+        memory.viewmodel_stats.ui_interactions += 1
+        memory.user_action = null
+        
+      } else if plan.action == "maintain_viewmodel" {
+        // Maintain viewmodel state
+        cleanup_old_data()
+        update_statistics()
+        
+        // Emit viewmodel state
+        emit_viewmodel_state()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      // Emit viewmodel updates
+      emit "viewmodel_update" {
+        dashboard_data: memory.dashboard_data,
+        is_loading: memory.is_loading,
+        error_message: memory.error_message,
+        current_view: memory.current_view
+      }
+      
+      // Emit user interaction responses
+      if memory.user_interactions.selected_tab {
+        emit "tab_changed" {
+          tab: memory.user_interactions.selected_tab,
+          timestamp: get_timestamp()
+        }
+      }
+    }
+  }
+
+  // Data source management
+  recipe "initialize_data_sources" {
+    needs: data_sources
+    gives: sources_initialized
+    
+    brain {
+      plan { action: "init_sources" }
+      execute {
+        memory.data_sources = data_sources
+        
+        // Subscribe to data source updates
+        subscribe_to_user_model()
+        subscribe_to_analytics_model()
+        subscribe_to_settings_model()
+        
+        sources_initialized = true
+      }
+    }
+  }
+
+  recipe "load_dashboard_data" {
+    needs: none
+    gives: data_loaded
+    
+    brain {
+      plan { action: "load_data" }
+      execute {
+        // Load user statistics
+        request_user_stats()
+        
+        // Load recent activity
+        request_recent_activity()
+        
+        // Load performance metrics
+        request_performance_metrics()
+        
+        // Load notifications
+        load_notifications()
+        
+        memory.is_loading = false
+        data_loaded = true
+      }
+    }
+  }
+
+  // User interaction handlers
+  recipe "handle_tab_selection" {
+    needs: tab_data
+    gives: tab_handled
+    
+    brain {
+      plan { action: "handle_tab" }
+      execute {
+        selected_tab = tab_data.tab
+        
+        // Update selected tab
+        memory.user_interactions.selected_tab = selected_tab
+        
+        // Load tab-specific data
+        if selected_tab == "analytics" {
+          load_analytics_tab_data()
+        } else if selected_tab == "settings" {
+          load_settings_tab_data()
+        } else if selected_tab == "activity" {
+          load_activity_tab_data()
+        }
+        
+        // Emit tab change event
+        emit "tab_selection_changed" { 
+          tab: selected_tab,
+          timestamp: get_timestamp()
+        }
+        
+        tab_handled = true
+      }
+    }
+  }
+
+  recipe "handle_filter_change" {
+    needs: filter_data
+    gives: filter_handled
+    
+    brain {
+      plan { action: "handle_filter" }
+      execute {
+        filter_type = filter_data.type
+        filter_value = filter_data.value
+        
+        // Update filter settings
+        memory.user_interactions.filter_settings[filter_type] = filter_value
+        
+        // Apply filter to dashboard data
+        apply_filter_to_data(filter_type, filter_value)
+        
+        // Emit filter change event
+        emit "filter_changed" { 
+          type: filter_type,
+          value: filter_value,
+          timestamp: get_timestamp()
+        }
+        
+        filter_handled = true
+      }
+    }
+  }
+
+  recipe "handle_sort_change" {
+    needs: sort_data
+    gives: sort_handled
+    
+    brain {
+      plan { action: "handle_sort" }
+      execute {
+        sort_field = sort_data.field
+        sort_direction = sort_data.direction
+        
+        // Update sort preferences
+        memory.user_interactions.sort_preferences[sort_field] = sort_direction
+        
+        // Apply sorting to dashboard data
+        apply_sorting_to_data(sort_field, sort_direction)
+        
+        // Emit sort change event
+        emit "sort_changed" { 
+          field: sort_field,
+          direction: sort_direction,
+          timestamp: get_timestamp()
+        }
+        
+        sort_handled = true
+      }
+    }
+  }
+
+  recipe "handle_refresh_request" {
+    needs: none
+    gives: refresh_handled
+    
+    brain {
+      plan { action: "handle_refresh" }
+      execute {
+        // Set loading state
+        memory.is_loading = true
+        
+        // Reload all dashboard data
+        load_dashboard_data()
+        
+        // Clear any error messages
+        memory.error_message = null
+        
+        // Emit refresh event
+        emit "dashboard_refreshed" { 
+          timestamp: get_timestamp()
+        }
+        
+        refresh_handled = true
+      }
+    }
+  }
+
+  // Data update handlers
+  recipe "update_analytics_stats" {
+    needs: analytics_stats
+    gives: stats_updated
+    
+    brain {
+      plan { action: "update_stats" }
+      execute {
+        // Update analytics statistics in dashboard
+        if memory.dashboard_data.performance_metrics {
+          memory.dashboard_data.performance_metrics.analytics_stats = analytics_stats
+        }
+        
+        stats_updated = true
+      }
+    }
+  }
+
+  recipe "update_user_preferences" {
+    needs: preferences
+    gives: preferences_updated
+    
+    brain {
+      plan { action: "update_prefs" }
+      execute {
+        // Update user preferences in dashboard
+        if memory.dashboard_data.user_stats {
+          memory.dashboard_data.user_stats.preferences = preferences
+        }
+        
+        preferences_updated = true
+      }
+    }
+  }
+
+  recipe "update_application_settings" {
+    needs: settings
+    gives: settings_updated
+    
+    brain {
+      plan { action: "update_settings" }
+      execute {
+        // Update application settings in dashboard
+        if memory.dashboard_data.user_stats {
+          memory.dashboard_data.user_stats.settings = settings
+        }
+        
+        settings_updated = true
+      }
+    }
+  }
+
+  // Utility methods
+  recipe "trigger_ui_update" {
+    needs: update_type
+    gives: ui_updated
+    
+    brain {
+      plan { action: "trigger_update" }
+      execute {
+        // Trigger UI update for specific data type
+        emit "ui_update_required" { 
+          type: update_type,
+          timestamp: get_timestamp()
+        }
+        
+        ui_updated = true
+      }
+    }
+  }
+
+  recipe "cleanup_old_data" {
+    needs: none
+    gives: cleanup_complete
+    
+    brain {
+      plan { action: "cleanup_data" }
+      execute {
+        // Clean up old recent activity (keep last 50)
+        if memory.dashboard_data.recent_activity.length > 50 {
+          memory.dashboard_data.recent_activity = memory.dashboard_data.recent_activity.slice(-50)
+        }
+        
+        // Clean up old notifications (keep last 20)
+        if memory.dashboard_data.notifications.length > 20 {
+          memory.dashboard_data.notifications = memory.dashboard_data.notifications.slice(-20)
+        }
+        
+        cleanup_complete = true
+      }
+    }
+  }
+
+  recipe "update_statistics" {
+    needs: none
+    gives: stats_updated
+    
+    brain {
+      plan { action: "update_stats" }
+      execute {
+        // Update viewmodel statistics
+        memory.viewmodel_stats.last_update = get_timestamp()
+        
+        stats_updated = true
+      }
+    }
+  }
+
+  recipe "emit_viewmodel_state" {
+    needs: none
+    gives: state_emitted
+    
+    brain {
+      plan { action: "emit_state" }
+      execute {
+        // Emit current viewmodel state
+        emit "viewmodel_state" {
+          stats: memory.viewmodel_stats,
+          interactions: memory.user_interactions,
+          timestamp: get_timestamp()
+        }
+        
+        state_emitted = true
+      }
+    }
+  }
+} 

@@ -1,0 +1,400 @@
+helper "analytics_model" {
+  can_do: ["data_analysis", "statistics", "trend_analysis", "reporting"]
+  
+  remember {
+    data_points = []
+    analytics_cache = {}
+    report_templates = {}
+    
+    // Analysis configurations
+    analysis_configs = {
+      time_series: { window_size: 24, aggregation: "hourly" },
+      user_behavior: { session_threshold: 1800, event_types: ["click", "scroll", "navigate"] },
+      performance: { metrics: ["load_time", "response_time", "error_rate"] }
+    }
+    
+    // Statistics tracking
+    model_stats = {
+      total_analyses: 0,
+      cache_hits: 0,
+      last_analysis: null
+    }
+  }
+
+  receive {
+    from "data_collection" as "new_data" {
+      type: "analytics_data"
+      bind: memory.incoming_data
+      on_receive: brain.process_data
+    }
+    
+    from "analysis_request" as "analysis_req" {
+      type: "perform_analysis"
+      bind: memory.analysis_request
+      on_receive: brain.perform_analysis
+    }
+    
+    from "report_request" as "report_req" {
+      type: "generate_report"
+      bind: memory.report_request
+      on_receive: brain.generate_report
+    }
+    
+    from "trend_request" as "trend_req" {
+      type: "trend_analysis"
+      bind: memory.trend_request
+      on_receive: brain.analyze_trends
+    }
+  }
+
+  brain {
+    plan {
+      if memory.incoming_data {
+        plan = { action: "process_incoming_data" }
+      } else if memory.analysis_request {
+        plan = { action: "perform_requested_analysis" }
+      } else if memory.report_request {
+        plan = { action: "generate_requested_report" }
+      } else if memory.trend_request {
+        plan = { action: "analyze_requested_trends" }
+      } else {
+        plan = { action: "maintain_analytics" }
+      }
+    }
+
+    execute {
+      if plan.action == "process_incoming_data" {
+        data = memory.incoming_data
+        
+        // Add timestamp if not present
+        if !data.timestamp {
+          data.timestamp = get_timestamp()
+        }
+        
+        // Store data point
+        memory.data_points.push(data)
+        
+        // Update cache if needed
+        update_analytics_cache(data)
+        
+        // Emit data processed event
+        emit "data_processed" { 
+          data_point: data,
+          total_points: memory.data_points.length
+        }
+        
+        memory.incoming_data = null
+        
+      } else if plan.action == "perform_requested_analysis" {
+        request = memory.analysis_request
+        analysis_type = request.type
+        parameters = request.parameters || {}
+        
+        // Check cache first
+        cache_key = generate_cache_key(analysis_type, parameters)
+        if memory.analytics_cache[cache_key] {
+          result = memory.analytics_cache[cache_key]
+          memory.model_stats.cache_hits += 1
+        } else {
+          // Perform analysis
+          result = perform_analysis_by_type(analysis_type, parameters)
+          
+          // Cache result
+          memory.analytics_cache[cache_key] = result
+        }
+        
+        memory.model_stats.total_analyses += 1
+        memory.model_stats.last_analysis = get_timestamp()
+        
+        // Emit analysis result
+        emit "analysis_complete" { 
+          type: analysis_type,
+          result: result,
+          cache_hit: memory.analytics_cache[cache_key] != null
+        }
+        
+        memory.analysis_request = null
+        
+      } else if plan.action == "generate_requested_report" {
+        request = memory.report_request
+        report_type = request.type
+        time_range = request.time_range || "7d"
+        
+        // Generate report
+        report_data = generate_report_by_type(report_type, time_range)
+        
+        // Emit report generated
+        emit "report_generated" { 
+          type: report_type,
+          data: report_data,
+          generated_at: get_timestamp()
+        }
+        
+        memory.report_request = null
+        
+      } else if plan.action == "analyze_requested_trends" {
+        request = memory.trend_request
+        trend_type = request.type
+        time_period = request.time_period || "30d"
+        
+        // Analyze trends
+        trend_data = analyze_trends_by_type(trend_type, time_period)
+        
+        // Emit trend analysis
+        emit "trend_analysis_complete" { 
+          type: trend_type,
+          trends: trend_data,
+          period: time_period
+        }
+        
+        memory.trend_request = null
+        
+      } else if plan.action == "maintain_analytics" {
+        // Clean up old data points (keep last 1000)
+        if memory.data_points.length > 1000 {
+          memory.data_points = memory.data_points.slice(-1000)
+        }
+        
+        // Clean up old cache entries
+        cleanup_old_cache_entries()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      // Emit analytics statistics
+      emit "analytics_stats" {
+        total_analyses: memory.model_stats.total_analyses,
+        cache_hits: memory.model_stats.cache_hits,
+        data_points: memory.data_points.length,
+        last_analysis: memory.model_stats.last_analysis
+      }
+    }
+  }
+
+  // Analysis methods
+  recipe "perform_analysis_by_type" {
+    needs: analysis_type, parameters
+    gives: analysis_result
+    
+    brain {
+      plan { action: "analyze_data" }
+      execute {
+        if analysis_type == "user_behavior" {
+          analysis_result = analyze_user_behavior(parameters)
+        } else if analysis_type == "performance" {
+          analysis_result = analyze_performance(parameters)
+        } else if analysis_type == "time_series" {
+          analysis_result = analyze_time_series(parameters)
+        } else if analysis_type == "statistical" {
+          analysis_result = perform_statistical_analysis(parameters)
+        } else {
+          analysis_result = { error: "Unknown analysis type: " + analysis_type }
+        }
+      }
+    }
+  }
+
+  recipe "analyze_user_behavior" {
+    needs: parameters
+    gives: behavior_analysis
+    
+    brain {
+      plan { action: "analyze_behavior" }
+      execute {
+        // Filter data points by user behavior events
+        behavior_events = memory.data_points.filter(function(point) {
+          return point.type == "user_event" && 
+                 point.event_type in memory.analysis_configs.user_behavior.event_types
+        })
+        
+        // Group by user and analyze patterns
+        user_sessions = group_events_by_user(behavior_events)
+        
+        behavior_analysis = {
+          total_sessions: Object.keys(user_sessions).length,
+          average_session_duration: calculate_average_session_duration(user_sessions),
+          most_common_events: find_most_common_events(behavior_events),
+          user_engagement_score: calculate_engagement_score(user_sessions)
+        }
+      }
+    }
+  }
+
+  recipe "analyze_performance" {
+    needs: parameters
+    gives: performance_analysis
+    
+    brain {
+      plan { action: "analyze_performance" }
+      execute {
+        // Filter performance data points
+        performance_data = memory.data_points.filter(function(point) {
+          return point.type == "performance" && 
+                 point.metric in memory.analysis_configs.performance.metrics
+        })
+        
+        performance_analysis = {
+          average_load_time: calculate_average(performance_data, "load_time"),
+          average_response_time: calculate_average(performance_data, "response_time"),
+          error_rate: calculate_error_rate(performance_data),
+          performance_trend: calculate_performance_trend(performance_data)
+        }
+      }
+    }
+  }
+
+  recipe "analyze_time_series" {
+    needs: parameters
+    gives: time_series_analysis
+    
+    brain {
+      plan { action: "analyze_time_series" }
+      execute {
+        config = memory.analysis_configs.time_series
+        window_size = parameters.window_size || config.window_size
+        aggregation = parameters.aggregation || config.aggregation
+        
+        // Group data by time windows
+        time_windows = group_data_by_time_windows(memory.data_points, window_size, aggregation)
+        
+        time_series_analysis = {
+          windows: time_windows.length,
+          window_size: window_size,
+          aggregation: aggregation,
+          trends: calculate_time_series_trends(time_windows),
+          seasonality: detect_seasonality(time_windows)
+        }
+      }
+    }
+  }
+
+  recipe "perform_statistical_analysis" {
+    needs: parameters
+    gives: statistical_result
+    
+    brain {
+      plan { action: "calculate_statistics" }
+      execute {
+        data_values = extract_numeric_values(memory.data_points, parameters.field)
+        
+        statistical_result = {
+          count: data_values.length,
+          mean: calculate_mean(data_values),
+          median: calculate_median(data_values),
+          mode: calculate_mode(data_values),
+          variance: calculate_variance(data_values),
+          standard_deviation: calculate_standard_deviation(data_values),
+          min: Math.min(...data_values),
+          max: Math.max(...data_values)
+        }
+      }
+    }
+  }
+
+  // Report generation methods
+  recipe "generate_report_by_type" {
+    needs: report_type, time_range
+    gives: report_data
+    
+    brain {
+      plan { action: "generate_report" }
+      execute {
+        if report_type == "user_activity" {
+          report_data = generate_user_activity_report(time_range)
+        } else if report_type == "performance_summary" {
+          report_data = generate_performance_summary_report(time_range)
+        } else if report_type == "trend_report" {
+          report_data = generate_trend_report(time_range)
+        } else {
+          report_data = { error: "Unknown report type: " + report_type }
+        }
+      }
+    }
+  }
+
+  recipe "generate_user_activity_report" {
+    needs: time_range
+    gives: activity_report
+    
+    brain {
+      plan { action: "generate_activity_report" }
+      execute {
+        // Filter data by time range
+        start_time = get_timestamp() - parse_time_range(time_range)
+        filtered_data = memory.data_points.filter(function(point) {
+          return point.timestamp >= start_time
+        })
+        
+        activity_report = {
+          time_range: time_range,
+          total_events: filtered_data.length,
+          unique_users: count_unique_users(filtered_data),
+          average_session_duration: calculate_average_session_duration(filtered_data),
+          top_actions: find_top_actions(filtered_data),
+          generated_at: get_timestamp()
+        }
+      }
+    }
+  }
+
+  // Utility methods
+  recipe "generate_cache_key" {
+    needs: analysis_type, parameters
+    gives: cache_key
+    
+    brain {
+      plan { action: "generate_key" }
+      execute {
+        // Create unique cache key
+        param_string = JSON.stringify(parameters)
+        cache_key = analysis_type + "_" + hash_string(param_string)
+      }
+    }
+  }
+
+  recipe "update_analytics_cache" {
+    needs: data_point
+    gives: cache_updated
+    
+    brain {
+      plan { action: "update_cache" }
+      execute {
+        // Update cache based on new data point
+        // This could invalidate certain cached analyses
+        for each cache_key in Object.keys(memory.analytics_cache) {
+          if should_invalidate_cache(cache_key, data_point) {
+            delete memory.analytics_cache[cache_key]
+          }
+        }
+        
+        cache_updated = true
+      }
+    }
+  }
+
+  recipe "cleanup_old_cache_entries" {
+    needs: none
+    gives: cleanup_complete
+    
+    brain {
+      plan { action: "cleanup_cache" }
+      execute {
+        // Remove cache entries older than 1 hour
+        current_time = get_timestamp()
+        for each cache_key in Object.keys(memory.analytics_cache) {
+          cache_entry = memory.analytics_cache[cache_key]
+          if cache_entry.timestamp && (current_time - cache_entry.timestamp) > 3600000 {
+            delete memory.analytics_cache[cache_key]
+          }
+        }
+        
+        cleanup_complete = true
+      }
+    }
+  }
+} 

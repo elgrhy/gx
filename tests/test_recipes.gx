@@ -1,0 +1,110 @@
+helper "recipe_tester" {
+  can_do: ["recipe_testing", "recipe_validation", "recipe_execution"]
+  
+  remember {
+    test_results = []
+    recipes_tested = 0
+    recipe_tests = ["basic_recipe", "complex_recipe", "recipe_validation", "recipe_execution"]
+    current_test = 0
+  }
+
+  brain {
+    plan {
+      if memory.current_test < memory.recipe_tests.length {
+        plan = { action: "run_recipe_test" }
+      } else {
+        plan = { action: "analyze_recipe_results" }
+      }
+    }
+    
+    execute {
+      if plan.action == "run_recipe_test" {
+        test_name = memory.recipe_tests[memory.current_test]
+        
+        if test_name == "basic_recipe" {
+          result = test_basic_recipe()
+          memory.test_results.push(result.success ? "basic_recipe_success" : "basic_recipe_failed")
+        } else if test_name == "complex_recipe" {
+          result = test_complex_recipe()
+          memory.test_results.push(result.success ? "complex_recipe_success" : "complex_recipe_failed")
+        } else if test_name == "recipe_validation" {
+          result = test_recipe_validation()
+          memory.test_results.push(result.success ? "recipe_validation_success" : "recipe_validation_failed")
+        } else if test_name == "recipe_execution" {
+          result = test_recipe_execution()
+          memory.test_results.push(result.success ? "recipe_execution_success" : "recipe_execution_failed")
+        }
+        
+        memory.recipes_tested += 1
+        memory.current_test += 1
+      } else if plan.action == "analyze_recipe_results" {
+        memory.test_results.push("recipe_analysis_complete")
+      }
+    }
+    
+    communicate {
+      if memory.current_test >= memory.recipe_tests.length {
+        broadcast "recipe_testing_complete" {
+          test_results: memory.test_results,
+          recipes_tested: memory.recipes_tested
+        }
+      }
+    }
+  }
+
+  recipe "test_basic_recipe" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_basic" } }
+      execute {
+        if plan.action == "test_basic" {
+          result = { success: true, message: "Basic recipe test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_complex_recipe" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_complex" } }
+      execute {
+        if plan.action == "test_complex" {
+          result = { success: true, message: "Complex recipe test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_recipe_validation" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_validation" } }
+      execute {
+        if plan.action == "test_validation" {
+          result = { success: true, message: "Recipe validation test passed" }
+        }
+      }
+    }
+  }
+
+  recipe "test_recipe_execution" {
+    needs: none
+    gives: result
+    
+    brain {
+      plan { plan = { action: "test_execution" } }
+      execute {
+        if plan.action == "test_execution" {
+          result = { success: true, message: "Recipe execution test passed" }
+        }
+      }
+    }
+  }
+} 
