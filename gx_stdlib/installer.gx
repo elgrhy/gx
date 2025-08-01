@@ -1,4 +1,4 @@
-agent "installer" {
+helper "installer" {
   capabilities: ["package_installation", "library_management", "version_control", "dependency_resolution"]
   
   memory {
@@ -9,31 +9,31 @@ agent "installer" {
     update_available = []
   }
 
-  input {
+  receive {
     channel "install_request" {
       source: "configurator"
       type: "package_install"
       bind: memory.install_request
-      on_receive: mental.install_package
+      on_receive: brain.install_package
     }
     
     channel "update_check" {
       source: "gx_kernel"
       type: "update_request"
       bind: memory.update_request
-      on_receive: mental.check_for_updates
+      on_receive: brain.check_for_updates
     }
     
     channel "package_info" {
       source: "gx_registry"
       type: "package_metadata"
       bind: memory.package_info
-      on_receive: mental.process_package_info
+      on_receive: brain.process_package_info
     }
   }
 
-  mental {
-    think {
+  brain {
+    plan {
       if memory.install_request {
         plan = {
           action: "install_package",
@@ -60,7 +60,7 @@ agent "installer" {
       }
     }
 
-    act {
+    execute {
       if plan.action == "install_package" {
         install_single_package(plan.package)
       } else if plan.action == "check_updates" {
@@ -70,12 +70,12 @@ agent "installer" {
       }
     }
 
-    save {
+    remember {
       memory.last_install_action = plan.action
       memory.last_install_timestamp = get_timestamp()
     }
 
-    reflect {
+    communicate {
       if memory.installation_errors.length > 0 {
         emit "installation_error"
       } else if plan.action == "install_package" {
@@ -84,7 +84,7 @@ agent "installer" {
     }
   }
 
-  goal "ensure_package_compatibility" {
+  objective "ensure_package_compatibility" {
     when memory.installation_errors.length > 0
     then {
       action: "resolve_conflicts",
@@ -92,7 +92,7 @@ agent "installer" {
     }
   }
 
-  signal "package_installed" {
+  message "package_installed" {
     do {
       log("Package installed successfully")
       memory.installed_packages[memory.last_installed_package] = {
@@ -103,25 +103,25 @@ agent "installer" {
     }
   }
 
-  signal "installation_error" {
+  message "installation_error" {
     do {
       log("Installation error: " + memory.installation_errors[memory.installation_errors.length - 1])
       emit "install_failed"
     }
   }
 
-  function "install_single_package" {
-    input: package_request
+  recipe "install_single_package" {
+    receive: package_request
     output: installation_result
     
-    mental {
-      think {
+    brain {
+      plan {
         package_name = package_request.name
         package_version = package_request.version || "latest"
         package_source = package_request.source || "gx_registry"
       }
       
-      act {
+      execute {
         try {
           if package_source == "gx_registry" {
             package_info = fetch_from_gx_registry(package_name, package_version)
@@ -155,11 +155,11 @@ agent "installer" {
         }
       }
       
-      save {
+      remember {
         memory.last_installation_result = installation_result
       }
       
-      reflect {
+      communicate {
         if installation_result.success {
           log("Successfully installed " + package_name + " v" + package_info.version)
         } else {
@@ -169,9 +169,9 @@ agent "installer" {
     }
   }
 
-  function "install_core_packages" {
-    mental {
-      think {
+  recipe "install_core_packages" {
+    brain {
+      plan {
         core_packages = [
           {
             name: "gxchart",
@@ -196,7 +196,7 @@ agent "installer" {
         ]
       }
       
-      act {
+      execute {
         for each package in core_packages {
           memory.installation_queue.push(package)
         }
@@ -204,24 +204,24 @@ agent "installer" {
         process_installation_queue()
       }
       
-      save {
+      remember {
         memory.core_packages_installed = true
       }
       
-      reflect {
+      communicate {
         log("Core packages installation initiated")
       }
     }
   }
 
-  function "process_installation_queue" {
-    mental {
-      think {
+  recipe "process_installation_queue" {
+    brain {
+      plan {
         queue = memory.installation_queue
         processed = []
       }
       
-      act {
+      execute {
         for each package in queue {
           try {
             result = install_single_package(package)
@@ -239,25 +239,25 @@ agent "installer" {
         }
       }
       
-      save {
+      remember {
         memory.queue_processed = true
         memory.last_queue_process = get_timestamp()
       }
       
-      reflect {
+      communicate {
         log("Processed " + count(processed) + " packages from installation queue")
       }
     }
   }
 
-  function "check_all_packages_for_updates" {
-    mental {
-      think {
+  recipe "check_all_packages_for_updates" {
+    brain {
+      plan {
         installed_packages = memory.installed_packages
         updates_available = []
       }
       
-      act {
+      execute {
         for each package_name, package_info in installed_packages {
           try {
             latest_version = get_latest_version(package_name)
@@ -274,11 +274,11 @@ agent "installer" {
         }
       }
       
-      save {
+      remember {
         memory.update_available = updates_available
       }
       
-      reflect {
+      communicate {
         if updates_available.length > 0 {
           log("Found " + count(updates_available) + " package updates available")
           emit "updates_available"
@@ -289,12 +289,12 @@ agent "installer" {
     }
   }
 
-  function "fetch_from_gx_registry" {
-    input: package_name, version
+  recipe "fetch_from_gx_registry" {
+    receive: package_name, version
     output: package_info
     
-    mental {
-      think {
+    brain {
+      plan {
         registry_url = "https://registry.gx.dev/api/packages/" + package_name
         if version == "latest" {
           registry_url += "/latest"
@@ -303,7 +303,7 @@ agent "installer" {
         }
       }
       
-      act {
+      execute {
         try {
           response = http_get(registry_url)
           if response.status == 200 {
@@ -316,24 +316,24 @@ agent "installer" {
         }
       }
       
-      reflect {
+      communicate {
         log("Fetched package info for " + package_name + " v" + package_info.version)
       }
     }
   }
 
-  function "download_package" {
-    input: download_url
+  recipe "download_package" {
+    receive: download_url
     output: downloaded_file
     
-    mental {
-      think {
+    brain {
+      plan {
         temp_dir = "temp/downloads/"
         filename = generate_filename_from_url(download_url)
         filepath = temp_dir + filename
       }
       
-      act {
+      execute {
         try {
           create_directory(temp_dir)
           downloaded_file = download_file(download_url, filepath)
@@ -342,23 +342,23 @@ agent "installer" {
         }
       }
       
-      reflect {
+      communicate {
         log("Downloaded package to " + filepath)
       }
     }
   }
 
-  function "install_package_files" {
-    input: package_info
+  recipe "install_package_files" {
+    receive: package_info
     output: installed_files
     
-    mental {
-      think {
+    brain {
+      plan {
         package_dir = "gx_stdlib/" + package_info.name + "/"
         installed_files = []
       }
       
-      act {
+      execute {
         try {
           create_directory(package_dir)
           
@@ -380,18 +380,18 @@ agent "installer" {
         }
       }
       
-      reflect {
+      communicate {
         log("Installed " + count(installed_files) + " files for " + package_info.name)
       }
     }
   }
 
-  function "register_package" {
-    input: package_name, package_info
+  recipe "register_package" {
+    receive: package_name, package_info
     output: registered
     
-    mental {
-      think {
+    brain {
+      plan {
         registration_data = {
           name: package_name,
           version: package_info.version,
@@ -401,31 +401,31 @@ agent "installer" {
         }
       }
       
-      act {
+      execute {
         memory.installed_packages[package_name] = registration_data
         write_package_registry(package_name, registration_data)
         registered = true
       }
       
-      reflect {
+      communicate {
         log("Registered package " + package_name + " v" + package_info.version)
       }
     }
   }
 
-  function "npm_install_package" {
-    input: package_name, version
+  recipe "npm_install_package" {
+    receive: package_name, version
     output: npm_result
     
-    mental {
-      think {
+    brain {
+      plan {
         npm_command = "npm install " + package_name
         if version != "latest" {
           npm_command += "@" + version
         }
       }
       
-      act {
+      execute {
         try {
           npm_result = execute_command(npm_command)
           if npm_result.exit_code != 0 {
@@ -436,25 +436,25 @@ agent "installer" {
         }
       }
       
-      reflect {
+      communicate {
         log("npm package installed: " + package_name)
       }
     }
   }
 
-  function "pip_install_package" {
-    input: package_name, version
+  recipe "pip_install_package" {
+    receive: package_name, version
     output: pip_result
     
-    mental {
-      think {
+    brain {
+      plan {
         pip_command = "pip install " + package_name
         if version != "latest" {
           pip_command += "==" + version
         }
       }
       
-      act {
+      execute {
         try {
           pip_result = execute_command(pip_command)
           if pip_result.exit_code != 0 {
@@ -465,7 +465,7 @@ agent "installer" {
         }
       }
       
-      reflect {
+      communicate {
         log("pip package installed: " + package_name)
       }
     }

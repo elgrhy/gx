@@ -1,4 +1,4 @@
-agent "configurator" {
+helper "configurator" {
   capabilities: ["dependency_resolution", "environment_setup", "package_management", "version_control"]
   
   memory {
@@ -9,31 +9,31 @@ agent "configurator" {
     resolution_errors = []
   }
 
-  input {
+  receive {
     channel "config_request" {
       source: "gx_kernel"
       type: "setup_request"
       bind: memory.setup_request
-      on_receive: mental.setup_environment
+      on_receive: brain.setup_environment
     }
     
     channel "dependency_request" {
       source: "any_agent"
       type: "dependency_needed"
       bind: memory.dependency_request
-      on_receive: mental.resolve_dependency
+      on_receive: brain.resolve_dependency
     }
     
     channel "env_update" {
       source: "file_system"
       type: "env_file_change"
       bind: memory.env_changes
-      on_receive: mental.update_environment
+      on_receive: brain.update_environment
     }
   }
 
-  mental {
-    think {
+  brain {
+    plan {
       if memory.setup_request {
         plan = {
           action: "setup_environment",
@@ -60,7 +60,7 @@ agent "configurator" {
       }
     }
 
-    act {
+    execute {
       if plan.action == "setup_environment" {
         setup_initial_environment()
         load_environment_variables()
@@ -72,12 +72,12 @@ agent "configurator" {
       }
     }
 
-    save {
+    remember {
       memory.last_config_action = plan.action
       memory.last_config_timestamp = get_timestamp()
     }
 
-    reflect {
+    communicate {
       if memory.resolution_errors.length > 0 {
         emit "config_error"
       } else if plan.action == "setup_environment" {
@@ -86,7 +86,7 @@ agent "configurator" {
     }
   }
 
-  goal "ensure_dependency_compatibility" {
+  objective "ensure_dependency_compatibility" {
     when memory.resolution_errors.length > 0
     then {
       action: "resolve_conflicts",
@@ -94,23 +94,23 @@ agent "configurator" {
     }
   }
 
-  signal "environment_ready" {
+  message "environment_ready" {
     do {
       log("GX environment configured successfully")
-      assign.agent("installer").install_core_packages()
+      assign.helper("installer").install_core_packages()
     }
   }
 
-  signal "config_error" {
+  message "config_error" {
     do {
       log("Configuration error detected: " + memory.resolution_errors)
       emit "setup_failed"
     }
   }
 
-  function "setup_initial_environment" {
-    mental {
-      think {
+  recipe "setup_initial_environment" {
+    brain {
+      plan {
         required_dirs = [
           "gx_stdlib",
           "examples", 
@@ -126,7 +126,7 @@ agent "configurator" {
         ]
       }
       
-      act {
+      execute {
         for each dir in required_dirs {
           create_directory(dir)
         }
@@ -138,43 +138,43 @@ agent "configurator" {
         }
       }
       
-      save {
+      remember {
         memory.environment_initialized = true
       }
       
-      reflect {
+      communicate {
         log("Initial environment setup complete")
       }
     }
   }
 
-  function "load_environment_variables" {
-    mental {
-      think {
+  recipe "load_environment_variables" {
+    brain {
+      plan {
         env_file = read_file(".env")
         env_vars = parse_env_file(env_file)
       }
       
-      act {
+      execute {
         for each key, value in env_vars {
           memory.environment_vars[key] = value
           set_environment_variable(key, value)
         }
       }
       
-      save {
+      remember {
         memory.env_loaded = true
       }
       
-      reflect {
+      communicate {
         log("Loaded " + count(memory.environment_vars) + " environment variables")
       }
     }
   }
 
-  function "validate_dependencies" {
-    mental {
-      think {
+  recipe "validate_dependencies" {
+    brain {
+      plan {
         required_deps = [
           "gxchart",
           "gxui", 
@@ -185,7 +185,7 @@ agent "configurator" {
         missing_deps = []
       }
       
-      act {
+      execute {
         for each dep in required_deps {
           if not package_installed(dep) {
             missing_deps.push(dep)
@@ -197,12 +197,12 @@ agent "configurator" {
         }
       }
       
-      save {
+      remember {
         memory.dependencies_validated = true
         memory.missing_dependencies = missing_deps
       }
       
-      reflect {
+      communicate {
         if missing_deps.length > 0 {
           log("Missing dependencies detected: " + missing_deps)
         } else {
@@ -212,18 +212,18 @@ agent "configurator" {
     }
   }
 
-  function "resolve_and_install_dependency" {
-    input: dependency_request
+  recipe "resolve_and_install_dependency" {
+    receive: dependency_request
     output: installation_result
     
-    mental {
-      think {
+    brain {
+      plan {
         dep_name = dependency_request.name
         dep_version = dependency_request.version || "latest"
         dep_source = dependency_request.source || "gx_registry"
       }
       
-      act {
+      execute {
         try {
           if dep_source == "gx_registry" {
             package_info = fetch_package_info(dep_name, dep_version)
@@ -258,11 +258,11 @@ agent "configurator" {
         }
       }
       
-      save {
+      remember {
         memory.last_installation = installation_result
       }
       
-      reflect {
+      communicate {
         if installation_result.success {
           log("Successfully installed " + dep_name + " v" + package_info.version)
         } else {
@@ -272,16 +272,16 @@ agent "configurator" {
     }
   }
 
-  function "apply_environment_changes" {
-    input: changes
+  recipe "apply_environment_changes" {
+    receive: changes
     output: applied_changes
     
-    mental {
-      think {
+    brain {
+      plan {
         applied_changes = []
       }
       
-      act {
+      execute {
         for each change in changes {
           if change.type == "env_var" {
             memory.environment_vars[change.key] = change.value
@@ -294,42 +294,42 @@ agent "configurator" {
         }
       }
       
-      save {
+      remember {
         memory.last_env_update = get_timestamp()
       }
       
-      reflect {
+      communicate {
         log("Applied " + count(applied_changes) + " environment changes")
       }
     }
   }
 
-  function "create_default_file" {
-    input: filename
+  recipe "create_default_file" {
+    receive: filename
     output: created
     
-    mental {
-      think {
+    brain {
+      plan {
         default_contents = get_default_file_contents(filename)
       }
       
-      act {
+      execute {
         write_file(filename, default_contents)
         created = true
       }
       
-      reflect {
+      communicate {
         log("Created default file: " + filename)
       }
     }
   }
 
-  function "get_default_file_contents" {
-    input: filename
+  recipe "get_default_file_contents" {
+    receive: filename
     output: contents
     
-    mental {
-      think {
+    brain {
+      plan {
         if filename == ".env" {
           contents = """
 # GX Environment Configuration
@@ -407,7 +407,7 @@ GX_CORS_ORIGIN=http://localhost:3000
         }
       }
       
-      act {
+      execute {
         return contents
       }
     }

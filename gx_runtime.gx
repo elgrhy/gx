@@ -1,4 +1,4 @@
-agent "gx_runtime" {
+helper "gx_runtime" {
   capabilities: ["mental_execution", "agent_orchestration", "memory_management", "signal_dispatch"]
   
   memory {
@@ -9,31 +9,31 @@ agent "gx_runtime" {
     runtime_status = "initializing"
   }
 
-  input {
+  receive {
     channel "ast_load" {
       source: "gx_parser"
       type: "ast_data"
       bind: memory.ast_nodes
-      on_receive: mental.load_agents_from_ast
+      on_receive: brain.load_agents_from_ast
     }
     
     channel "agent_signal" {
       source: "agent_mesh"
-      type: "signal"
+      type: "message"
       bind: memory.incoming_signals
-      on_receive: mental.process_signal
+      on_receive: brain.process_signal
     }
     
     channel "memory_update" {
       source: "any_agent"
       type: "memory_change"
       bind: memory.memory_updates
-      on_receive: mental.sync_memory
+      on_receive: brain.sync_memory
     }
   }
 
-  mental {
-    think {
+  brain {
+    plan {
       if memory.runtime_status == "initializing" {
         plan = {
           action: "initialize_runtime",
@@ -57,7 +57,7 @@ agent "gx_runtime" {
       }
     }
 
-    act {
+    execute {
       if plan.action == "initialize_runtime" {
         memory.runtime_status = "ready"
         log("GX Runtime initialized")
@@ -71,12 +71,12 @@ agent "gx_runtime" {
       }
     }
 
-    save {
+    remember {
       memory.last_execution_cycle = memory.execution_cycle
       memory.execution_cycle += 1
     }
 
-    reflect {
+    communicate {
       if memory.running_agents.length > 0 {
         log("Runtime executing " + count(memory.running_agents) + " agents")
       }
@@ -86,38 +86,38 @@ agent "gx_runtime" {
     }
   }
 
-  goal "maintain_agent_health" {
-    when any agent in memory.running_agents has status == "failed"
+  objective "maintain_agent_health" {
+    when any helper in memory.running_agents has status == "failed"
     then {
       action: "restart_failed_agent",
-      agent: failed_agent
+      helper: failed_agent
     }
   }
 
-  signal "runtime_ready" {
+  message "runtime_ready" {
     do {
       emit "system_ready"
     }
   }
 
-  signal "agent_failed" {
+  message "agent_failed" {
     do {
       log("Agent failure detected - attempting recovery")
       restart_agent(failed_agent_id)
     }
   }
 
-  function "load_agents_from_ast" {
-    input: ast_nodes
+  recipe "load_agents_from_ast" {
+    receive: ast_nodes
     output: loaded_agents
     
-    mental {
-      think {
+    brain {
+      plan {
         agents_to_load = ast_nodes.agents
         loaded_agents = []
       }
       
-      act {
+      execute {
         for each agent_name, agent_config in agents_to_load {
           agent_instance = {
             id: generate_uuid(),
@@ -126,10 +126,10 @@ agent "gx_runtime" {
             status: "loading",
             memory: initialize_agent_memory(agent_config.memory),
             mental_state: {
-              think: agent_config.mental.think || [],
-              act: agent_config.mental.act || [],
-              save: agent_config.mental.save || [],
-              reflect: agent_config.mental.reflect || []
+              plan: agent_config.brain.plan || [],
+              execute: agent_config.brain.execute || [],
+              remember: agent_config.brain.remember || [],
+              communicate: agent_config.brain.communicate || []
             },
             goals: agent_config.goals || [],
             signals: agent_config.signals || [],
@@ -142,47 +142,47 @@ agent "gx_runtime" {
         }
       }
       
-      save {
+      remember {
         memory.loaded_agents_count = count(loaded_agents)
       }
       
-      reflect {
+      communicate {
         log("Loaded " + count(loaded_agents) + " agents from AST")
       }
     }
   }
 
-  function "start_all_agents" {
-    mental {
-      think {
+  recipe "start_all_agents" {
+    brain {
+      plan {
         agents_to_start = memory.running_agents
       }
       
-      act {
-        for each agent_name, agent in agents_to_start {
-          agent.status = "running"
-          execute_mental_cycle(agent)
+      execute {
+        for each agent_name, helper in agents_to_start {
+          helper.status = "running"
+          execute_mental_cycle(helper)
         }
       }
       
-      save {
+      remember {
         memory.runtime_status = "running"
       }
       
-      reflect {
+      communicate {
         log("Started " + count(agents_to_start) + " agents")
         emit "runtime_ready"
       }
     }
   }
 
-  function "execute_mental_cycle" {
-    input: agent
+  recipe "execute_mental_cycle" {
+    receive: helper
     output: execution_result
     
-    mental {
-      think {
-        mental_blocks = ["think", "act", "save", "reflect"]
+    brain {
+      plan {
+        mental_blocks = ["plan", "execute", "remember", "communicate"]
         execution_result = {
           success: true,
           errors: [],
@@ -190,11 +190,11 @@ agent "gx_runtime" {
         }
       }
       
-      act {
+      execute {
         for each block in mental_blocks {
-          if agent.mental_state[block] {
+          if helper.mental_state[block] {
             try {
-              block_result = execute_mental_block(agent, block)
+              block_result = execute_mental_block(helper, block)
               if not block_result.success {
                 execution_result.success = false
                 execution_result.errors.push(block_result.error)
@@ -207,31 +207,31 @@ agent "gx_runtime" {
         }
       }
       
-      save {
-        agent.last_execution = get_timestamp()
-        agent.execution_count += 1
+      remember {
+        helper.last_execution = get_timestamp()
+        helper.execution_count += 1
       }
       
-      reflect {
+      communicate {
         if not execution_result.success {
-          agent.status = "failed"
+          helper.status = "failed"
           emit "agent_failed"
         }
       }
     }
   }
 
-  function "execute_mental_block" {
-    input: agent, block_name
+  recipe "execute_mental_block" {
+    receive: helper, block_name
     output: block_result
     
-    mental {
-      think {
-        block_code = agent.mental_state[block_name]
-        agent_memory = memory.agent_memory[agent.name]
+    brain {
+      plan {
+        block_code = helper.mental_state[block_name]
+        agent_memory = memory.agent_memory[helper.name]
       }
       
-      act {
+      execute {
         block_result = {
           success: true,
           output: null,
@@ -239,14 +239,14 @@ agent "gx_runtime" {
         }
         
         try {
-          if block_name == "think" {
-            block_result.output = execute_think_block(agent, block_code, agent_memory)
-          } else if block_name == "act" {
-            block_result.output = execute_act_block(agent, block_code, agent_memory)
-          } else if block_name == "save" {
-            block_result.output = execute_save_block(agent, block_code, agent_memory)
-          } else if block_name == "reflect" {
-            block_result.output = execute_reflect_block(agent, block_code, agent_memory)
+          if block_name == "plan" {
+            block_result.output = execute_think_block(helper, block_code, agent_memory)
+          } else if block_name == "execute" {
+            block_result.output = execute_act_block(helper, block_code, agent_memory)
+          } else if block_name == "remember" {
+            block_result.output = execute_save_block(helper, block_code, agent_memory)
+          } else if block_name == "communicate" {
+            block_result.output = execute_reflect_block(helper, block_code, agent_memory)
           }
         } catch error {
           block_result.success = false
@@ -254,31 +254,31 @@ agent "gx_runtime" {
         }
       }
       
-      save {
-        agent.mental_state[block_name + "_last_execution"] = get_timestamp()
+      remember {
+        helper.mental_state[block_name + "_last_execution"] = get_timestamp()
       }
       
-      reflect {
+      communicate {
         if not block_result.success {
-          log("Mental block " + block_name + " failed for agent " + agent.name)
+          log("Mental block " + block_name + " failed for helper " + helper.name)
         }
       }
     }
   }
 
-  function "execute_think_block" {
-    input: agent, think_code, agent_memory
+  recipe "execute_think_block" {
+    receive: helper, think_code, agent_memory
     output: think_result
     
-    mental {
-      think {
+    brain {
+      plan {
         think_result = {
           plan: null,
           analysis: null
         }
       }
       
-      act {
+      execute {
         if think_code contains "plan" {
           think_result.plan = evaluate_plan_logic(think_code, agent_memory)
         }
@@ -287,30 +287,30 @@ agent "gx_runtime" {
         }
       }
       
-      save {
+      remember {
         agent_memory.last_think_result = think_result
       }
       
-      reflect {
-        log("Think block executed for agent " + agent.name)
+      communicate {
+        log("Think block executed for helper " + helper.name)
       }
     }
   }
 
-  function "execute_act_block" {
-    input: agent, act_code, agent_memory
+  recipe "execute_act_block" {
+    receive: helper, act_code, agent_memory
     output: act_result
     
-    mental {
-      think {
+    brain {
+      plan {
         act_result = {
           actions_taken: [],
           assignments: []
         }
       }
       
-      act {
-        if act_code contains "assign.agent" {
+      execute {
+        if act_code contains "assign.helper" {
           target_agent = extract_agent_name(act_code)
           act_result.assignments.push(target_agent)
           assign_task_to_agent(target_agent, act_code)
@@ -323,29 +323,29 @@ agent "gx_runtime" {
         }
       }
       
-      save {
+      remember {
         agent_memory.last_act_result = act_result
       }
       
-      reflect {
-        log("Act block executed for agent " + agent.name + " with " + count(act_result.actions_taken) + " actions")
+      communicate {
+        log("Act block executed for helper " + helper.name + " with " + count(act_result.actions_taken) + " actions")
       }
     }
   }
 
-  function "execute_save_block" {
-    input: agent, save_code, agent_memory
+  recipe "execute_save_block" {
+    receive: helper, save_code, agent_memory
     output: save_result
     
-    mental {
-      think {
+    brain {
+      plan {
         save_result = {
           saved_variables: [],
           memory_updates: []
         }
       }
       
-      act {
+      execute {
         memory_updates = parse_memory_updates(save_code)
         for each update in memory_updates {
           agent_memory[update.variable] = update.value
@@ -353,33 +353,33 @@ agent "gx_runtime" {
         }
       }
       
-      save {
+      remember {
         agent_memory.last_save_timestamp = get_timestamp()
       }
       
-      reflect {
-        log("Save block executed for agent " + agent.name + " with " + count(save_result.memory_updates) + " updates")
+      communicate {
+        log("Save block executed for helper " + helper.name + " with " + count(save_result.memory_updates) + " updates")
       }
     }
   }
 
-  function "execute_reflect_block" {
-    input: agent, reflect_code, agent_memory
+  recipe "execute_reflect_block" {
+    receive: helper, reflect_code, agent_memory
     output: reflect_result
     
-    mental {
-      think {
+    brain {
+      plan {
         reflect_result = {
           signals_emitted: [],
           logs_written: []
         }
       }
       
-      act {
+      execute {
         if reflect_code contains "emit" {
           signal_name = extract_signal_name(reflect_code)
           reflect_result.signals_emitted.push(signal_name)
-          emit_signal(signal_name, agent.name)
+          emit_signal(signal_name, helper.name)
         }
         
         if reflect_code contains "log" {
@@ -389,49 +389,49 @@ agent "gx_runtime" {
         }
       }
       
-      save {
+      remember {
         agent_memory.last_reflect_result = reflect_result
       }
       
-      reflect {
-        log("Reflect block executed for agent " + agent.name)
+      communicate {
+        log("Reflect block executed for helper " + helper.name)
       }
     }
   }
 
-  function "process_signal_queue" {
-    mental {
-      think {
+  recipe "process_signal_queue" {
+    brain {
+      plan {
         pending_signals = memory.signal_queue
       }
       
-      act {
-        for each signal in pending_signals {
-          target_agents = find_agents_responding_to_signal(signal.name)
-          for each agent in target_agents {
-            execute_signal_handler(agent, signal)
+      execute {
+        for each message in pending_signals {
+          target_agents = find_agents_responding_to_signal(message.name)
+          for each helper in target_agents {
+            execute_signal_handler(helper, message)
           }
         }
         memory.signal_queue = []
       }
       
-      save {
+      remember {
         memory.signals_processed += count(pending_signals)
       }
       
-      reflect {
+      communicate {
         log("Processed " + count(pending_signals) + " signals")
       }
     }
   }
 
-  function "emit_signal" {
-    input: signal_name, source_agent
+  recipe "emit_signal" {
+    receive: signal_name, source_agent
     output: signal_id
     
-    mental {
-      think {
-        signal = {
+    brain {
+      plan {
+        message = {
           id: generate_uuid(),
           name: signal_name,
           source: source_agent,
@@ -440,16 +440,16 @@ agent "gx_runtime" {
         }
       }
       
-      act {
-        memory.signal_queue.push(signal)
-        signal_id = signal.id
+      execute {
+        memory.signal_queue.push(message)
+        signal_id = message.id
       }
       
-      save {
+      remember {
         memory.total_signals_emitted += 1
       }
       
-      reflect {
+      communicate {
         log("Signal emitted: " + signal_name + " from " + source_agent)
       }
     }

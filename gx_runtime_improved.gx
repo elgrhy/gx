@@ -1,0 +1,501 @@
+helper "gx_runtime_improved" {
+  capabilities: ["mental_execution", "agent_orchestration", "memory_management", "signal_dispatch", "backward_compatibility"]
+  
+  memory {
+    running_agents = {}
+    agent_memory = {}
+    signal_queue = []
+    execution_cycle = 0
+    runtime_status = "initializing"
+    syntax_mode = "improved" // "legacy" or "improved"
+    
+    // Improved syntax mappings
+    syntax_mappings = {
+      // Agent execution
+      "helper": "helper",
+      "can_do": "capabilities",
+      "remember": "memory",
+      "receive": "receive",
+      "brain": "brain",
+      
+      // Mental cycle execution
+      "plan": "plan",
+      "execute": "execute",
+      "remember": "remember",
+      "communicate": "communicate",
+      
+      // Data flow execution
+      "send_to": "assign.helper",
+      "broadcast": "emit",
+      
+      // Function execution
+      "recipe": "recipe",
+      "needs": "receive",
+      "gives": "output",
+      "steps": "brain",
+      
+      // Goal and message execution
+      "rule": "objective",
+      "when": "message",
+      
+      // UI binding
+      "connect": "bind",
+      "<->": "↔"
+    }
+  }
+
+  receive {
+    channel "ast_load" {
+      source: "gx_parser_improved"
+      type: "ast_data"
+      bind: memory.ast_nodes
+      on_receive: brain.load_agents_from_ast
+    }
+    
+    channel "agent_signal" {
+      source: "agent_mesh"
+      type: "message"
+      bind: memory.incoming_signals
+      on_receive: brain.process_signal
+    }
+    
+    channel "memory_update" {
+      source: "any_agent"
+      type: "memory_change"
+      bind: memory.memory_updates
+      on_receive: brain.sync_memory
+    }
+    
+    channel "syntax_mode_request" {
+      source: "config"
+      type: "syntax_mode"
+      bind: memory.mode_request
+      on_receive: brain.set_syntax_mode
+    }
+  }
+
+  brain {
+    plan {
+      if memory.runtime_status == "initializing" {
+        plan = {
+          action: "initialize_runtime",
+          priority: "critical"
+        }
+      } else if memory.ast_nodes {
+        plan = {
+          action: "load_and_start_agents",
+          priority: "high"
+        }
+      } else if memory.signal_queue.length > 0 {
+        plan = {
+          action: "process_signals",
+          priority: "normal"
+        }
+      } else {
+        plan = {
+          action: "execute_mental_cycles",
+          priority: "normal"
+        }
+      }
+    }
+
+    execute {
+      if plan.action == "initialize_runtime" {
+        memory.runtime_status = "ready"
+        log("GX Runtime Improved initialized")
+      } else if plan.action == "load_and_start_agents" {
+        load_agents_from_improved_ast(memory.ast_nodes)
+        start_all_agents()
+      } else if plan.action == "process_signals" {
+        process_signal_queue()
+      } else if plan.action == "execute_mental_cycles" {
+        execute_improved_mental_cycle_for_all_agents()
+      }
+    }
+
+    remember {
+      memory.last_execution_cycle = memory.execution_cycle
+      memory.execution_cycle += 1
+    }
+
+    communicate {
+      if memory.running_agents.length > 0 {
+        log("Runtime executing " + count(memory.running_agents) + " agents")
+      }
+      if memory.signal_queue.length > 0 {
+        log("Signal queue has " + count(memory.signal_queue) + " pending signals")
+      }
+    }
+  }
+
+  objective "maintain_agent_health" {
+    when any helper in memory.running_agents has status == "failed"
+    then {
+      action: "restart_failed_agent",
+      helper: failed_agent
+    }
+  }
+
+  objective "suggest_syntax_upgrade" {
+    when memory.syntax_mode == "legacy" and memory.runtime_status == "ready"
+    then {
+      action: "suggest_improved_syntax",
+      reason: "Consider upgrading to improved syntax for better clarity"
+    }
+  }
+
+  message "runtime_ready" {
+    do {
+      emit "system_ready"
+    }
+  }
+
+  recipe "load_agents_from_improved_ast" {
+    receive: ast_nodes
+    output: void
+    
+    brain {
+      execute {
+        for each agent_node in ast_nodes.agents {
+          // Create helper with improved syntax support
+          helper = create_agent_from_node(agent_node)
+          
+          // Initialize helper memory
+          helper.memory = initialize_agent_memory(agent_node.memory)
+          
+          // Set up receive channels
+          helper.input_channels = setup_input_channels(agent_node.input_channels)
+          
+          // Set up brain cycle
+          helper.mental_cycle = setup_mental_cycle(agent_node.mental_cycle)
+          
+          // Set up goals/rules
+          helper.goals = setup_goals(agent_node.goals)
+          
+          // Set up signals
+          helper.signals = setup_signals(agent_node.signals)
+          
+          // Start the helper
+          memory.running_agents[helper.name] = helper
+          start_agent(helper)
+        }
+      }
+    }
+  }
+
+  recipe "create_agent_from_node" {
+    receive: agent_node
+    output: helper
+    
+    brain {
+      execute {
+        helper = {
+          name: agent_node.name,
+          type: agent_node.type,
+          capabilities: agent_node.capabilities,
+          memory: {},
+          input_channels: [],
+          mental_cycle: {},
+          goals: [],
+          signals: [],
+          status: "initializing"
+        }
+      }
+    }
+  }
+
+  recipe "initialize_agent_memory" {
+    receive: memory_node
+    output: memory
+    
+    brain {
+      execute {
+        memory = {}
+        
+        for each key in Object.keys(memory_node) {
+          if memory_node[key].type {
+            // Typed memory (improved syntax)
+            memory[key] = create_typed_memory(memory_node[key])
+          } else {
+            // Simple memory
+            memory[key] = memory_node[key]
+          }
+        }
+      }
+    }
+  }
+
+  recipe "create_typed_memory" {
+    receive: type_info
+    output: memory_value
+    
+    brain {
+      execute {
+        if type_info.type == "number" {
+          memory_value = 0
+        } else if type_info.type == "string" {
+          memory_value = ""
+        } else if type_info.type == "boolean" {
+          memory_value = false
+        } else if type_info.type == "array" {
+          memory_value = []
+        } else if type_info.type == "object" {
+          memory_value = {}
+        } else if type_info.type == "union" {
+          // Handle union types like "low" | "medium" | "high"
+          memory_value = type_info.options[0] // Default to first option
+        }
+      }
+    }
+  }
+
+  recipe "setup_input_channels" {
+    receive: input_channels_node
+    output: input_channels
+    
+    brain {
+      execute {
+        input_channels = []
+        
+        for each channel_node in input_channels_node {
+          channel = {
+            name: channel_node.name,
+            source: channel_node.source,
+            type: channel_node.type,
+            bind: channel_node.bind,
+            on_receive: channel_node.on_receive
+          }
+          input_channels.push(channel)
+        }
+      }
+    }
+  }
+
+  recipe "setup_mental_cycle" {
+    receive: mental_cycle_node
+    output: mental_cycle
+    
+    brain {
+      execute {
+        mental_cycle = {}
+        
+        // Map improved syntax to legacy execution
+        if mental_cycle_node.plan {
+          mental_cycle.plan = mental_cycle_node.plan
+        }
+        if mental_cycle_node.execute {
+          mental_cycle.execute = mental_cycle_node.execute
+        }
+        if mental_cycle_node.remember {
+          mental_cycle.remember = mental_cycle_node.remember
+        }
+        if mental_cycle_node.communicate {
+          mental_cycle.communicate = mental_cycle_node.communicate
+        }
+      }
+    }
+  }
+
+  recipe "setup_goals" {
+    receive: goals_node
+    output: goals
+    
+    brain {
+      execute {
+        goals = []
+        
+        for each goal_node in goals_node {
+          objective = {
+            name: goal_node.name,
+            condition: goal_node.condition,
+            action: goal_node.action
+          }
+          goals.push(objective)
+        }
+      }
+    }
+  }
+
+  recipe "setup_signals" {
+    receive: signals_node
+    output: signals
+    
+    brain {
+      execute {
+        signals = []
+        
+        for each signal_node in signals_node {
+          message = {
+            name: signal_node.name,
+            handler: signal_node.handler
+          }
+          signals.push(message)
+        }
+      }
+    }
+  }
+
+  recipe "execute_improved_mental_cycle_for_all_agents" {
+    receive: void
+    output: void
+    
+    brain {
+      execute {
+        for each agent_name in Object.keys(memory.running_agents) {
+          helper = memory.running_agents[agent_name]
+          
+          if helper.status == "running" {
+            execute_agent_mental_cycle(helper)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "execute_agent_mental_cycle" {
+    receive: helper
+    output: void
+    
+    brain {
+      execute {
+        // Execute brain cycle with improved syntax support
+        if helper.mental_cycle.plan {
+          // Execute plan (plan)
+          plan_result = execute_code_block(helper.mental_cycle.plan, helper)
+          helper.memory.plan = plan_result
+        }
+        
+        if helper.mental_cycle.execute {
+          // Execute actions (execute)
+          execute_code_block(helper.mental_cycle.execute, helper)
+        }
+        
+        if helper.mental_cycle.remember {
+          // Save state (remember)
+          execute_code_block(helper.mental_cycle.remember, helper)
+        }
+        
+        if helper.mental_cycle.communicate {
+          // Communicate results (communicate)
+          execute_code_block(helper.mental_cycle.communicate, helper)
+        }
+      }
+    }
+  }
+
+  recipe "execute_code_block" {
+    receive: code_block, helper
+    output: result
+    
+    brain {
+      execute {
+        // Transform improved syntax to executable code
+        executable_code = transform_improved_syntax(code_block)
+        result = execute_code(executable_code, helper)
+      }
+    }
+  }
+
+  recipe "transform_improved_syntax" {
+    receive: code_block
+    output: executable_code
+    
+    brain {
+      execute {
+        executable_code = code_block
+        
+        // Transform send_to syntax
+        if code_block.includes("send_to") {
+          executable_code = executable_code.replace(
+            /send_to\s+"([^"]+)"\s*\{/g,
+            'assign.helper("$1").'
+          )
+        }
+        
+        // Transform broadcast syntax
+        if code_block.includes("broadcast") {
+          executable_code = executable_code.replace(
+            /broadcast\s+"([^"]+)"/g,
+            'emit "$1"'
+          )
+        }
+        
+        // Transform recipe calls
+        if code_block.includes("recipe.") {
+          executable_code = executable_code.replace(
+            /recipe\./g,
+            'recipe.'
+          )
+        }
+      }
+    }
+  }
+
+  recipe "process_signal_queue" {
+    receive: void
+    output: void
+    
+    brain {
+      execute {
+        while memory.signal_queue.length > 0 {
+          message = memory.signal_queue.shift()
+          
+          // Find agents that listen to this message
+          for each agent_name in Object.keys(memory.running_agents) {
+            helper = memory.running_agents[agent_name]
+            
+            for each signal_handler in helper.signals {
+              if signal_handler.name == message.name {
+                execute_signal_handler(signal_handler, message, helper)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "execute_signal_handler" {
+    receive: signal_handler, message, helper
+    output: void
+    
+    brain {
+      execute {
+        // Execute message handler with improved syntax support
+        if signal_handler.handler {
+          execute_code_block(signal_handler.handler, helper)
+        }
+      }
+    }
+  }
+
+  recipe "set_syntax_mode" {
+    receive: mode_request
+    output: void
+    
+    brain {
+      execute {
+        memory.syntax_mode = mode_request.mode
+        log("Runtime syntax mode set to: " + memory.syntax_mode)
+      }
+    }
+  }
+
+  recipe "suggest_improved_syntax" {
+    receive: void
+    output: void
+    
+    brain {
+      execute {
+        log("💡 Suggestion: Consider upgrading to improved syntax")
+        log("   - Use 'helper' instead of 'helper'")
+        log("   - Use 'brain' instead of 'brain'")
+        log("   - Use 'receive' instead of 'receive'")
+        log("   - Use 'send_to' instead of 'assign.helper'")
+        log("   - Use 'recipe' instead of 'recipe'")
+        log("   - Use 'rule' instead of 'objective'")
+        log("   - Use 'when' instead of 'message'")
+      }
+    }
+  }
+} 

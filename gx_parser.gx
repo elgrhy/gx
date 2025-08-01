@@ -1,4 +1,4 @@
-agent "gx_parser" {
+helper "gx_parser" {
   capabilities: ["parse", "ast_build", "syntax_validation", "cognitive_grammar"]
   
   memory {
@@ -9,24 +9,24 @@ agent "gx_parser" {
     grammar_version = "0.1.0"
   }
 
-  input {
+  receive {
     channel "parse_request" {
       source: "file_system"
       type: "gx_file"
       bind: memory.source_code
-      on_receive: mental.parse_gx_file
+      on_receive: brain.parse_gx_file
     }
     
     channel "syntax_check" {
       source: "editor"
       type: "validation_request"
       bind: memory.code_snippet
-      on_receive: mental.validate_syntax
+      on_receive: brain.validate_syntax
     }
   }
 
-  mental {
-    think {
+  brain {
+    plan {
       if memory.source_code {
         plan = {
           action: "parse_complete_file",
@@ -47,7 +47,7 @@ agent "gx_parser" {
       }
     }
 
-    act {
+    execute {
       if plan.action == "parse_complete_file" {
         memory.tokens = plan.tokens
         memory.ast_nodes = build_ast(memory.tokens)
@@ -59,12 +59,12 @@ agent "gx_parser" {
       }
     }
 
-    save {
+    remember {
       memory.last_parse_timestamp = get_timestamp()
       memory.parsed_agents_count = count(memory.ast_nodes.agents)
     }
 
-    reflect {
+    communicate {
       if memory.parse_errors.length > 0 {
         emit "parse_errors"
       } else if memory.ast_nodes.agents {
@@ -73,7 +73,7 @@ agent "gx_parser" {
     }
   }
 
-  goal "ensure_grammar_compliance" {
+  objective "ensure_grammar_compliance" {
     when memory.parse_errors.length > 0
     then {
       action: "report_errors",
@@ -81,36 +81,36 @@ agent "gx_parser" {
     }
   }
 
-  signal "ast_ready" {
+  message "ast_ready" {
     do {
-      assign.agent("gx_runtime").load_ast(memory.ast_nodes)
+      assign.helper("gx_runtime").load_ast(memory.ast_nodes)
     }
   }
 
-  signal "parse_errors" {
+  message "parse_errors" {
     do {
       log("Parse errors detected: " + memory.parse_errors)
       emit "syntax_validation_failed"
     }
   }
 
-  function "tokenize" {
-    input: source_code
+  recipe "tokenize" {
+    receive: source_code
     output: tokens
     
-    mental {
-      think {
+    brain {
+      plan {
         keywords = [
-          "agent", "mental", "input", "output", "memory", "goal", 
-          "signal", "render", "view", "bind", "style", "capabilities",
-          "think", "act", "save", "reflect", "when", "then", "do",
-          "channel", "source", "type", "on_receive", "assign.agent"
+          "helper", "brain", "receive", "output", "memory", "objective", 
+          "message", "render", "view", "bind", "style", "capabilities",
+          "plan", "execute", "remember", "communicate", "when", "then", "do",
+          "channel", "source", "type", "on_receive", "assign.helper"
         ]
         
         symbols = ["{", "}", "=", ":", "[", "]", "(", ")", "\"", "'"]
       }
       
-      act {
+      execute {
         tokens = []
         current_token = ""
         in_string = false
@@ -155,22 +155,22 @@ agent "gx_parser" {
         }
       }
       
-      save {
+      remember {
         memory.tokenization_success = true
       }
       
-      reflect {
+      communicate {
         log("Tokenized " + count(tokens) + " tokens")
       }
     }
   }
 
-  function "build_ast" {
-    input: tokens
+  recipe "build_ast" {
+    receive: tokens
     output: ast_nodes
     
-    mental {
-      think {
+    brain {
+      plan {
         ast = {
           agents: {},
           imports: [],
@@ -183,47 +183,47 @@ agent "gx_parser" {
         block_stack = []
       }
       
-      act {
+      execute {
         for i = 0 to tokens.length - 1 {
           token = tokens[i]
           
-          if token.value == "agent" {
+          if token.value == "helper" {
             agent_name = tokens[i + 1].value
             current_agent = {
               name: agent_name,
               capabilities: [],
               memory: {},
-              input: {},
-              mental: {},
+              receive: {},
+              brain: {},
               goals: [],
               signals: [],
               render: {},
               view: {}
             }
             ast.agents[agent_name] = current_agent
-            block_stack.push("agent")
-          } else if token.value == "mental" {
-            current_block = "mental"
-            block_stack.push("mental")
-          } else if token.value == "think" {
-            current_block = "think"
-            block_stack.push("think")
-          } else if token.value == "act" {
-            current_block = "act"
-            block_stack.push("act")
-          } else if token.value == "save" {
-            current_block = "save"
-            block_stack.push("save")
-          } else if token.value == "reflect" {
-            current_block = "reflect"
-            block_stack.push("reflect")
+            block_stack.push("helper")
+          } else if token.value == "brain" {
+            current_block = "brain"
+            block_stack.push("brain")
+          } else if token.value == "plan" {
+            current_block = "plan"
+            block_stack.push("plan")
+          } else if token.value == "execute" {
+            current_block = "execute"
+            block_stack.push("execute")
+          } else if token.value == "remember" {
+            current_block = "remember"
+            block_stack.push("remember")
+          } else if token.value == "communicate" {
+            current_block = "communicate"
+            block_stack.push("communicate")
           } else if token.value == "memory" {
             current_block = "memory"
             block_stack.push("memory")
-          } else if token.value == "input" {
-            current_block = "input"
-            block_stack.push("input")
-          } else if token.value == "goal" {
+          } else if token.value == "receive" {
+            current_block = "receive"
+            block_stack.push("receive")
+          } else if token.value == "objective" {
             goal_name = tokens[i + 1].value
             current_goal = {
               name: goal_name,
@@ -231,15 +231,15 @@ agent "gx_parser" {
               then: ""
             }
             current_agent.goals.push(current_goal)
-            block_stack.push("goal")
-          } else if token.value == "signal" {
+            block_stack.push("objective")
+          } else if token.value == "message" {
             signal_name = tokens[i + 1].value
             current_signal = {
               name: signal_name,
               actions: []
             }
             current_agent.signals.push(current_signal)
-            block_stack.push("signal")
+            block_stack.push("message")
           } else if token.value == "}" {
             block_stack.pop()
             if block_stack.length > 0 {
@@ -249,29 +249,29 @@ agent "gx_parser" {
         }
       }
       
-      save {
+      remember {
         memory.ast_nodes = ast
       }
       
-      reflect {
+      communicate {
         log("Built AST with " + count(ast.agents) + " agents")
       }
     }
   }
 
-  function "validate_syntax" {
-    input: tokens
+  recipe "validate_syntax" {
+    receive: tokens
     output: errors
     
-    mental {
-      think {
+    brain {
+      plan {
         errors = []
         brace_count = 0
         bracket_count = 0
         paren_count = 0
       }
       
-      act {
+      execute {
         for each token in tokens {
           if token.value == "{" {
             brace_count += 1
@@ -308,11 +308,11 @@ agent "gx_parser" {
         }
       }
       
-      save {
+      remember {
         memory.syntax_errors = errors
       }
       
-      reflect {
+      communicate {
         if errors.length > 0 {
           log("Syntax validation failed with " + count(errors) + " errors")
         } else {

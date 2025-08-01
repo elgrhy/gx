@@ -1,4 +1,4 @@
-agent "main_orchestrator" {
+helper "main_orchestrator" {
   capabilities: ["system_orchestration", "application_lifecycle", "error_handling", "monitoring"]
   
   memory {
@@ -19,31 +19,31 @@ agent "main_orchestrator" {
     ]
   }
 
-  input {
+  receive {
     channel "system_boot" {
       source: "gx.seed.asm"
       type: "boot_event"
       bind: memory.boot_event
-      on_receive: mental.initialize_system
+      on_receive: brain.initialize_system
     }
     
     channel "application_request" {
       source: "user_interface"
       type: "app_start"
       bind: memory.app_request
-      on_receive: mental.start_application
+      on_receive: brain.start_application
     }
     
     channel "health_check" {
       source: "system_monitor"
       type: "health_status"
       bind: memory.health_data
-      on_receive: mental.update_health_status
+      on_receive: brain.update_health_status
     }
   }
 
-  mental {
-    think {
+  brain {
+    plan {
       if memory.system_status == "starting" {
         plan = {
           action: "bootstrap_system",
@@ -70,7 +70,7 @@ agent "main_orchestrator" {
       }
     }
 
-    act {
+    execute {
       if plan.action == "bootstrap_system" {
         bootstrap_core_system(plan.sequence)
       } else if plan.action == "start_application" {
@@ -82,12 +82,12 @@ agent "main_orchestrator" {
       }
     }
 
-    save {
+    remember {
       memory.last_action = plan.action
       memory.last_timestamp = get_timestamp()
     }
 
-    reflect {
+    communicate {
       if memory.system_status == "ready" {
         emit "system_ready"
       } else if memory.system_health.errors.length > 0 {
@@ -96,7 +96,7 @@ agent "main_orchestrator" {
     }
   }
 
-  goal "maintain_system_stability" {
+  objective "maintain_system_stability" {
     when memory.system_health.errors.length > 5
     then {
       action: "emergency_restart",
@@ -104,7 +104,7 @@ agent "main_orchestrator" {
     }
   }
 
-  signal "system_ready" {
+  message "system_ready" {
     do {
       log("GX System ready for applications")
       memory.system_status = "ready"
@@ -112,19 +112,19 @@ agent "main_orchestrator" {
     }
   }
 
-  signal "system_error" {
+  message "system_error" {
     do {
       log("System error detected - attempting recovery")
       attempt_system_recovery()
     }
   }
 
-  function "bootstrap_core_system" {
-    input: startup_sequence
+  recipe "bootstrap_core_system" {
+    receive: startup_sequence
     output: bootstrap_result
     
-    mental {
-      think {
+    brain {
+      plan {
         bootstrap_result = {
           success: true,
           started_agents: [],
@@ -132,7 +132,7 @@ agent "main_orchestrator" {
         }
       }
       
-      act {
+      execute {
         for each agent_name in startup_sequence {
           try {
             agent_id = spawn_agent(agent_name)
@@ -142,7 +142,7 @@ agent "main_orchestrator" {
               status: "running"
             })
             
-            // Wait for agent to initialize
+            // Wait for helper to initialize
             wait_for_agent_ready(agent_id)
             
           } catch error {
@@ -152,12 +152,12 @@ agent "main_orchestrator" {
         }
       }
       
-      save {
+      remember {
         memory.system_status = "initialized"
         memory.core_agents_started = bootstrap_result.started_agents.length
       }
       
-      reflect {
+      communicate {
         if bootstrap_result.success {
           log("Core system bootstrapped successfully with " + count(bootstrap_result.started_agents) + " agents")
         } else {
@@ -167,24 +167,24 @@ agent "main_orchestrator" {
     }
   }
 
-  function "start_user_application" {
-    input: app_request
+  recipe "start_user_application" {
+    receive: app_request
     output: app_result
     
-    mental {
-      think {
+    brain {
+      plan {
         app_name = app_request.name
         app_file = app_request.file || app_name + ".gx"
         app_config = app_request.config || {}
       }
       
-      act {
+      execute {
         try {
           // Parse the application file
-          assign.agent("gx_parser").parse_file(app_file)
+          assign.helper("gx_parser").parse_file(app_file)
           
           // Load the application into runtime
-          assign.agent("gx_runtime").load_application(app_name, app_config)
+          assign.helper("gx_runtime").load_application(app_name, app_config)
           
           // Start the application
           app_id = start_application(app_name)
@@ -214,11 +214,11 @@ agent "main_orchestrator" {
         }
       }
       
-      save {
+      remember {
         memory.last_app_start = app_result
       }
       
-      reflect {
+      communicate {
         if app_result.success {
           log("Application started successfully: " + app_name)
         } else {
@@ -228,16 +228,16 @@ agent "main_orchestrator" {
     }
   }
 
-  function "update_system_health" {
-    input: health_data
+  recipe "update_system_health" {
+    receive: health_data
     output: health_updated
     
-    mental {
-      think {
+    brain {
+      plan {
         health_updated = false
       }
       
-      act {
+      execute {
         memory.system_health.cpu_usage = health_data.cpu_usage
         memory.system_health.memory_usage = health_data.memory_usage
         memory.system_health.agent_count = count(memory.running_applications)
@@ -251,24 +251,24 @@ agent "main_orchestrator" {
         health_updated = true
       }
       
-      save {
+      remember {
         memory.last_health_update = get_timestamp()
       }
       
-      reflect {
+      communicate {
         log("System health updated - CPU: " + memory.system_health.cpu_usage + "%, Memory: " + memory.system_health.memory_usage + "%")
       }
     }
   }
 
-  function "monitor_system_status" {
-    mental {
-      think {
+  recipe "monitor_system_status" {
+    brain {
+      plan {
         current_time = get_timestamp()
         system_uptime = current_time - memory.boot_event.timestamp
       }
       
-      act {
+      execute {
         // Check for any failed agents
         for each app_name, app_info in memory.running_applications {
           if app_info.status == "failed" {
@@ -283,19 +283,19 @@ agent "main_orchestrator" {
         }
       }
       
-      save {
+      remember {
         memory.last_monitor_check = current_time
       }
       
-      reflect {
+      communicate {
         // No specific reflection needed for monitoring
       }
     }
   }
 
-  function "attempt_system_recovery" {
-    mental {
-      think {
+  recipe "attempt_system_recovery" {
+    brain {
+      plan {
         recovery_actions = [
           "restart_failed_agents",
           "clear_error_logs", 
@@ -303,7 +303,7 @@ agent "main_orchestrator" {
         ]
       }
       
-      act {
+      execute {
         for each action in recovery_actions {
           try {
             if action == "restart_failed_agents" {
@@ -320,26 +320,26 @@ agent "main_orchestrator" {
         }
       }
       
-      save {
+      remember {
         memory.last_recovery_attempt = get_timestamp()
       }
       
-      reflect {
+      communicate {
         log("System recovery attempted")
       }
     }
   }
 
-  function "restart_application" {
-    input: app_name
+  recipe "restart_application" {
+    receive: app_name
     output: restart_result
     
-    mental {
-      think {
+    brain {
+      plan {
         app_info = memory.running_applications[app_name]
       }
       
-      act {
+      execute {
         try {
           stop_application(app_name)
           wait(1000)  // Wait 1 second
@@ -362,7 +362,7 @@ agent "main_orchestrator" {
         }
       }
       
-      reflect {
+      communicate {
         if restart_result.success {
           log("Application restarted successfully: " + app_name)
         } else {
@@ -374,8 +374,8 @@ agent "main_orchestrator" {
 }
 
 // Start the main orchestrator when the system boots
-mental {
-  think {
+brain {
+  plan {
     if memory.boot_event {
       plan = {
         action: "start_main_orchestrator",
@@ -384,17 +384,17 @@ mental {
     }
   }
   
-  act {
+  execute {
     if plan.action == "start_main_orchestrator" {
       spawn_agent("main_orchestrator")
     }
   }
   
-  save {
+  remember {
     memory.main_orchestrator_started = true
   }
   
-  reflect {
+  communicate {
     log("Main orchestrator started - GX system initializing")
   }
 } 

@@ -1,4 +1,4 @@
-agent "gx_kernel" {
+helper "gx_kernel" {
   capabilities: ["bootstrap", "memory", "agent_spawn", "mental_execution"]
   
   memory {
@@ -9,28 +9,28 @@ agent "gx_kernel" {
     kernel_version = "0.1.0"
   }
 
-  input {
+  receive {
     channel "system_boot" {
       source: "bios"
       type: "system_event"
-      on_receive: mental.boot_system
+      on_receive: brain.boot_system
     }
     
     channel "agent_request" {
       source: "agent_mesh"
       type: "spawn_request"
-      on_receive: mental.spawn_agent
+      on_receive: brain.spawn_agent
     }
     
     channel "panic_signal" {
       source: "any_agent"
       type: "error"
-      on_receive: mental.handle_panic
+      on_receive: brain.handle_panic
     }
   }
 
-  mental {
-    think {
+  brain {
+    plan {
       if memory.status == "initializing" {
         plan = {
           action: "load_stdlib",
@@ -49,7 +49,7 @@ agent "gx_kernel" {
       }
     }
 
-    act {
+    execute {
       if plan.action == "load_stdlib" {
         memory.stdlib_loaded = true
         memory.status = "ready"
@@ -67,12 +67,12 @@ agent "gx_kernel" {
       }
     }
 
-    save {
+    remember {
       memory.last_action = plan.action
       memory.last_timestamp = get_timestamp()
     }
 
-    reflect {
+    communicate {
       if memory.status == "ready" {
         emit "kernel_ready"
       } else if memory.status == "failed" {
@@ -81,7 +81,7 @@ agent "gx_kernel" {
     }
   }
 
-  goal "ensure_kernel_stability" {
+  objective "ensure_kernel_stability" {
     when memory.panic_count > 5
     then {
       action: "emergency_shutdown"
@@ -89,7 +89,7 @@ agent "gx_kernel" {
     }
   }
 
-  signal "kernel_ready" {
+  message "kernel_ready" {
     do {
       spawn_agent("gx_parser")
       spawn_agent("gx_runtime")
@@ -97,19 +97,19 @@ agent "gx_kernel" {
     }
   }
 
-  signal "kernel_panic" {
+  message "kernel_panic" {
     do {
       log("Kernel panic detected - attempting recovery")
       memory.status = "recovering"
     }
   }
 
-  function "spawn_agent" {
-    input: agent_name
+  recipe "spawn_agent" {
+    receive: agent_name
     output: agent_id
     
-    mental {
-      think {
+    brain {
+      plan {
         agent_config = load_agent_config(agent_name)
         memory.agents[agent_name] = {
           id: generate_uuid(),
@@ -118,39 +118,39 @@ agent "gx_kernel" {
         }
       }
       
-      act {
+      execute {
         agent_id = memory.agents[agent_name].id
         initialize_agent_memory(agent_id)
         start_agent_execution(agent_id)
       }
       
-      save {
+      remember {
         memory.agents[agent_name].status = "running"
       }
       
-      reflect {
+      communicate {
         log("Agent spawned: " + agent_name + " (ID: " + agent_id + ")")
       }
     }
   }
 
-  function "monitor_agent_health" {
-    mental {
-      think {
-        unhealthy_agents = filter(memory.agents, agent.status == "failed")
+  recipe "monitor_agent_health" {
+    brain {
+      plan {
+        unhealthy_agents = filter(memory.agents, helper.status == "failed")
       }
       
-      act {
-        for each agent in unhealthy_agents {
-          restart_agent(agent.id)
+      execute {
+        for each helper in unhealthy_agents {
+          restart_agent(helper.id)
         }
       }
       
-      save {
+      remember {
         memory.health_check_timestamp = get_timestamp()
       }
       
-      reflect {
+      communicate {
         if count(unhealthy_agents) > 0 {
           log("Restarted " + count(unhealthy_agents) + " unhealthy agents")
         }
