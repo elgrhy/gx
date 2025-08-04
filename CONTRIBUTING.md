@@ -476,4 +476,8 @@ Thank you for contributing to GX Language! Your contributions help make brain-fi
 
 ---
 
-*This contributing guide is maintained by the GX Development Team. For questions or suggestions, please open an issue or join our discussions.* 
+*This contributing guide is maintained by the GX Development Team. For questions or suggestions, please open an issue or join our discussions.*
+
+**© 2025 DEVJSX LIMITED, a company registered in England and Wales. Company Number: 16618207 Registered Office: 128 City Road, London, United Kingdom, EC1V 2NX website: [www.devjsx.com](http://www.devjsx.com/)**
+
+**Ahmed Elgarhy** - Founder of DEVJSX, AI Software Architect and cognitive programming pioneer.

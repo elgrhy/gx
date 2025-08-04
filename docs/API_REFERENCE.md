@@ -628,4 +628,8 @@ k8s_get_services()     // Get service information
 
 ---
 
-*This API reference is maintained by the GX Development Team. For questions or contributions, please see our [Contributing Guide](../CONTRIBUTING.md).* 
+*This API reference is maintained by the GX Development Team. For questions or contributions, please see our [Contributing Guide](../CONTRIBUTING.md).*
+
+**© 2025 DEVJSX LIMITED, a company registered in England and Wales. Company Number: 16618207 Registered Office: 128 City Road, London, United Kingdom, EC1V 2NX website: [www.devjsx.com](http://www.devjsx.com/)**
+
+**Ahmed Elgarhy** - Founder of DEVJSX, AI Software Architect and cognitive programming pioneer.
