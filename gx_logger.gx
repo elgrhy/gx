@@ -1,0 +1,754 @@
+helper "gx_logger" {
+  can_do: ["structured_logging", "log_aggregation", "log_filtering", "log_visualization", "log_alerting"]
+  
+  remember {
+    log_levels = {
+      TRACE: 0,
+      DEBUG: 1,
+      INFO: 2,
+      WARN: 3,
+      ERROR: 4,
+      FATAL: 5
+    }
+    
+    log_config = {
+      default_level: "INFO",
+      enable_structured_logging: true,
+      enable_log_rotation: true,
+      max_log_file_size: 10 * 1024 * 1024,  // 10MB
+      max_log_files: 5,
+      log_format: "json",
+      include_timestamp: true,
+      include_context: true,
+      enable_log_aggregation: true
+    }
+    
+    log_buffer = []
+    log_files = {}
+    log_metrics = {
+      total_logs: 0,
+      logs_by_level: {},
+      logs_by_source: {},
+      average_log_size: 0,
+      log_throughput: 0
+    }
+    
+    log_filters = {
+      level_filters: [],
+      source_filters: [],
+      content_filters: []
+    }
+  }
+
+  receive {
+    from "any_helper" as "log_message" {
+      type: "log_entry"
+      bind: memory.log_message
+      on_receive: brain.process_log_message
+    }
+    
+    from "log_aggregator" as "aggregation_request" {
+      type: "log_aggregation_request"
+      bind: memory.aggregation_request
+      on_receive: brain.aggregate_logs
+    }
+    
+    from "log_visualizer" as "visualization_request" {
+      type: "log_visualization_request"
+      bind: memory.visualization_request
+      on_receive: brain.visualize_logs
+    }
+  }
+
+  brain {
+    plan {
+      if memory.log_message {
+        plan = { action: "process_log_entry", message: memory.log_message }
+      } else if memory.aggregation_request {
+        plan = { action: "aggregate_log_data", request: memory.aggregation_request }
+      } else if memory.visualization_request {
+        plan = { action: "generate_log_visualization", request: memory.visualization_request }
+      } else {
+        plan = { action: "idle_log_maintenance" }
+      }
+    }
+
+    execute {
+      if plan.action == "process_log_entry" {
+        try {
+          message = plan.message
+          
+          // Create structured log entry
+          log_entry = create_structured_log_entry(message)
+          
+          // Apply filters
+          if should_log_entry(log_entry) {
+            // Add to buffer
+            memory.log_buffer.push(log_entry)
+            
+            // Write to file if buffer is full
+            if memory.log_buffer.length >= 100 {
+              flush_log_buffer()
+            }
+            
+            // Update metrics
+            update_log_metrics(log_entry)
+            
+            // Check for alerts
+            check_log_alerts(log_entry)
+          }
+          
+          memory.log_processing_result = {
+            success: true,
+            entry_id: log_entry.id,
+            level: log_entry.level,
+            source: log_entry.source
+          }
+          
+        } catch log_error {
+          memory.log_processing_result = {
+            success: false,
+            error: "Failed to process log entry: " + log_error
+          }
+        }
+      } else if plan.action == "aggregate_log_data" {
+        try {
+          request = plan.aggregation_request
+          time_range = request.time_range || "1h"
+          filters = request.filters || {}
+          
+          // Aggregate logs based on criteria
+          aggregated_data = aggregate_logs_by_criteria(time_range, filters)
+          
+          memory.aggregation_result = {
+            time_range: time_range,
+            filters: filters,
+            aggregated_data: aggregated_data,
+            summary: generate_aggregation_summary(aggregated_data)
+          }
+          
+        } catch aggregation_error {
+          memory.aggregation_result = {
+            error: "Log aggregation failed: " + aggregation_error
+          }
+        }
+      } else if plan.action == "generate_log_visualization" {
+        try {
+          request = plan.visualization_request
+          visualization_type = request.type || "timeline"
+          data = request.data || {}
+          
+          // Generate visualization
+          visualization = generate_log_visualization(visualization_type, data)
+          
+          memory.visualization_result = {
+            type: visualization_type,
+            visualization: visualization,
+            generated_at: get_timestamp()
+          }
+          
+        } catch visualization_error {
+          memory.visualization_result = {
+            error: "Log visualization failed: " + visualization_error
+          }
+        }
+      } else if plan.action == "idle_log_maintenance" {
+        // Flush log buffer
+        if memory.log_buffer.length > 0 {
+          flush_log_buffer()
+        }
+        
+        // Rotate log files if needed
+        rotate_log_files()
+        
+        // Update log metrics
+        update_log_statistics()
+        
+        // Clean up old log files
+        cleanup_old_log_files()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+      
+      // Update log metrics
+      if memory.log_processing_result && memory.log_processing_result.success {
+        memory.log_metrics.total_logs += 1
+      }
+    }
+
+    communicate {
+      if memory.log_processing_result {
+        if memory.log_processing_result.success {
+          emit "log_processed" {
+            entry_id: memory.log_processing_result.entry_id,
+            level: memory.log_processing_result.level,
+            source: memory.log_processing_result.source
+          }
+        } else {
+          emit "log_processing_failed" {
+            error: memory.log_processing_result.error
+          }
+        }
+      }
+      
+      if memory.aggregation_result {
+        emit "log_aggregation_complete" {
+          time_range: memory.aggregation_result.time_range,
+          data_points: memory.aggregation_result.aggregated_data.length
+        }
+      }
+      
+      if memory.visualization_result {
+        emit "log_visualization_generated" {
+          type: memory.visualization_result.type
+        }
+      }
+    }
+  }
+
+  recipe "create_structured_log_entry" {
+    needs: message
+    gives: log_entry
+    
+    brain {
+      plan {
+        plan = { action: "build_structured_log" }
+      }
+      
+      execute {
+        if plan.action == "build_structured_log" {
+          log_entry = {
+            id: generate_log_id(),
+            timestamp: get_timestamp(),
+            level: message.level || "INFO",
+            source: message.source || "unknown",
+            message: message.message,
+            context: message.context || {},
+            metadata: {
+              helper_id: message.helper_id,
+              execution_cycle: message.execution_cycle,
+              memory_state: message.memory_state,
+              stack_trace: message.stack_trace
+            },
+            tags: message.tags || [],
+            severity: calculate_severity(message.level),
+            formatted_message: format_log_message(message)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "should_log_entry" {
+    needs: log_entry
+    gives: should_log
+    
+    brain {
+      plan {
+        plan = { action: "apply_log_filters" }
+      }
+      
+      execute {
+        if plan.action == "apply_log_filters" {
+          should_log = true
+          
+          // Check level filter
+          if memory.log_config.default_level {
+            min_level = memory.log_levels[memory.log_config.default_level]
+            entry_level = memory.log_levels[log_entry.level]
+            if entry_level < min_level {
+              should_log = false
+            }
+          }
+          
+          // Check custom filters
+          for each filter in memory.log_filters.level_filters {
+            if not filter.predicate(log_entry) {
+              should_log = false
+              break
+            }
+          }
+          
+          for each filter in memory.log_filters.source_filters {
+            if not filter.predicate(log_entry) {
+              should_log = false
+              break
+            }
+          }
+          
+          for each filter in memory.log_filters.content_filters {
+            if not filter.predicate(log_entry) {
+              should_log = false
+              break
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_log_metrics" {
+    needs: log_entry
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "update_metrics" }
+      }
+      
+      execute {
+        if plan.action == "update_metrics" {
+          // Update logs by level
+          if not memory.log_metrics.logs_by_level[log_entry.level] {
+            memory.log_metrics.logs_by_level[log_entry.level] = 0
+          }
+          memory.log_metrics.logs_by_level[log_entry.level] += 1
+          
+          // Update logs by source
+          if not memory.log_metrics.logs_by_source[log_entry.source] {
+            memory.log_metrics.logs_by_source[log_entry.source] = 0
+          }
+          memory.log_metrics.logs_by_source[log_entry.source] += 1
+          
+          // Update average log size
+          log_size = JSON.stringify(log_entry).length
+          total_size = memory.log_metrics.average_log_size * memory.log_metrics.total_logs
+          memory.log_metrics.average_log_size = (total_size + log_size) / (memory.log_metrics.total_logs + 1)
+        }
+      }
+    }
+  }
+
+  recipe "check_log_alerts" {
+    needs: log_entry
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "evaluate_alerts" }
+      }
+      
+      execute {
+        if plan.action == "evaluate_alerts" {
+          // Check for error rate alerts
+          error_count = memory.log_metrics.logs_by_level["ERROR"] || 0
+          total_count = memory.log_metrics.total_logs
+          
+          if total_count > 0 {
+            error_rate = (error_count / total_count) * 100
+            if error_rate > 10 {
+              emit "log_alert" {
+                type: "high_error_rate",
+                error_rate: error_rate,
+                threshold: 10
+              }
+            }
+          }
+          
+          // Check for specific error patterns
+          if log_entry.level == "ERROR" {
+            error_patterns = analyze_error_patterns(log_entry)
+            for each pattern in error_patterns {
+              if pattern.frequency > 5 {
+                emit "log_alert" {
+                  type: "recurring_error",
+                  pattern: pattern.pattern,
+                  frequency: pattern.frequency
+                }
+              }
+            }
+          }
+          
+          // Check for performance issues
+          if log_entry.metadata.execution_cycle {
+            execution_time = log_entry.metadata.execution_cycle.duration
+            if execution_time > 5000 {  // 5 seconds
+              emit "log_alert" {
+                type: "slow_execution",
+                execution_time: execution_time,
+                threshold: 5000
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "flush_log_buffer" {
+    brain {
+      plan {
+        plan = { action: "write_logs_to_file" }
+      }
+      
+      execute {
+        if plan.action == "write_logs_to_file" {
+          if memory.log_buffer.length > 0 {
+            // Get current log file
+            current_file = get_current_log_file()
+            
+            // Write buffer to file
+            for each log_entry in memory.log_buffer {
+              log_line = format_log_line(log_entry)
+              append_to_log_file(current_file, log_line)
+            }
+            
+            // Clear buffer
+            memory.log_buffer = []
+            
+            // Check if file needs rotation
+            if get_file_size(current_file) > memory.log_config.max_log_file_size {
+              rotate_log_file(current_file)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "rotate_log_files" {
+    brain {
+      plan {
+        plan = { action: "rotate_log_files" }
+      }
+      
+      execute {
+        if plan.action == "rotate_log_files" {
+          current_file = get_current_log_file()
+          
+          if get_file_size(current_file) > memory.log_config.max_log_file_size {
+            // Create new log file
+            new_file = create_new_log_file()
+            
+            // Move current file to archive
+            archive_file = archive_log_file(current_file)
+            
+            // Update file references
+            memory.log_files.current = new_file
+            memory.log_files.archive.push(archive_file)
+            
+            // Keep only max_log_files in archive
+            if memory.log_files.archive.length > memory.log_config.max_log_files {
+              oldest_file = memory.log_files.archive.shift()
+              delete_log_file(oldest_file)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "aggregate_logs_by_criteria" {
+    needs: time_range, filters
+    gives: aggregated_data
+    
+    brain {
+      plan {
+        plan = { action: "aggregate_log_data" }
+      }
+      
+      execute {
+        if plan.action == "aggregate_log_data" {
+          aggregated_data = {
+            time_series: [],
+            summary: {
+              total_logs: 0,
+              logs_by_level: {},
+              logs_by_source: {},
+              average_response_time: 0
+            },
+            patterns: [],
+            anomalies: []
+          }
+          
+          // Get logs within time range
+          start_time = get_timestamp() - parse_time_range(time_range)
+          relevant_logs = get_logs_in_time_range(start_time, get_timestamp())
+          
+          // Apply filters
+          filtered_logs = apply_log_filters(relevant_logs, filters)
+          
+          // Create time series data
+          time_series = create_time_series_data(filtered_logs, time_range)
+          aggregated_data.time_series = time_series
+          
+          // Generate summary
+          aggregated_data.summary = generate_log_summary(filtered_logs)
+          
+          // Detect patterns
+          aggregated_data.patterns = detect_log_patterns(filtered_logs)
+          
+          // Detect anomalies
+          aggregated_data.anomalies = detect_log_anomalies(filtered_logs)
+        }
+      }
+    }
+  }
+
+  recipe "generate_log_visualization" {
+    needs: visualization_type, data
+    gives: visualization
+    
+    brain {
+      plan {
+        plan = { action: "create_visualization" }
+      }
+      
+      execute {
+        if plan.action == "create_visualization" {
+          visualization = {
+            type: visualization_type,
+            data: data,
+            chart_config: {},
+            generated_at: get_timestamp()
+          }
+          
+          switch visualization_type {
+            case "timeline":
+              visualization.chart_config = create_timeline_chart_config(data)
+              break
+            case "histogram":
+              visualization.chart_config = create_histogram_chart_config(data)
+              break
+            case "pie_chart":
+              visualization.chart_config = create_pie_chart_config(data)
+              break
+            case "heatmap":
+              visualization.chart_config = create_heatmap_chart_config(data)
+              break
+            case "trend_analysis":
+              visualization.chart_config = create_trend_chart_config(data)
+              break
+            default:
+              visualization.chart_config = create_default_chart_config(data)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "create_timeline_chart_config" {
+    needs: data
+    gives: chart_config
+    
+    brain {
+      plan {
+        plan = { action: "configure_timeline_chart" }
+      }
+      
+      execute {
+        if plan.action == "configure_timeline_chart" {
+          chart_config = {
+            type: "line",
+            options: {
+              responsive: true,
+              scales: {
+                x: {
+                  type: "time",
+                  time: {
+                    unit: "hour"
+                  }
+                },
+                y: {
+                  beginAtZero: true
+                }
+              },
+              plugins: {
+                title: {
+                  display: true,
+                  text: "Log Activity Timeline"
+                }
+              }
+            },
+            data: {
+              labels: data.time_series.map(point => point.timestamp),
+              datasets: [
+                {
+                  label: "Log Count",
+                  data: data.time_series.map(point => point.count),
+                  borderColor: "rgb(75, 192, 192)",
+                  backgroundColor: "rgba(75, 192, 192, 0.2)"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "create_histogram_chart_config" {
+    needs: data
+    gives: chart_config
+    
+    brain {
+      plan {
+        plan = { action: "configure_histogram_chart" }
+      }
+      
+      execute {
+        if plan.action == "configure_histogram_chart" {
+          chart_config = {
+            type: "bar",
+            options: {
+              responsive: true,
+              scales: {
+                y: {
+                  beginAtZero: true
+                }
+              },
+              plugins: {
+                title: {
+                  display: true,
+                  text: "Log Levels Distribution"
+                }
+              }
+            },
+            data: {
+              labels: Object.keys(data.summary.logs_by_level),
+              datasets: [
+                {
+                  label: "Log Count",
+                  data: Object.values(data.summary.logs_by_level),
+                  backgroundColor: [
+                    "rgba(255, 99, 132, 0.2)",
+                    "rgba(54, 162, 235, 0.2)",
+                    "rgba(255, 206, 86, 0.2)",
+                    "rgba(75, 192, 192, 0.2)",
+                    "rgba(153, 102, 255, 0.2)"
+                  ],
+                  borderColor: [
+                    "rgba(255, 99, 132, 1)",
+                    "rgba(54, 162, 235, 1)",
+                    "rgba(255, 206, 86, 1)",
+                    "rgba(75, 192, 192, 1)",
+                    "rgba(153, 102, 255, 1)"
+                  ],
+                  borderWidth: 1
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_log_statistics" {
+    brain {
+      plan {
+        plan = { action: "calculate_log_stats" }
+      }
+      
+      execute {
+        if plan.action == "calculate_log_stats" {
+          // Calculate log throughput
+          current_time = get_timestamp()
+          time_window = 60 * 1000  // 1 minute
+          
+          recent_logs = memory.log_buffer.filter(log => 
+            current_time - log.timestamp < time_window
+          )
+          
+          memory.log_metrics.log_throughput = recent_logs.length
+          
+          // Calculate other statistics
+          memory.log_metrics.total_sources = Object.keys(memory.log_metrics.logs_by_source).length
+          memory.log_metrics.total_levels = Object.keys(memory.log_metrics.logs_by_level).length
+        }
+      }
+    }
+  }
+
+  recipe "cleanup_old_log_files" {
+    brain {
+      plan {
+        plan = { action: "remove_old_files" }
+      }
+      
+      execute {
+        if plan.action == "remove_old_files" {
+          current_time = get_timestamp()
+          max_age = 30 * 24 * 60 * 60 * 1000  // 30 days
+          
+          for each file in memory.log_files.archive {
+            if current_time - file.created_at > max_age {
+              delete_log_file(file.path)
+              memory.log_files.archive = memory.log_files.archive.filter(f => f.path != file.path)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "format_log_message" {
+    needs: message
+    gives: formatted_message
+    
+    brain {
+      plan {
+        plan = { action: "format_message" }
+      }
+      
+      execute {
+        if plan.action == "format_message" {
+          if memory.log_config.log_format == "json" {
+            formatted_message = JSON.stringify({
+              message: message.message,
+              level: message.level,
+              source: message.source,
+              timestamp: get_timestamp(),
+              context: message.context
+            })
+          } else {
+            // Plain text format
+            timestamp = format_timestamp(get_timestamp())
+            formatted_message = `[${timestamp}] [${message.level}] [${message.source}] ${message.message}`
+            
+            if message.context && Object.keys(message.context).length > 0 {
+              formatted_message += ` | Context: ${JSON.stringify(message.context)}`
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "calculate_severity" {
+    needs: level
+    gives: severity
+    
+    brain {
+      plan {
+        plan = { action: "determine_severity" }
+      }
+      
+      execute {
+        if plan.action == "determine_severity" {
+          switch level {
+            case "TRACE":
+            case "DEBUG":
+              severity = "low"
+              break
+            case "INFO":
+              severity = "medium"
+              break
+            case "WARN":
+              severity = "high"
+              break
+            case "ERROR":
+            case "FATAL":
+              severity = "critical"
+              break
+            default:
+              severity = "medium"
+          }
+        }
+      }
+    }
+  }
+} 

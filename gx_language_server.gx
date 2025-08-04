@@ -1,0 +1,961 @@
+helper "gx_language_server" {
+  can_do: ["language_server_protocol", "code_completion", "syntax_highlighting", "error_diagnostics", "code_navigation"]
+  
+  remember {
+    lsp_config = {
+      protocol_version: "3.17.0",
+      capabilities: {
+        textDocumentSync: 1,  // Full sync
+        completionProvider: {
+          triggerCharacters: [".", ":", "(", " "],
+          resolveProvider: true
+        },
+        hoverProvider: true,
+        signatureHelpProvider: {
+          triggerCharacters: ["(", ","]
+        },
+        definitionProvider: true,
+        referencesProvider: true,
+        documentSymbolProvider: true,
+        workspaceSymbolProvider: true,
+        codeActionProvider: {
+          codeActionKinds: ["quickfix", "refactor", "source"]
+        },
+        documentFormattingProvider: true,
+        documentRangeFormattingProvider: true,
+        renameProvider: true,
+        documentHighlightProvider: true,
+        foldingRangeProvider: true
+      }
+    }
+    
+    workspace_files = {}
+    diagnostics_cache = {}
+    symbol_cache = {}
+    completion_cache = {}
+    
+    lsp_metrics = {
+      requests_processed: 0,
+      completions_generated: 0,
+      diagnostics_reported: 0,
+      symbols_indexed: 0
+    }
+  }
+
+  receive {
+    from "ide" as "lsp_request" {
+      type: "lsp_message"
+      bind: memory.lsp_request
+      on_receive: brain.process_lsp_request
+    }
+    
+    from "compiler" as "diagnostics" {
+      type: "compilation_diagnostics"
+      bind: memory.diagnostics
+      on_receive: brain.update_diagnostics
+    }
+    
+    from "type_checker" as "type_info" {
+      type: "type_information"
+      bind: memory.type_info
+      on_receive: brain.update_type_info
+    }
+  }
+
+  brain {
+    plan {
+      if memory.lsp_request {
+        plan = { action: "handle_lsp_request", request: memory.lsp_request }
+      } else if memory.diagnostics {
+        plan = { action: "process_diagnostics", diagnostics: memory.diagnostics }
+      } else if memory.type_info {
+        plan = { action: "update_type_information", type_info: memory.type_info }
+      } else {
+        plan = { action: "idle_lsp_maintenance" }
+      }
+    }
+
+    execute {
+      if plan.action == "handle_lsp_request" {
+        try {
+          request = plan.request
+          method = request.method
+          params = request.params || {}
+          
+          response = null
+          
+          switch method {
+            case "initialize":
+              response = handle_initialize_request(params)
+              break
+            case "textDocument/completion":
+              response = handle_completion_request(params)
+              break
+            case "textDocument/hover":
+              response = handle_hover_request(params)
+              break
+            case "textDocument/definition":
+              response = handle_definition_request(params)
+              break
+            case "textDocument/references":
+              response = handle_references_request(params)
+              break
+            case "textDocument/documentSymbol":
+              response = handle_document_symbol_request(params)
+              break
+            case "textDocument/codeAction":
+              response = handle_code_action_request(params)
+              break
+            case "textDocument/formatting":
+              response = handle_formatting_request(params)
+              break
+            case "textDocument/rename":
+              response = handle_rename_request(params)
+              break
+            case "textDocument/didOpen":
+              handle_document_open(params)
+              break
+            case "textDocument/didChange":
+              handle_document_change(params)
+              break
+            case "textDocument/didClose":
+              handle_document_close(params)
+              break
+            default:
+              response = { error: { code: -32601, message: "Method not found" } }
+          }
+          
+          memory.lsp_response = {
+            id: request.id,
+            result: response,
+            success: response != null && not response.error
+          }
+          
+        } catch lsp_error {
+          memory.lsp_response = {
+            id: request.id,
+            error: {
+              code: -32603,
+              message: "Internal error: " + lsp_error
+            }
+          }
+        }
+      } else if plan.action == "process_diagnostics" {
+        try {
+          diagnostics = plan.diagnostics
+          uri = diagnostics.uri
+          
+          // Update diagnostics cache
+          memory.diagnostics_cache[uri] = diagnostics.diagnostics
+          
+          // Send diagnostics to IDE
+          memory.diagnostics_result = {
+            uri: uri,
+            diagnostics: diagnostics.diagnostics,
+            version: diagnostics.version
+          }
+          
+        } catch diagnostics_error {
+          memory.diagnostics_result = {
+            error: "Failed to process diagnostics: " + diagnostics_error
+          }
+        }
+      } else if plan.action == "update_type_information" {
+        try {
+          type_info = plan.type_info
+          uri = type_info.uri
+          
+          // Update type information cache
+          memory.type_info_cache[uri] = type_info.types
+          
+          // Update completion cache with type information
+          update_completion_cache(uri, type_info.types)
+          
+        } catch type_error {
+          log("Failed to update type information: " + type_error)
+        }
+      } else if plan.action == "idle_lsp_maintenance" {
+        // Clean up old caches
+        cleanup_old_caches()
+        
+        // Update LSP metrics
+        update_lsp_metrics()
+        
+        // Validate workspace state
+        validate_workspace_state()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+      
+      // Update LSP metrics
+      if memory.lsp_request {
+        memory.lsp_metrics.requests_processed += 1
+      }
+      
+      if memory.lsp_response && memory.lsp_response.success {
+        if memory.lsp_response.result && memory.lsp_response.result.items {
+          memory.lsp_metrics.completions_generated += memory.lsp_response.result.items.length
+        }
+      }
+    }
+
+    communicate {
+      if memory.lsp_response {
+        emit "lsp_response" {
+          id: memory.lsp_response.id,
+          success: memory.lsp_response.success,
+          has_result: memory.lsp_response.result != null
+        }
+      }
+      
+      if memory.diagnostics_result {
+        emit "diagnostics_updated" {
+          uri: memory.diagnostics_result.uri,
+          diagnostics_count: memory.diagnostics_result.diagnostics.length
+        }
+      }
+    }
+  }
+
+  recipe "handle_initialize_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "initialize_lsp" }
+      }
+      
+      execute {
+        if plan.action == "initialize_lsp" {
+          response = {
+            capabilities: memory.lsp_config.capabilities,
+            serverInfo: {
+              name: "GX Language Server",
+              version: "1.0.0"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "handle_completion_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "generate_completions" }
+      }
+      
+      execute {
+        if plan.action == "generate_completions" {
+          uri = params.textDocument.uri
+          position = params.position
+          context = params.context || {}
+          
+          // Get document content
+          document_content = get_document_content(uri)
+          
+          // Parse context around cursor
+          context_info = parse_context_at_position(document_content, position)
+          
+          // Generate completions based on context
+          completions = generate_completions_for_context(context_info, uri)
+          
+          response = {
+            isIncomplete: false,
+            items: completions
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_completions_for_context" {
+    needs: context_info, uri
+    gives: completions
+    
+    brain {
+      plan {
+        plan = { action: "create_completion_items" }
+      }
+      
+      execute {
+        if plan.action == "create_completion_items" {
+          completions = []
+          
+          // Helper completions
+          if context_info.in_helper_block {
+            completions.push(...generate_helper_completions())
+          }
+          
+          // Recipe completions
+          if context_info.in_recipe_block {
+            completions.push(...generate_recipe_completions())
+          }
+          
+          // Brain cycle completions
+          if context_info.in_brain_block {
+            completions.push(...generate_brain_completions())
+          }
+          
+          // Memory completions
+          if context_info.in_memory_block {
+            completions.push(...generate_memory_completions())
+          }
+          
+          // Receive completions
+          if context_info.in_receive_block {
+            completions.push(...generate_receive_completions())
+          }
+          
+          // Type completions
+          if context_info.expecting_type {
+            completions.push(...generate_type_completions())
+          }
+          
+          // Variable completions
+          if context_info.expecting_variable {
+            completions.push(...generate_variable_completions(uri))
+          }
+          
+          // Function completions
+          if context_info.expecting_function {
+            completions.push(...generate_function_completions())
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_helper_completions" {
+    gives: completions
+    
+    brain {
+      plan {
+        plan = { action: "create_helper_suggestions" }
+      }
+      
+      execute {
+        if plan.action == "create_helper_suggestions" {
+          completions = [
+            {
+              label: "can_do",
+              kind: 14,  // Property
+              detail: "Capabilities array",
+              documentation: "Array of strings defining what this helper can do",
+              insertText: 'can_do: ["${1:capability}"]',
+              insertTextFormat: 2  // Snippet
+            },
+            {
+              label: "remember",
+              kind: 14,  // Property
+              detail: "Memory section",
+              documentation: "Define persistent memory for this helper",
+              insertText: "remember {\n\t${1:variable}: ${2:value}\n}",
+              insertTextFormat: 2
+            },
+            {
+              label: "receive",
+              kind: 14,  // Property
+              detail: "Message channels",
+              documentation: "Define incoming message channels",
+              insertText: "receive {\n\tfrom \"${1:source}\" as \"${2:message_name}\" {\n\t\ttype: \"${3:message_type}\"\n\t\tbind: memory.${4:variable}\n\t\ton_receive: brain.${5:handler}\n\t}\n}",
+              insertTextFormat: 2
+            },
+            {
+              label: "brain",
+              kind: 14,  // Property
+              detail: "Brain cycle",
+              documentation: "Define the Plan → Execute → Remember → Communicate cycle",
+              insertText: "brain {\n\tplan {\n\t\t${1:// Plan logic}\n\t}\n\n\texecute {\n\t\t${2:// Execute logic}\n\t}\n\n\tremember {\n\t\t${3:// Remember logic}\n\t}\n\n\tcommunicate {\n\t\t${4:// Communicate logic}\n\t}\n}",
+              insertTextFormat: 2
+            }
+          ]
+        }
+      }
+    }
+  }
+
+  recipe "generate_recipe_completions" {
+    gives: completions
+    
+    brain {
+      plan {
+        plan = { action: "create_recipe_suggestions" }
+      }
+      
+      execute {
+        if plan.action == "create_recipe_suggestions" {
+          completions = [
+            {
+              label: "needs",
+              kind: 14,  // Property
+              detail: "Input parameters",
+              documentation: "Array of required input parameters",
+              insertText: "needs: ${1:parameter}",
+              insertTextFormat: 2
+            },
+            {
+              label: "gives",
+              kind: 14,  // Property
+              detail: "Output parameters",
+              documentation: "Array of output parameters",
+              insertText: "gives: ${1:result}",
+              insertTextFormat: 2
+            },
+            {
+              label: "brain",
+              kind: 14,  // Property
+              detail: "Brain cycle",
+              documentation: "Define the recipe's brain cycle",
+              insertText: "brain {\n\tplan {\n\t\t${1:// Plan logic}\n\t}\n\n\texecute {\n\t\t${2:// Execute logic}\n\t}\n}",
+              insertTextFormat: 2
+            }
+          ]
+        }
+      }
+    }
+  }
+
+  recipe "generate_brain_completions" {
+    gives: completions
+    
+    brain {
+      plan {
+        plan = { action: "create_brain_suggestions" }
+      }
+      
+      execute {
+        if plan.action == "create_brain_suggestions" {
+          completions = [
+            {
+              label: "plan",
+              kind: 14,  // Property
+              detail: "Plan phase",
+              documentation: "Analyze current state and determine next action",
+              insertText: "plan {\n\t${1:// Plan logic}\n}",
+              insertTextFormat: 2
+            },
+            {
+              label: "execute",
+              kind: 14,  // Property
+              detail: "Execute phase",
+              documentation: "Perform the planned action",
+              insertText: "execute {\n\t${1:// Execute logic}\n}",
+              insertTextFormat: 2
+            },
+            {
+              label: "remember",
+              kind: 14,  // Property
+              detail: "Remember phase",
+              documentation: "Store results and learn from experience",
+              insertText: "remember {\n\t${1:// Remember logic}\n}",
+              insertTextFormat: 2
+            },
+            {
+              label: "communicate",
+              kind: 14,  // Property
+              detail: "Communicate phase",
+              documentation: "Share information with other helpers",
+              insertText: "communicate {\n\t${1:// Communicate logic}\n}",
+              insertTextFormat: 2
+            }
+          ]
+        }
+      }
+    }
+  }
+
+  recipe "generate_memory_completions" {
+    gives: completions
+    
+    brain {
+      plan {
+        plan = { action: "create_memory_suggestions" }
+      }
+      
+      execute {
+        if plan.action == "create_memory_suggestions" {
+          completions = [
+            {
+              label: "string",
+              kind: 14,  // Property
+              detail: "String type",
+              documentation: "String value",
+              insertText: "${1:variable}: string = \"${2:value}\"",
+              insertTextFormat: 2
+            },
+            {
+              label: "int",
+              kind: 14,  // Property
+              detail: "Integer type",
+              documentation: "Integer value",
+              insertText: "${1:variable}: int = ${2:0}",
+              insertTextFormat: 2
+            },
+            {
+              label: "float",
+              kind: 14,  // Property
+              detail: "Float type",
+              documentation: "Float value",
+              insertText: "${1:variable}: float = ${2:0.0}",
+              insertTextFormat: 2
+            },
+            {
+              label: "bool",
+              kind: 14,  // Property
+              detail: "Boolean type",
+              documentation: "Boolean value",
+              insertText: "${1:variable}: bool = ${2:true}",
+              insertTextFormat: 2
+            },
+            {
+              label: "array",
+              kind: 14,  // Property
+              detail: "Array type",
+              documentation: "Array value",
+              insertText: "${1:variable}: array = []",
+              insertTextFormat: 2
+            },
+            {
+              label: "object",
+              kind: 14,  // Property
+              detail: "Object type",
+              documentation: "Object value",
+              insertText: "${1:variable}: object = {}",
+              insertTextFormat: 2
+            }
+          ]
+        }
+      }
+    }
+  }
+
+  recipe "handle_hover_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "generate_hover_info" }
+      }
+      
+      execute {
+        if plan.action == "generate_hover_info" {
+          uri = params.textDocument.uri
+          position = params.position
+          
+          // Get symbol at position
+          symbol = get_symbol_at_position(uri, position)
+          
+          if symbol {
+            response = {
+              contents: {
+                kind: "markdown",
+                value: generate_hover_content(symbol)
+              },
+              range: symbol.range
+            }
+          } else {
+            response = null
+          }
+        }
+      }
+    }
+  }
+
+  recipe "handle_definition_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "find_definition" }
+      }
+      
+      execute {
+        if plan.action == "find_definition" {
+          uri = params.textDocument.uri
+          position = params.position
+          
+          // Find definition of symbol at position
+          definition = find_symbol_definition(uri, position)
+          
+          if definition {
+            response = {
+              uri: definition.uri,
+              range: definition.range
+            }
+          } else {
+            response = null
+          }
+        }
+      }
+    }
+  }
+
+  recipe "handle_references_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "find_references" }
+      }
+      
+      execute {
+        if plan.action == "find_references" {
+          uri = params.textDocument.uri
+          position = params.position
+          
+          // Find all references to symbol at position
+          references = find_symbol_references(uri, position)
+          
+          response = references.map(ref => ({
+            uri: ref.uri,
+            range: ref.range
+          }))
+        }
+      }
+    }
+  }
+
+  recipe "handle_document_symbol_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "extract_document_symbols" }
+      }
+      
+      execute {
+        if plan.action == "extract_document_symbols" {
+          uri = params.textDocument.uri
+          
+          // Extract symbols from document
+          symbols = extract_document_symbols(uri)
+          
+          response = symbols.map(symbol => ({
+            name: symbol.name,
+            kind: symbol.kind,
+            range: symbol.range,
+            selectionRange: symbol.selectionRange,
+            children: symbol.children || []
+          }))
+        }
+      }
+    }
+  }
+
+  recipe "handle_code_action_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "generate_code_actions" }
+      }
+      
+      execute {
+        if plan.action == "generate_code_actions" {
+          uri = params.textDocument.uri
+          range = params.range
+          context = params.context || {}
+          
+          actions = []
+          
+          // Generate quick fixes for diagnostics
+          for each diagnostic in context.diagnostics {
+            quick_fixes = generate_quick_fixes(diagnostic, uri)
+            actions.push(...quick_fixes)
+          }
+          
+          // Generate refactoring actions
+          refactoring_actions = generate_refactoring_actions(uri, range)
+          actions.push(...refactoring_actions)
+          
+          response = actions
+        }
+      }
+    }
+  }
+
+  recipe "handle_formatting_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "format_document" }
+      }
+      
+      execute {
+        if plan.action == "format_document" {
+          uri = params.textDocument.uri
+          options = params.options || {}
+          
+          // Get document content
+          content = get_document_content(uri)
+          
+          // Format the content
+          formatted_content = format_gx_code(content, options)
+          
+          // Generate text edits
+          edits = generate_formatting_edits(content, formatted_content)
+          
+          response = edits
+        }
+      }
+    }
+  }
+
+  recipe "handle_rename_request" {
+    needs: params
+    gives: response
+    
+    brain {
+      plan {
+        plan = { action: "perform_rename" }
+      }
+      
+      execute {
+        if plan.action == "perform_rename" {
+          uri = params.textDocument.uri
+          position = params.position
+          new_name = params.newName
+          
+          // Find all references to symbol at position
+          references = find_symbol_references(uri, position)
+          
+          // Generate rename edits
+          edits = references.map(ref => ({
+            uri: ref.uri,
+            range: ref.range,
+            newText: new_name
+          }))
+          
+          response = {
+            changes: edits
+          }
+        }
+      }
+    }
+  }
+
+  recipe "handle_document_open" {
+    needs: params
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "process_document_open" }
+      }
+      
+      execute {
+        if plan.action == "process_document_open" {
+          uri = params.textDocument.uri
+          content = params.textDocument.text
+          version = params.textDocument.version
+          
+          // Store document content
+          memory.workspace_files[uri] = {
+            content: content,
+            version: version,
+            last_modified: get_timestamp()
+          }
+          
+          // Parse document for symbols
+          symbols = parse_document_symbols(content)
+          memory.symbol_cache[uri] = symbols
+          
+          // Generate diagnostics
+          diagnostics = generate_diagnostics_for_document(uri, content)
+          memory.diagnostics_cache[uri] = diagnostics
+          
+          // Send diagnostics to IDE
+          emit "publish_diagnostics" {
+            uri: uri,
+            diagnostics: diagnostics,
+            version: version
+          }
+        }
+      }
+    }
+  }
+
+  recipe "handle_document_change" {
+    needs: params
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "process_document_change" }
+      }
+      
+      execute {
+        if plan.action == "process_document_change" {
+          uri = params.textDocument.uri
+          version = params.textDocument.version
+          content_changes = params.contentChanges
+          
+          // Update document content
+          if memory.workspace_files[uri] {
+            memory.workspace_files[uri].version = version
+            memory.workspace_files[uri].last_modified = get_timestamp()
+            
+            // Apply content changes
+            for each change in content_changes {
+              if change.range {
+                // Incremental change
+                apply_incremental_change(uri, change)
+              } else {
+                // Full document change
+                memory.workspace_files[uri].content = change.text
+              }
+            }
+            
+            // Re-parse symbols
+            content = memory.workspace_files[uri].content
+            symbols = parse_document_symbols(content)
+            memory.symbol_cache[uri] = symbols
+            
+            // Regenerate diagnostics
+            diagnostics = generate_diagnostics_for_document(uri, content)
+            memory.diagnostics_cache[uri] = diagnostics
+            
+            // Send updated diagnostics
+            emit "publish_diagnostics" {
+              uri: uri,
+              diagnostics: diagnostics,
+              version: version
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "handle_document_close" {
+    needs: params
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "process_document_close" }
+      }
+      
+      execute {
+        if plan.action == "process_document_close" {
+          uri = params.textDocument.uri
+          
+          // Remove document from workspace
+          memory.workspace_files[uri] = null
+          memory.symbol_cache[uri] = null
+          memory.diagnostics_cache[uri] = null
+          memory.completion_cache[uri] = null
+          
+          // Clear diagnostics for closed document
+          emit "publish_diagnostics" {
+            uri: uri,
+            diagnostics: [],
+            version: 0
+          }
+        }
+      }
+    }
+  }
+
+  recipe "cleanup_old_caches" {
+    brain {
+      plan {
+        plan = { action: "remove_old_cache_entries" }
+      }
+      
+      execute {
+        if plan.action == "remove_old_cache_entries" {
+          current_time = get_timestamp()
+          max_age = 30 * 60 * 1000  // 30 minutes
+          
+          // Clean up old completion cache entries
+          for each uri in Object.keys(memory.completion_cache) {
+            cache_entry = memory.completion_cache[uri]
+            if current_time - cache_entry.timestamp > max_age {
+              memory.completion_cache[uri] = null
+            }
+          }
+          
+          // Clean up old diagnostics cache entries
+          for each uri in Object.keys(memory.diagnostics_cache) {
+            cache_entry = memory.diagnostics_cache[uri]
+            if current_time - cache_entry.timestamp > max_age {
+              memory.diagnostics_cache[uri] = null
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_lsp_metrics" {
+    brain {
+      plan {
+        plan = { action: "calculate_lsp_metrics" }
+      }
+      
+      execute {
+        if plan.action == "calculate_lsp_metrics" {
+          // Calculate average response time
+          if memory.lsp_metrics.requests_processed > 0 {
+            memory.lsp_metrics.average_response_time = 
+              memory.lsp_metrics.total_response_time / memory.lsp_metrics.requests_processed
+          }
+          
+          // Calculate completion success rate
+          if memory.lsp_metrics.completions_generated > 0 {
+            memory.lsp_metrics.completion_success_rate = 
+              (memory.lsp_metrics.successful_completions / memory.lsp_metrics.completions_generated) * 100
+          }
+        }
+      }
+    }
+  }
+
+  recipe "validate_workspace_state" {
+    brain {
+      plan {
+        plan = { action: "check_workspace_consistency" }
+      }
+      
+      execute {
+        if plan.action == "check_workspace_consistency" {
+          // Check for orphaned cache entries
+          orphaned_uris = []
+          
+          for each uri in Object.keys(memory.symbol_cache) {
+            if not memory.workspace_files[uri] {
+              orphaned_uris.push(uri)
+            }
+          }
+          
+          // Clean up orphaned entries
+          for each uri in orphaned_uris {
+            memory.symbol_cache[uri] = null
+            memory.diagnostics_cache[uri] = null
+            memory.completion_cache[uri] = null
+          }
+          
+          if orphaned_uris.length > 0 {
+            log("Cleaned up " + orphaned_uris.length + " orphaned cache entries")
+          }
+        }
+      }
+    }
+  }
+} 

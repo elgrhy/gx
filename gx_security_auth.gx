@@ -1,0 +1,460 @@
+helper "gx_security_auth" {
+  can_do: ["authentication", "authorization", "session_management", "jwt_tokens", "password_hashing"]
+  
+  remember {
+    active_sessions = {}
+    user_roles = {}
+    auth_tokens = {}
+    security_config = {
+      jwt_secret: "gx_secure_jwt_secret_key_2025",
+      token_expiry: 3600,  // 1 hour
+      max_sessions_per_user: 5,
+      password_min_length: 8,
+      require_mfa: false
+    }
+    user_database = {}
+    failed_login_attempts = {}
+    mfa_tokens = {}
+  }
+
+  receive {
+    from "user_interface" as "login_request" {
+      type: "auth_request"
+      bind: memory.auth_request
+      on_receive: brain.authenticate_user
+    }
+    
+    from "any_helper" as "permission_check" {
+      type: "permission_verification"
+      bind: memory.permission_check
+      on_receive: brain.verify_permissions
+    }
+    
+    from "session_manager" as "session_request" {
+      type: "session_validation"
+      bind: memory.session_request
+      on_receive: brain.validate_session
+    }
+  }
+
+  brain {
+    plan {
+      if memory.auth_request {
+        plan = { action: "authenticate_user", request: memory.auth_request }
+      } else if memory.permission_check {
+        plan = { action: "check_permissions", check: memory.permission_check }
+      } else if memory.session_request {
+        plan = { action: "validate_session", session: memory.session_request }
+      } else {
+        plan = { action: "idle_security_monitoring" }
+      }
+    }
+
+    execute {
+      if plan.action == "authenticate_user" {
+        try {
+          user_credentials = plan.request.credentials
+          username = user_credentials.username
+          password = user_credentials.password
+          
+          // Check if user exists
+          if memory.user_database[username] {
+            stored_user = memory.user_database[username]
+            
+            // Verify password
+            if verify_password(password, stored_user.password_hash) {
+              // Check failed login attempts
+              if memory.failed_login_attempts[username] && memory.failed_login_attempts[username].count > 5 {
+                throw "Account temporarily locked due to too many failed attempts"
+              }
+              
+              // Generate JWT token
+              token = generate_jwt_token({
+                user_id: stored_user.id,
+                username: username,
+                roles: stored_user.roles,
+                permissions: stored_user.permissions
+              })
+              
+              // Create session
+              session_id = generate_session_id()
+              memory.active_sessions[session_id] = {
+                user_id: stored_user.id,
+                username: username,
+                created_at: get_timestamp(),
+                expires_at: get_timestamp() + memory.security_config.token_expiry,
+                token: token,
+                ip_address: plan.request.ip_address || "unknown"
+              }
+              
+              // Clear failed attempts
+              memory.failed_login_attempts[username] = null
+              
+              memory.auth_result = {
+                success: true,
+                session_id: session_id,
+                token: token,
+                user: {
+                  id: stored_user.id,
+                  username: username,
+                  roles: stored_user.roles,
+                  permissions: stored_user.permissions
+                }
+              }
+              
+            } else {
+              // Increment failed attempts
+              if not memory.failed_login_attempts[username] {
+                memory.failed_login_attempts[username] = { count: 0, last_attempt: 0 }
+              }
+              memory.failed_login_attempts[username].count += 1
+              memory.failed_login_attempts[username].last_attempt = get_timestamp()
+              
+              throw "Invalid username or password"
+            }
+          } else {
+            throw "User not found"
+          }
+          
+        } catch error {
+          memory.auth_result = {
+            success: false,
+            error: error,
+            timestamp: get_timestamp()
+          }
+        }
+      } else if plan.action == "check_permissions" {
+        try {
+          check = plan.check
+          user_id = check.user_id
+          required_permission = check.permission
+          resource = check.resource
+          
+          // Find user session
+          user_session = find_user_session(user_id)
+          if user_session {
+            user_permissions = user_session.user.permissions
+            
+            // Check if user has required permission
+            if has_permission(user_permissions, required_permission, resource) {
+              memory.permission_result = {
+                allowed: true,
+                user_id: user_id,
+                permission: required_permission,
+                resource: resource
+              }
+            } else {
+              memory.permission_result = {
+                allowed: false,
+                user_id: user_id,
+                permission: required_permission,
+                resource: resource,
+                reason: "Insufficient permissions"
+              }
+            }
+          } else {
+            memory.permission_result = {
+              allowed: false,
+              user_id: user_id,
+              permission: required_permission,
+              resource: resource,
+              reason: "Invalid session"
+            }
+          }
+          
+        } catch error {
+          memory.permission_result = {
+            allowed: false,
+            error: error
+          }
+        }
+      } else if plan.action == "validate_session" {
+        try {
+          session_token = plan.session.token
+          session_id = plan.session.session_id
+          
+          // Validate JWT token
+          token_payload = verify_jwt_token(session_token)
+          
+          // Check if session exists and is valid
+          if memory.active_sessions[session_id] {
+            session = memory.active_sessions[session_id]
+            
+            if session.token == session_token && session.expires_at > get_timestamp() {
+              memory.session_result = {
+                valid: true,
+                session: session,
+                user: session.user
+              }
+            } else {
+              // Session expired or invalid
+              memory.active_sessions[session_id] = null
+              memory.session_result = {
+                valid: false,
+                reason: "Session expired or invalid"
+              }
+            }
+          } else {
+            memory.session_result = {
+              valid: false,
+              reason: "Session not found"
+            }
+          }
+          
+        } catch error {
+          memory.session_result = {
+            valid: false,
+            error: error
+          }
+        }
+      } else if plan.action == "idle_security_monitoring" {
+        // Clean up expired sessions
+        cleanup_expired_sessions()
+        
+        // Monitor for security threats
+        monitor_security_threats()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+      
+      // Update security metrics
+      if memory.auth_result && memory.auth_result.success {
+        memory.security_metrics.successful_logins += 1
+      } else if memory.auth_result && not memory.auth_result.success {
+        memory.security_metrics.failed_logins += 1
+      }
+    }
+
+    communicate {
+      if memory.auth_result {
+        if memory.auth_result.success {
+          emit "authentication_success" {
+            session_id: memory.auth_result.session_id,
+            user_id: memory.auth_result.user.id,
+            username: memory.auth_result.user.username
+          }
+        } else {
+          emit "authentication_failed" {
+            error: memory.auth_result.error,
+            timestamp: memory.auth_result.timestamp
+          }
+        }
+      }
+      
+      if memory.permission_result {
+        emit "permission_check_result" {
+          allowed: memory.permission_result.allowed,
+          user_id: memory.permission_result.user_id,
+          permission: memory.permission_result.permission,
+          resource: memory.permission_result.resource
+        }
+      }
+      
+      if memory.session_result {
+        emit "session_validation_result" {
+          valid: memory.session_result.valid,
+          session_id: plan.session.session_id,
+          user_id: memory.session_result.user ? memory.session_result.user.id : null
+        }
+      }
+    }
+  }
+
+  recipe "generate_jwt_token" {
+    needs: user_data
+    gives: token
+    
+    brain {
+      plan {
+        plan = { action: "create_jwt_token" }
+      }
+      
+      execute {
+        if plan.action == "create_jwt_token" {
+          header = {
+            alg: "HS256",
+            typ: "JWT"
+          }
+          
+          payload = {
+            user_id: user_data.user_id,
+            username: user_data.username,
+            roles: user_data.roles,
+            permissions: user_data.permissions,
+            iat: get_timestamp(),
+            exp: get_timestamp() + memory.security_config.token_expiry
+          }
+          
+          // Create JWT token (simplified implementation)
+          header_b64 = base64_encode(JSON.stringify(header))
+          payload_b64 = base64_encode(JSON.stringify(payload))
+          
+          signature = hmac_sha256(
+            header_b64 + "." + payload_b64,
+            memory.security_config.jwt_secret
+          )
+          signature_b64 = base64_encode(signature)
+          
+          token = header_b64 + "." + payload_b64 + "." + signature_b64
+        }
+      }
+    }
+  }
+
+  recipe "verify_jwt_token" {
+    needs: token
+    gives: payload
+    
+    brain {
+      plan {
+        plan = { action: "verify_token_signature" }
+      }
+      
+      execute {
+        if plan.action == "verify_token_signature" {
+          parts = token.split(".")
+          if parts.length == 3 {
+            header_b64 = parts[0]
+            payload_b64 = parts[1]
+            signature_b64 = parts[2]
+            
+            // Verify signature
+            expected_signature = hmac_sha256(
+              header_b64 + "." + payload_b64,
+              memory.security_config.jwt_secret
+            )
+            expected_signature_b64 = base64_encode(expected_signature)
+            
+            if signature_b64 == expected_signature_b64 {
+              // Decode payload
+              payload_json = base64_decode(payload_b64)
+              payload = JSON.parse(payload_json)
+              
+              // Check expiration
+              if payload.exp < get_timestamp() {
+                throw "Token expired"
+              }
+            } else {
+              throw "Invalid token signature"
+            }
+          } else {
+            throw "Invalid token format"
+          }
+        }
+      }
+    }
+  }
+
+  recipe "verify_password" {
+    needs: password, hash
+    gives: is_valid
+    
+    brain {
+      plan {
+        plan = { action: "verify_password_hash" }
+      }
+      
+      execute {
+        if plan.action == "verify_password_hash" {
+          // Use bcrypt-like verification (simplified)
+          salt = extract_salt_from_hash(hash)
+          expected_hash = hash_password_with_salt(password, salt)
+          is_valid = (expected_hash == hash)
+        }
+      }
+    }
+  }
+
+  recipe "has_permission" {
+    needs: user_permissions, required_permission, resource
+    gives: has_access
+    
+    brain {
+      plan {
+        plan = { action: "check_permission_access" }
+      }
+      
+      execute {
+        if plan.action == "check_permission_access" {
+          has_access = false
+          
+          // Check exact permission match
+          if user_permissions[required_permission] {
+            if user_permissions[required_permission] == "*" {
+              has_access = true
+            } else if user_permissions[required_permission].includes(resource) {
+              has_access = true
+            }
+          }
+          
+          // Check wildcard permissions
+          if not has_access {
+            wildcard_permission = required_permission.split(":")[0] + ":*"
+            if user_permissions[wildcard_permission] {
+              has_access = true
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "cleanup_expired_sessions" {
+    brain {
+      plan {
+        plan = { action: "remove_expired_sessions" }
+      }
+      
+      execute {
+        if plan.action == "remove_expired_sessions" {
+          current_time = get_timestamp()
+          
+          for each session_id in Object.keys(memory.active_sessions) {
+            session = memory.active_sessions[session_id]
+            if session.expires_at < current_time {
+              memory.active_sessions[session_id] = null
+              log("Cleaned up expired session: " + session_id)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "monitor_security_threats" {
+    brain {
+      plan {
+        plan = { action: "analyze_security_metrics" }
+      }
+      
+      execute {
+        if plan.action == "analyze_security_metrics" {
+          // Check for brute force attacks
+          for each username in Object.keys(memory.failed_login_attempts) {
+            attempts = memory.failed_login_attempts[username]
+            if attempts.count > 10 {
+              emit "security_alert" {
+                type: "brute_force_attack",
+                username: username,
+                failed_attempts: attempts.count,
+                last_attempt: attempts.last_attempt
+              }
+            }
+          }
+          
+          // Check for session anomalies
+          session_count = Object.keys(memory.active_sessions).length
+          if session_count > 1000 {
+            emit "security_alert" {
+              type: "high_session_count",
+              session_count: session_count
+            }
+          }
+        }
+      }
+    }
+  }
+} 

@@ -1,0 +1,612 @@
+helper "gx_type_checker" {
+  can_do: ["static_type_checking", "type_inference", "type_validation", "type_analysis", "type_safety"]
+  
+  remember {
+    type_system = {
+      // Basic types
+      int: { kind: "primitive", size: 64, signed: true },
+      float: { kind: "primitive", size: 64, precision: "double" },
+      string: { kind: "primitive", encoding: "utf8" },
+      bool: { kind: "primitive", values: [true, false] },
+      
+      // Composite types
+      array: { kind: "composite", element_type: "any", dynamic: true },
+      object: { kind: "composite", fields: {}, dynamic: true },
+      union: { kind: "composite", variants: [] },
+      
+      // Special types
+      any: { kind: "special", allows_all: true },
+      void: { kind: "special", no_value: true },
+      null: { kind: "special", null_value: true }
+    }
+    
+    type_context = {}
+    type_errors = []
+    type_warnings = []
+    inference_cache = {}
+    
+    type_checking_config = {
+      strict_mode: true,
+      allow_implicit_conversions: false,
+      require_type_annotations: true,
+      max_type_depth: 10
+    }
+  }
+
+  receive {
+    from "compiler" as "ast_data" {
+      type: "parsed_ast"
+      bind: memory.ast_input
+      on_receive: brain.perform_type_checking
+    }
+    
+    from "runtime" as "type_validation_request" {
+      type: "runtime_type_check"
+      bind: memory.runtime_type_request
+      on_receive: brain.validate_runtime_types
+    }
+    
+    from "ide" as "type_inference_request" {
+      type: "inference_request"
+      bind: memory.inference_request
+      on_receive: brain.infer_types
+    }
+  }
+
+  brain {
+    plan {
+      if memory.ast_input {
+        plan = { action: "check_ast_types", ast: memory.ast_input }
+      } else if memory.runtime_type_request {
+        plan = { action: "validate_runtime_types", request: memory.runtime_type_request }
+      } else if memory.inference_request {
+        plan = { action: "infer_types", request: memory.inference_request }
+      } else {
+        plan = { action: "idle_type_analysis" }
+      }
+    }
+
+    execute {
+      if plan.action == "check_ast_types" {
+        try {
+          ast = plan.ast
+          memory.type_errors = []
+          memory.type_warnings = []
+          
+          // Type check all helpers
+          for each helper in ast.helpers {
+            check_helper_types(helper)
+          }
+          
+          // Type check all recipes
+          for each recipe in ast.recipes {
+            check_recipe_types(recipe)
+          }
+          
+          // Type check all messages
+          for each message in ast.messages {
+            check_message_types(message)
+          }
+          
+          memory.type_check_result = {
+            success: memory.type_errors.length == 0,
+            errors: memory.type_errors,
+            warnings: memory.type_warnings,
+            checked_helpers: ast.helpers.length,
+            checked_recipes: ast.recipes.length
+          }
+          
+        } catch error {
+          memory.type_check_result = {
+            success: false,
+            error: error,
+            errors: [error]
+          }
+        }
+      } else if plan.action == "validate_runtime_types" {
+        try {
+          request = plan.request
+          value = request.value
+          expected_type = request.expected_type
+          
+          validation_result = validate_runtime_type(value, expected_type)
+          
+          memory.runtime_validation_result = {
+            valid: validation_result.valid,
+            actual_type: validation_result.actual_type,
+            expected_type: expected_type,
+            value: value
+          }
+          
+        } catch error {
+          memory.runtime_validation_result = {
+            valid: false,
+            error: error
+          }
+        }
+      } else if plan.action == "infer_types" {
+        try {
+          request = plan.request
+          code_snippet = request.code
+          context = request.context || {}
+          
+          inferred_types = infer_types_from_code(code_snippet, context)
+          
+          memory.inference_result = {
+            types: inferred_types,
+            confidence: calculate_inference_confidence(inferred_types)
+          }
+          
+        } catch error {
+          memory.inference_result = {
+            error: error,
+            types: {}
+          }
+        }
+      } else if plan.action == "idle_type_analysis" {
+        // Analyze type usage patterns
+        analyze_type_patterns()
+        
+        // Optimize type checking performance
+        optimize_type_checking()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+      
+      // Update type checking metrics
+      if memory.type_check_result {
+        memory.type_metrics.checks_performed += 1
+        memory.type_metrics.errors_found += memory.type_check_result.errors.length
+        memory.type_metrics.warnings_found += memory.type_check_result.warnings.length
+      }
+    }
+
+    communicate {
+      if memory.type_check_result {
+        if memory.type_check_result.success {
+          emit "type_check_success" {
+            checked_helpers: memory.type_check_result.checked_helpers,
+            checked_recipes: memory.type_check_result.checked_recipes,
+            warnings: memory.type_check_result.warnings.length
+          }
+        } else {
+          emit "type_check_failed" {
+            errors: memory.type_check_result.errors,
+            warnings: memory.type_check_result.warnings
+          }
+        }
+      }
+      
+      if memory.runtime_validation_result {
+        emit "runtime_type_validation_result" {
+          valid: memory.runtime_validation_result.valid,
+          actual_type: memory.runtime_validation_result.actual_type,
+          expected_type: memory.runtime_validation_result.expected_type
+        }
+      }
+      
+      if memory.inference_result {
+        emit "type_inference_result" {
+          types: memory.inference_result.types,
+          confidence: memory.inference_result.confidence
+        }
+      }
+    }
+  }
+
+  recipe "check_helper_types" {
+    needs: helper
+    gives: type_check_result
+    
+    brain {
+      plan {
+        plan = { action: "validate_helper_type_signatures" }
+      }
+      
+      execute {
+        if plan.action == "validate_helper_type_signatures" {
+          // Check helper name type
+          if not is_valid_identifier(helper.name) {
+            add_type_error("Invalid helper name: " + helper.name)
+          }
+          
+          // Check capabilities array type
+          if helper.can_do {
+            if not Array.isArray(helper.can_do) {
+              add_type_error("Capabilities must be an array")
+            } else {
+              for each capability in helper.can_do {
+                if typeof capability != "string" {
+                  add_type_error("Capability must be a string: " + capability)
+                }
+              }
+            }
+          }
+          
+          // Check memory section types
+          if helper.remember {
+            check_memory_types(helper.remember)
+          }
+          
+          // Check brain section types
+          if helper.brain {
+            check_brain_types(helper.brain)
+          }
+          
+          // Check receive section types
+          if helper.receive {
+            check_receive_types(helper.receive)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "check_recipe_types" {
+    needs: recipe
+    gives: type_check_result
+    
+    brain {
+      plan {
+        plan = { action: "validate_recipe_type_signatures" }
+      }
+      
+      execute {
+        if plan.action == "validate_recipe_type_signatures" {
+          // Check recipe name type
+          if not is_valid_identifier(recipe.name) {
+            add_type_error("Invalid recipe name: " + recipe.name)
+          }
+          
+          // Check needs and gives types
+          if recipe.needs {
+            if not Array.isArray(recipe.needs) {
+              add_type_error("Recipe needs must be an array")
+            } else {
+              for each need in recipe.needs {
+                if typeof need != "string" {
+                  add_type_error("Recipe need must be a string: " + need)
+                }
+              }
+            }
+          }
+          
+          if recipe.gives {
+            if not Array.isArray(recipe.gives) {
+              add_type_error("Recipe gives must be an array")
+            } else {
+              for each give in recipe.gives {
+                if typeof give != "string" {
+                  add_type_error("Recipe give must be a string: " + give)
+                }
+              }
+            }
+          }
+          
+          // Check brain section types
+          if recipe.brain {
+            check_brain_types(recipe.brain)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "check_memory_types" {
+    needs: memory_section
+    gives: type_check_result
+    
+    brain {
+      plan {
+        plan = { action: "validate_memory_type_declarations" }
+      }
+      
+      execute {
+        if plan.action == "validate_memory_type_declarations" {
+          for each variable_name in Object.keys(memory_section) {
+            variable_value = memory_section[variable_name]
+            
+            // Check if variable has type annotation
+            if variable_name.includes(":") {
+              parts = variable_name.split(":")
+              var_name = parts[0].trim()
+              type_annotation = parts[1].trim()
+              
+              // Validate type annotation
+              if not is_valid_type(type_annotation) {
+                add_type_error("Invalid type annotation: " + type_annotation)
+              }
+              
+              // Check value matches type
+              if not value_matches_type(variable_value, type_annotation) {
+                add_type_error("Value does not match type annotation: " + var_name)
+              }
+            } else {
+              // Infer type from value
+              inferred_type = infer_type_from_value(variable_value)
+              if inferred_type == "unknown" {
+                add_type_warning("Could not infer type for variable: " + variable_name)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "check_brain_types" {
+    needs: brain_section
+    gives: type_check_result
+    
+    brain {
+      plan {
+        plan = { action: "validate_brain_section_types" }
+      }
+      
+      execute {
+        if plan.action == "validate_brain_section_types" {
+          // Check plan section
+          if brain_section.plan {
+            check_plan_types(brain_section.plan)
+          }
+          
+          // Check execute section
+          if brain_section.execute {
+            check_execute_types(brain_section.execute)
+          }
+          
+          // Check remember section
+          if brain_section.remember {
+            check_remember_types(brain_section.remember)
+          }
+          
+          // Check communicate section
+          if brain_section.communicate {
+            check_communicate_types(brain_section.communicate)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "validate_runtime_type" {
+    needs: value, expected_type
+    gives: validation_result
+    
+    brain {
+      plan {
+        plan = { action: "check_runtime_type_compatibility" }
+      }
+      
+      execute {
+        if plan.action == "check_runtime_type_compatibility" {
+          actual_type = get_runtime_type(value)
+          
+          validation_result = {
+            valid: types_are_compatible(actual_type, expected_type),
+            actual_type: actual_type,
+            expected_type: expected_type,
+            value: value
+          }
+        }
+      }
+    }
+  }
+
+  recipe "infer_types_from_code" {
+    needs: code_snippet, context
+    gives: inferred_types
+    
+    brain {
+      plan {
+        plan = { action: "analyze_code_for_types" }
+      }
+      
+      execute {
+        if plan.action == "analyze_code_for_types" {
+          inferred_types = {}
+          
+          // Parse code into tokens
+          tokens = tokenize_code(code_snippet)
+          
+          // Analyze variable declarations
+          for each token in tokens {
+            if token.type == "variable_declaration" {
+              var_name = token.name
+              var_value = token.value
+              
+              inferred_type = infer_type_from_value(var_value)
+              if inferred_type != "unknown" {
+                inferred_types[var_name] = inferred_type
+              }
+            }
+          }
+          
+          // Analyze function calls
+          for each token in tokens {
+            if token.type == "function_call" {
+              func_name = token.name
+              func_args = token.arguments
+              
+              // Infer argument types
+              arg_types = []
+              for each arg in func_args {
+                arg_type = infer_type_from_value(arg)
+                arg_types.push(arg_type)
+              }
+              
+              inferred_types[func_name + "_args"] = arg_types
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "is_valid_type" {
+    needs: type_name
+    gives: is_valid
+    
+    brain {
+      plan {
+        plan = { action: "validate_type_name" }
+      }
+      
+      execute {
+        if plan.action == "validate_type_name" {
+          is_valid = false
+          
+          // Check if it's a basic type
+          if memory.type_system[type_name] {
+            is_valid = true
+          }
+          
+          // Check if it's a composite type
+          if type_name.startsWith("array<") && type_name.endsWith(">") {
+            element_type = type_name.substring(6, type_name.length - 1)
+            is_valid = is_valid_type(element_type)
+          }
+          
+          if type_name.startsWith("object<") && type_name.endsWith(">") {
+            is_valid = true  // Object types are always valid
+          }
+          
+          // Check if it's a union type
+          if type_name.includes("|") {
+            union_types = type_name.split("|")
+            is_valid = true
+            for each union_type in union_types {
+              if not is_valid_type(union_type.trim()) {
+                is_valid = false
+                break
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "value_matches_type" {
+    needs: value, type_name
+    gives: matches
+    
+    brain {
+      plan {
+        plan = { action: "check_value_type_compatibility" }
+      }
+      
+      execute {
+        if plan.action == "check_value_type_compatibility" {
+          matches = false
+          
+          if type_name == "int" {
+            matches = typeof value == "number" && Number.isInteger(value)
+          } else if type_name == "float" {
+            matches = typeof value == "number"
+          } else if type_name == "string" {
+            matches = typeof value == "string"
+          } else if type_name == "bool" {
+            matches = typeof value == "boolean"
+          } else if type_name == "array" {
+            matches = Array.isArray(value)
+          } else if type_name == "object" {
+            matches = typeof value == "object" && value != null && not Array.isArray(value)
+          } else if type_name == "null" {
+            matches = value == null
+          } else if type_name == "any" {
+            matches = true
+          } else if type_name.startsWith("array<") {
+            element_type = type_name.substring(6, type_name.length - 1)
+            matches = Array.isArray(value) && value.every(item => value_matches_type(item, element_type))
+          }
+        }
+      }
+    }
+  }
+
+  recipe "infer_type_from_value" {
+    needs: value
+    gives: inferred_type
+    
+    brain {
+      plan {
+        plan = { action: "analyze_value_type" }
+      }
+      
+      execute {
+        if plan.action == "analyze_value_type" {
+          if value == null {
+            inferred_type = "null"
+          } else if typeof value == "number" {
+            if Number.isInteger(value) {
+              inferred_type = "int"
+            } else {
+              inferred_type = "float"
+            }
+          } else if typeof value == "string" {
+            inferred_type = "string"
+          } else if typeof value == "boolean" {
+            inferred_type = "bool"
+          } else if Array.isArray(value) {
+            if value.length == 0 {
+              inferred_type = "array<any>"
+            } else {
+              element_type = infer_type_from_value(value[0])
+              inferred_type = "array<" + element_type + ">"
+            }
+          } else if typeof value == "object" {
+            inferred_type = "object"
+          } else {
+            inferred_type = "unknown"
+          }
+        }
+      }
+    }
+  }
+
+  recipe "add_type_error" {
+    needs: error_message
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "record_type_error" }
+      }
+      
+      execute {
+        if plan.action == "record_type_error" {
+          memory.type_errors.push({
+            message: error_message,
+            timestamp: get_timestamp(),
+            severity: "error"
+          })
+        }
+      }
+    }
+  }
+
+  recipe "add_type_warning" {
+    needs: warning_message
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "record_type_warning" }
+      }
+      
+      execute {
+        if plan.action == "record_type_warning" {
+          memory.type_warnings.push({
+            message: warning_message,
+            timestamp: get_timestamp(),
+            severity: "warning"
+          })
+        }
+      }
+    }
+  }
+} 

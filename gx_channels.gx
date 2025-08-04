@@ -1,0 +1,714 @@
+helper "gx_channels" {
+  can_do: ["channel_communication", "concurrency", "message_passing", "channel_management", "buffered_channels"]
+  
+  remember {
+    channels = {}
+    channel_registry = {}
+    channel_metrics = {
+      total_channels: 0,
+      active_channels: 0,
+      messages_sent: 0,
+      messages_received: 0,
+      channel_errors: 0
+    }
+    
+    channel_config = {
+      default_buffer_size: 10,
+      max_channels: 1000,
+      channel_timeout: 5000,  // 5 seconds
+      enable_debugging: true,
+      auto_cleanup: true
+    }
+  }
+
+  receive {
+    from "channel_manager" as "channel_request" {
+      type: "create_channel"
+      bind: memory.channel_request
+      on_receive: brain.handle_channel_request
+    }
+    
+    from "message_sender" as "message" {
+      type: "send_message"
+      bind: memory.message
+      on_receive: brain.handle_message_send
+    }
+  }
+
+  brain {
+    plan {
+      if memory.channel_request {
+        plan = { action: "handle_channel_request", request: memory.channel_request }
+      } else if memory.message {
+        plan = { action: "handle_message_send", message: memory.message }
+      } else {
+        plan = { action: "idle_channel_monitoring" }
+      }
+    }
+
+    execute {
+      if plan.action == "handle_channel_request" {
+        try {
+          request = plan.request
+          
+          if request.action == "create_channel" {
+            channel = create_channel(request.name, request.buffer_size)
+            memory.channels[request.name] = channel
+            memory.channel_registry[channel.id] = channel
+            memory.channel_metrics.total_channels += 1
+            memory.channel_metrics.active_channels += 1
+            
+            emit "channel_created" {
+              channel_id: channel.id,
+              channel_name: request.name,
+              buffer_size: request.buffer_size
+            }
+          } else if request.action == "close_channel" {
+            close_channel(request.channel_name)
+          }
+          
+        } catch error {
+          memory.channel_metrics.channel_errors += 1
+          emit "channel_error" {
+            error: error,
+            request: request
+          }
+        }
+      } else if plan.action == "handle_message_send" {
+        try {
+          message = plan.message
+          channel_name = message.channel_name
+          
+          if memory.channels[channel_name] {
+            send_message_to_channel(channel_name, message.data)
+            memory.channel_metrics.messages_sent += 1
+          } else {
+            throw new Error("Channel not found: " + channel_name)
+          }
+          
+        } catch error {
+          memory.channel_metrics.channel_errors += 1
+          emit "message_send_error" {
+            error: error,
+            message: message
+          }
+        }
+      } else if plan.action == "idle_channel_monitoring" {
+        // Monitor channel health
+        monitor_channel_health()
+        
+        // Cleanup inactive channels
+        cleanup_inactive_channels()
+        
+        // Update channel metrics
+        update_channel_metrics()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      if memory.channel_request {
+        emit "channel_operation_completed" {
+          operation: memory.channel_request.action,
+          success: true
+        }
+      }
+    }
+  }
+
+  recipe "create_channel" {
+    needs: name, buffer_size
+    gives: channel
+    
+    brain {
+      plan {
+        plan = { action: "create_channel_object" }
+      }
+      
+      execute {
+        if plan.action == "create_channel_object" {
+          channel_id = generate_channel_id()
+          
+          channel = {
+            id: channel_id,
+            name: name,
+            buffer_size: buffer_size || memory.channel_config.default_buffer_size,
+            buffer: [],
+            senders: [],
+            receivers: [],
+            status: "active",
+            created_at: get_timestamp(),
+            last_activity: get_timestamp(),
+            metrics: {
+              messages_sent: 0,
+              messages_received: 0,
+              senders_count: 0,
+              receivers_count: 0
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "send_message_to_channel" {
+    needs: channel_name, data
+    gives: success
+    
+    brain {
+      plan {
+        plan = { action: "send_message" }
+      }
+      
+      execute {
+        if plan.action == "send_message" {
+          channel = memory.channels[channel_name]
+          
+          if channel && channel.status == "active" {
+            // Check if buffer is full
+            if channel.buffer.length >= channel.buffer_size {
+              // Buffer is full, wait for space
+              wait_for_buffer_space(channel)
+            }
+            
+            // Add message to buffer
+            message = {
+              id: generate_message_id(),
+              data: data,
+              timestamp: get_timestamp(),
+              sender: get_current_sender()
+            }
+            
+            channel.buffer.push(message)
+            channel.metrics.messages_sent += 1
+            channel.last_activity = get_timestamp()
+            
+            // Notify receivers
+            notify_receivers(channel)
+            
+            success = true
+          } else {
+            throw new Error("Channel is not active: " + channel_name)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "receive_message_from_channel" {
+    needs: channel_name
+    gives: message
+    
+    brain {
+      plan {
+        plan = { action: "receive_message" }
+      }
+      
+      execute {
+        if plan.action == "receive_message" {
+          channel = memory.channels[channel_name]
+          
+          if channel && channel.status == "active" {
+            // Check if buffer has messages
+            if channel.buffer.length > 0 {
+              // Get message from buffer
+              message = channel.buffer.shift()
+              channel.metrics.messages_received += 1
+              channel.last_activity = get_timestamp()
+              
+              // Notify senders that space is available
+              notify_senders(channel)
+            } else {
+              // No messages available, wait
+              message = wait_for_message(channel)
+            }
+          } else {
+            throw new Error("Channel is not active: " + channel_name)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "close_channel" {
+    needs: channel_name
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "close_channel_object" }
+      }
+      
+      execute {
+        if plan.action == "close_channel_object" {
+          channel = memory.channels[channel_name]
+          
+          if channel {
+            // Mark channel as closed
+            channel.status = "closed"
+            channel.closed_at = get_timestamp()
+            
+            // Notify all senders and receivers
+            notify_channel_closed(channel)
+            
+            // Remove from active channels
+            memory.channel_metrics.active_channels -= 1
+            
+            // Cleanup after timeout
+            schedule_channel_cleanup(channel.id)
+            
+            emit "channel_closed" {
+              channel_id: channel.id,
+              channel_name: channel_name
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "wait_for_buffer_space" {
+    needs: channel
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "wait_for_space" }
+      }
+      
+      execute {
+        if plan.action == "wait_for_space" {
+          start_time = get_timestamp()
+          
+          // Wait until buffer has space
+          while channel.buffer.length >= channel.buffer_size {
+            // Check for timeout
+            if get_timestamp() - start_time > memory.channel_config.channel_timeout {
+              throw new Error("Channel buffer timeout")
+            }
+            
+            // Yield control
+            yield_control()
+          }
+        }
+      }
+    }
+  }
+
+  recipe "wait_for_message" {
+    needs: channel
+    gives: message
+    
+    brain {
+      plan {
+        plan = { action: "wait_for_message_data" }
+      }
+      
+      execute {
+        if plan.action == "wait_for_message_data" {
+          start_time = get_timestamp()
+          
+          // Wait until message is available
+          while channel.buffer.length == 0 {
+            // Check for timeout
+            if get_timestamp() - start_time > memory.channel_config.channel_timeout {
+              throw new Error("Channel receive timeout")
+            }
+            
+            // Yield control
+            yield_control()
+          }
+          
+          // Get message from buffer
+          message = channel.buffer.shift()
+          channel.metrics.messages_received += 1
+          channel.last_activity = get_timestamp()
+        }
+      }
+    }
+  }
+
+  recipe "notify_receivers" {
+    needs: channel
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "notify_receivers_of_message" }
+      }
+      
+      execute {
+        if plan.action == "notify_receivers_of_message" {
+          // Notify all registered receivers
+          for each receiver in channel.receivers {
+            try {
+              receiver.on_message({
+                channel_id: channel.id,
+                channel_name: channel.name,
+                message: channel.buffer[channel.buffer.length - 1]
+              })
+            } catch error {
+              log("Error notifying receiver: " + error)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "notify_senders" {
+    needs: channel
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "notify_senders_of_space" }
+      }
+      
+      execute {
+        if plan.action == "notify_senders_of_space" {
+          // Notify all registered senders that space is available
+          for each sender in channel.senders {
+            try {
+              sender.on_space_available({
+                channel_id: channel.id,
+                channel_name: channel.name,
+                available_space: channel.buffer_size - channel.buffer.length
+              })
+            } catch error {
+              log("Error notifying sender: " + error)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "notify_channel_closed" {
+    needs: channel
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "notify_channel_closed_event" }
+      }
+      
+      execute {
+        if plan.action == "notify_channel_closed_event" {
+          // Notify all senders and receivers that channel is closed
+          for each sender in channel.senders {
+            try {
+              sender.on_channel_closed({
+                channel_id: channel.id,
+                channel_name: channel.name
+              })
+            } catch error {
+              log("Error notifying sender of channel closure: " + error)
+            }
+          }
+          
+          for each receiver in channel.receivers {
+            try {
+              receiver.on_channel_closed({
+                channel_id: channel.id,
+                channel_name: channel.name
+              })
+            } catch error {
+              log("Error notifying receiver of channel closure: " + error)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "register_sender" {
+    needs: channel_name, sender_callback
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "register_sender_callback" }
+      }
+      
+      execute {
+        if plan.action == "register_sender_callback" {
+          channel = memory.channels[channel_name]
+          
+          if channel && channel.status == "active" {
+            sender = {
+              id: generate_sender_id(),
+              callback: sender_callback,
+              registered_at: get_timestamp()
+            }
+            
+            channel.senders.push(sender)
+            channel.metrics.senders_count += 1
+          }
+        }
+      }
+    }
+  }
+
+  recipe "register_receiver" {
+    needs: channel_name, receiver_callback
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "register_receiver_callback" }
+      }
+      
+      execute {
+        if plan.action == "register_receiver_callback" {
+          channel = memory.channels[channel_name]
+          
+          if channel && channel.status == "active" {
+            receiver = {
+              id: generate_receiver_id(),
+              callback: receiver_callback,
+              registered_at: get_timestamp()
+            }
+            
+            channel.receivers.push(receiver)
+            channel.metrics.receivers_count += 1
+          }
+        }
+      }
+    }
+  }
+
+  recipe "monitor_channel_health" {
+    brain {
+      plan {
+        plan = { action: "monitor_health" }
+      }
+      
+      execute {
+        if plan.action == "monitor_health" {
+          current_time = get_timestamp()
+          
+          // Check for inactive channels
+          for each channel_name in Object.keys(memory.channels) {
+            channel = memory.channels[channel_name]
+            
+            if channel.status == "active" {
+              // Check for timeout
+              if current_time - channel.last_activity > memory.channel_config.channel_timeout {
+                emit "channel_timeout" {
+                  channel_id: channel.id,
+                  channel_name: channel_name,
+                  inactive_duration: current_time - channel.last_activity
+                }
+                
+                // Auto-close inactive channels
+                if memory.channel_config.auto_cleanup {
+                  close_channel(channel_name)
+                }
+              }
+            }
+          }
+          
+          // Check for channel limit
+          if memory.channel_metrics.total_channels > memory.channel_config.max_channels {
+            emit "channel_limit_exceeded" {
+              total_channels: memory.channel_metrics.total_channels,
+              max_channels: memory.channel_config.max_channels
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "cleanup_inactive_channels" {
+    brain {
+      plan {
+        plan = { action: "cleanup_channels" }
+      }
+      
+      execute {
+        if plan.action == "cleanup_channels" {
+          current_time = get_timestamp()
+          
+          // Remove closed channels older than 10 minutes
+          for each channel_name in Object.keys(memory.channels) {
+            channel = memory.channels[channel_name]
+            
+            if channel.status == "closed" {
+              if current_time - channel.closed_at > 600000 { // 10 minutes
+                delete memory.channels[channel_name]
+                delete memory.channel_registry[channel.id]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_channel_metrics" {
+    brain {
+      plan {
+        plan = { action: "update_metrics" }
+      }
+      
+      execute {
+        if plan.action == "update_metrics" {
+          // Update global metrics
+          total_messages_sent = 0
+          total_messages_received = 0
+          
+          for each channel_name in Object.keys(memory.channels) {
+            channel = memory.channels[channel_name]
+            total_messages_sent += channel.metrics.messages_sent
+            total_messages_received += channel.metrics.messages_received
+          }
+          
+          memory.channel_metrics.messages_sent = total_messages_sent
+          memory.channel_metrics.messages_received = total_messages_received
+        }
+      }
+    }
+  }
+
+  recipe "generate_channel_id" {
+    gives: channel_id
+    
+    brain {
+      plan {
+        plan = { action: "generate_id" }
+      }
+      
+      execute {
+        if plan.action == "generate_id" {
+          channel_id = "channel_" + get_timestamp() + "_" + Math.random().toString(36).substr(2, 9)
+        }
+      }
+    }
+  }
+
+  recipe "generate_message_id" {
+    gives: message_id
+    
+    brain {
+      plan {
+        plan = { action: "generate_message_id" }
+      }
+      
+      execute {
+        if plan.action == "generate_message_id" {
+          message_id = "msg_" + get_timestamp() + "_" + Math.random().toString(36).substr(2, 9)
+        }
+      }
+    }
+  }
+
+  recipe "generate_sender_id" {
+    gives: sender_id
+    
+    brain {
+      plan {
+        plan = { action: "generate_sender_id" }
+      }
+      
+      execute {
+        if plan.action == "generate_sender_id" {
+          sender_id = "sender_" + get_timestamp() + "_" + Math.random().toString(36).substr(2, 9)
+        }
+      }
+    }
+  }
+
+  recipe "generate_receiver_id" {
+    gives: receiver_id
+    
+    brain {
+      plan {
+        plan = { action: "generate_receiver_id" }
+      }
+      
+      execute {
+        if plan.action == "generate_receiver_id" {
+          receiver_id = "receiver_" + get_timestamp() + "_" + Math.random().toString(36).substr(2, 9)
+        }
+      }
+    }
+  }
+
+  recipe "get_current_sender" {
+    gives: sender_id
+    
+    brain {
+      plan {
+        plan = { action: "get_sender" }
+      }
+      
+      execute {
+        if plan.action == "get_sender" {
+          // Get current execution context sender
+          sender_id = "current_sender_" + get_timestamp()
+        }
+      }
+    }
+  }
+
+  recipe "yield_control" {
+    brain {
+      plan {
+        plan = { action: "yield" }
+      }
+      
+      execute {
+        if plan.action == "yield" {
+          // Allow other operations to run
+          setTimeout(function() {}, 0)
+        }
+      }
+    }
+  }
+
+  recipe "schedule_channel_cleanup" {
+    needs: channel_id
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "schedule_cleanup" }
+      }
+      
+      execute {
+        if plan.action == "schedule_cleanup" {
+          // Schedule cleanup after timeout
+          setTimeout(function() {
+            cleanup_channel(channel_id)
+          }, memory.channel_config.channel_timeout)
+        }
+      }
+    }
+  }
+
+  recipe "cleanup_channel" {
+    needs: channel_id
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "cleanup_channel_object" }
+      }
+      
+      execute {
+        if plan.action == "cleanup_channel_object" {
+          // Remove channel from registry
+          if memory.channel_registry[channel_id] {
+            delete memory.channel_registry[channel_id]
+          }
+        }
+      }
+    }
+  }
+} 

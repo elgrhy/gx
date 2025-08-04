@@ -1,0 +1,1133 @@
+helper "gx_doc_generator" {
+  can_do: ["api_documentation", "code_documentation", "example_generation", "documentation_formatting", "doc_validation"]
+  
+  remember {
+    documentation_templates = {
+      helper_template: "helper_doc_template.md",
+      recipe_template: "recipe_doc_template.md",
+      message_template: "message_doc_template.md",
+      objective_template: "objective_doc_template.md"
+    }
+    
+    doc_config = {
+      output_format: "markdown",
+      include_examples: true,
+      include_type_info: true,
+      include_usage_examples: true,
+      generate_index: true,
+      auto_update: true
+    }
+    
+    generated_docs = {}
+    doc_metrics = {
+      total_docs_generated: 0,
+      api_endpoints_documented: 0,
+      examples_generated: 0,
+      last_generation_time: 0
+    }
+  }
+
+  receive {
+    from "compiler" as "ast_data" {
+      type: "parsed_ast"
+      bind: memory.ast_input
+      on_receive: brain.generate_documentation
+    }
+    
+    from "ide" as "doc_request" {
+      type: "documentation_request"
+      bind: memory.doc_request
+      on_receive: brain.generate_specific_doc
+    }
+    
+    from "test_framework" as "example_request" {
+      type: "example_generation_request"
+      bind: memory.example_request
+      on_receive: brain.generate_examples
+    }
+  }
+
+  brain {
+    plan {
+      if memory.ast_input {
+        plan = { action: "generate_api_docs", ast: memory.ast_input }
+      } else if memory.doc_request {
+        plan = { action: "generate_specific_documentation", request: memory.doc_request }
+      } else if memory.example_request {
+        plan = { action: "generate_code_examples", request: memory.example_request }
+      } else {
+        plan = { action: "idle_doc_maintenance" }
+      }
+    }
+
+    execute {
+      if plan.action == "generate_api_docs" {
+        try {
+          ast = plan.ast
+          
+          // Generate documentation for helpers
+          helper_docs = generate_helper_documentation(ast.helpers)
+          
+          // Generate documentation for recipes
+          recipe_docs = generate_recipe_documentation(ast.recipes)
+          
+          // Generate documentation for messages
+          message_docs = generate_message_documentation(ast.messages)
+          
+          // Generate documentation for objectives
+          objective_docs = generate_objective_documentation(ast.objectives)
+          
+          // Create API index
+          api_index = create_api_index(helper_docs, recipe_docs, message_docs, objective_docs)
+          
+          // Generate examples
+          if memory.doc_config.include_examples {
+            examples = generate_usage_examples(ast)
+          }
+          
+          memory.doc_generation_result = {
+            success: true,
+            helpers_documented: helper_docs.length,
+            recipes_documented: recipe_docs.length,
+            messages_documented: message_docs.length,
+            objectives_documented: objective_docs.length,
+            examples_generated: examples ? examples.length : 0,
+            api_index: api_index,
+            documentation_files: {
+              helpers: helper_docs,
+              recipes: recipe_docs,
+              messages: message_docs,
+              objectives: objective_docs,
+              examples: examples
+            }
+          }
+          
+        } catch doc_error {
+          memory.doc_generation_result = {
+            success: false,
+            error: "Documentation generation failed: " + doc_error
+          }
+        }
+      } else if plan.action == "generate_specific_documentation" {
+        try {
+          request = plan.request
+          target_type = request.type
+          target_name = request.name
+          
+          specific_doc = generate_specific_doc(target_type, target_name)
+          
+          memory.specific_doc_result = {
+            type: target_type,
+            name: target_name,
+            documentation: specific_doc,
+            generated_at: get_timestamp()
+          }
+          
+        } catch specific_doc_error {
+          memory.specific_doc_result = {
+            type: request.type,
+            name: request.name,
+            error: "Specific documentation generation failed: " + specific_doc_error
+          }
+        }
+      } else if plan.action == "generate_code_examples" {
+        try {
+          request = plan.example_request
+          code_snippet = request.code
+          context = request.context || {}
+          
+          examples = generate_examples_from_code(code_snippet, context)
+          
+          memory.example_generation_result = {
+            code_snippet: code_snippet,
+            examples: examples,
+            examples_count: examples.length
+          }
+          
+        } catch example_error {
+          memory.example_generation_result = {
+            error: "Example generation failed: " + example_error,
+            examples: []
+          }
+        }
+      } else if plan.action == "idle_doc_maintenance" {
+        // Update documentation metrics
+        update_doc_metrics()
+        
+        // Clean up old documentation
+        cleanup_old_documentation()
+        
+        // Validate existing documentation
+        validate_documentation()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+      
+      // Update documentation metrics
+      if memory.doc_generation_result && memory.doc_generation_result.success {
+        memory.doc_metrics.total_docs_generated += 1
+        memory.doc_metrics.api_endpoints_documented += memory.doc_generation_result.helpers_documented
+        memory.doc_metrics.examples_generated += memory.doc_generation_result.examples_generated
+        memory.doc_metrics.last_generation_time = get_timestamp()
+      }
+    }
+
+    communicate {
+      if memory.doc_generation_result {
+        if memory.doc_generation_result.success {
+          emit "documentation_generated" {
+            helpers_documented: memory.doc_generation_result.helpers_documented,
+            recipes_documented: memory.doc_generation_result.recipes_documented,
+            examples_generated: memory.doc_generation_result.examples_generated
+          }
+        } else {
+          emit "documentation_generation_failed" {
+            error: memory.doc_generation_result.error
+          }
+        }
+      }
+      
+      if memory.specific_doc_result {
+        emit "specific_documentation_generated" {
+          type: memory.specific_doc_result.type,
+          name: memory.specific_doc_result.name
+        }
+      }
+      
+      if memory.example_generation_result {
+        emit "examples_generated" {
+          examples_count: memory.example_generation_result.examples_count
+        }
+      }
+    }
+  }
+
+  recipe "generate_helper_documentation" {
+    needs: helpers
+    gives: helper_docs
+    
+    brain {
+      plan {
+        plan = { action: "document_helpers" }
+      }
+      
+      execute {
+        if plan.action == "document_helpers" {
+          helper_docs = []
+          
+          for each helper in helpers {
+            doc = {
+              name: helper.name,
+              description: extract_helper_description(helper),
+              capabilities: helper.can_do || [],
+              memory_schema: extract_memory_schema(helper),
+              brain_cycle: extract_brain_cycle_doc(helper),
+              receive_channels: extract_receive_channels(helper),
+              examples: generate_helper_examples(helper),
+              type_info: extract_type_information(helper),
+              usage_notes: extract_usage_notes(helper)
+            }
+            
+            helper_docs.push(doc)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_recipe_documentation" {
+    needs: recipes
+    gives: recipe_docs
+    
+    brain {
+      plan {
+        plan = { action: "document_recipes" }
+      }
+      
+      execute {
+        if plan.action == "document_recipes" {
+          recipe_docs = []
+          
+          for each recipe in recipes {
+            doc = {
+              name: recipe.name,
+              description: extract_recipe_description(recipe),
+              needs: recipe.needs || [],
+              gives: recipe.gives || [],
+              parameters: extract_recipe_parameters(recipe),
+              return_value: extract_recipe_return(recipe),
+              brain_cycle: extract_brain_cycle_doc(recipe),
+              examples: generate_recipe_examples(recipe),
+              type_info: extract_type_information(recipe),
+              usage_notes: extract_usage_notes(recipe)
+            }
+            
+            recipe_docs.push(doc)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_message_documentation" {
+    needs: messages
+    gives: message_docs
+    
+    brain {
+      plan {
+        plan = { action: "document_messages" }
+      }
+      
+      execute {
+        if plan.action == "document_messages" {
+          message_docs = []
+          
+          for each message in messages {
+            doc = {
+              name: message.name,
+              description: extract_message_description(message),
+              payload_schema: extract_message_payload(message),
+              triggers: extract_message_triggers(message),
+              examples: generate_message_examples(message),
+              type_info: extract_type_information(message),
+              usage_notes: extract_usage_notes(message)
+            }
+            
+            message_docs.push(doc)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_objective_documentation" {
+    needs: objectives
+    gives: objective_docs
+    
+    brain {
+      plan {
+        plan = { action: "document_objectives" }
+      }
+      
+      execute {
+        if plan.action == "document_objectives" {
+          objective_docs = []
+          
+          for each objective in objectives {
+            doc = {
+              name: objective.name,
+              description: extract_objective_description(objective),
+              condition: extract_objective_condition(objective),
+              action: extract_objective_action(objective),
+              priority: extract_objective_priority(objective),
+              examples: generate_objective_examples(objective),
+              type_info: extract_type_information(objective),
+              usage_notes: extract_usage_notes(objective)
+            }
+            
+            objective_docs.push(doc)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "create_api_index" {
+    needs: helper_docs, recipe_docs, message_docs, objective_docs
+    gives: api_index
+    
+    brain {
+      plan {
+        plan = { action: "build_api_index" }
+      }
+      
+      execute {
+        if plan.action == "build_api_index" {
+          api_index = {
+            overview: {
+              total_helpers: helper_docs.length,
+              total_recipes: recipe_docs.length,
+              total_messages: message_docs.length,
+              total_objectives: objective_docs.length,
+              generated_at: get_timestamp()
+            },
+            categories: {
+              helpers: group_by_category(helper_docs),
+              recipes: group_by_category(recipe_docs),
+              messages: group_by_category(message_docs),
+              objectives: group_by_category(objective_docs)
+            },
+            quick_reference: {
+              helper_names: helper_docs.map(doc => doc.name),
+              recipe_names: recipe_docs.map(doc => doc.name),
+              message_names: message_docs.map(doc => doc.name),
+              objective_names: objective_docs.map(doc => doc.name)
+            },
+            search_index: build_search_index(helper_docs, recipe_docs, message_docs, objective_docs)
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_usage_examples" {
+    needs: ast
+    gives: examples
+    
+    brain {
+      plan {
+        plan = { action: "create_usage_examples" }
+      }
+      
+      execute {
+        if plan.action == "create_usage_examples" {
+          examples = []
+          
+          // Generate basic usage examples
+          basic_examples = generate_basic_examples(ast)
+          examples.push(...basic_examples)
+          
+          // Generate advanced usage examples
+          advanced_examples = generate_advanced_examples(ast)
+          examples.push(...advanced_examples)
+          
+          // Generate integration examples
+          integration_examples = generate_integration_examples(ast)
+          examples.push(...integration_examples)
+          
+          // Generate error handling examples
+          error_examples = generate_error_handling_examples(ast)
+          examples.push(...error_examples)
+        }
+      }
+    }
+  }
+
+  recipe "generate_basic_examples" {
+    needs: ast
+    gives: basic_examples
+    
+    brain {
+      plan {
+        plan = { action: "create_basic_examples" }
+      }
+      
+      execute {
+        if plan.action == "create_basic_examples" {
+          basic_examples = []
+          
+          // Example 1: Simple helper
+          basic_examples.push({
+            title: "Simple Helper",
+            description: "A basic helper with memory and brain cycle",
+            code: `helper "calculator" {
+  can_do: ["addition", "multiplication"]
+  
+  remember {
+    calculations_performed: int = 0
+    last_result: float = 0.0
+  }
+
+  brain {
+    plan {
+      if memory.calculations_performed == 0 {
+        plan = { action: "add_numbers", a: 5, b: 3 }
+      } else {
+        plan = { action: "multiply_numbers", a: 4, b: 6 }
+      }
+    }
+    
+    execute {
+      if plan.action == "add_numbers" {
+        result = plan.a + plan.b
+        memory.last_result = result
+        memory.calculations_performed += 1
+      } else if plan.action == "multiply_numbers" {
+        result = plan.a * plan.b
+        memory.last_result = result
+        memory.calculations_performed += 1
+      }
+    }
+    
+    remember {
+      memory.total_calculations = memory.calculations_performed
+    }
+    
+    communicate {
+      emit "calculation_complete" {
+        result: memory.last_result,
+        total_calculations: memory.total_calculations
+      }
+    }
+  }
+}`,
+            explanation: "This example shows a simple calculator helper that performs basic arithmetic operations and tracks its state."
+          })
+          
+          // Example 2: Recipe with parameters
+          basic_examples.push({
+            title: "Recipe with Parameters",
+            description: "A recipe that takes input and produces output",
+            code: `recipe "calculate_area" {
+  needs: width, height
+  gives: area
+  
+  brain {
+    plan {
+      plan = { action: "calculate_rectangle_area" }
+    }
+    
+    execute {
+      if plan.action == "calculate_rectangle_area" {
+        area = width * height
+      }
+    }
+  }
+}`,
+            explanation: "This recipe demonstrates how to create reusable functions with input and output parameters."
+          })
+          
+          // Example 3: Message handling
+          basic_examples.push({
+            title: "Message Handling",
+            description: "Handling messages between helpers",
+            code: `helper "message_processor" {
+  can_do: ["process_messages", "send_responses"]
+  
+  receive {
+    from "any_helper" as "incoming_message" {
+      type: "data_request"
+      bind: memory.incoming_message
+      on_receive: brain.process_message
+    }
+  }
+
+  brain {
+    plan {
+      if memory.incoming_message {
+        plan = { action: "process_incoming_message" }
+      }
+    }
+    
+    execute {
+      if plan.action == "process_incoming_message" {
+        processed_data = process_data(memory.incoming_message.data)
+        memory.processed_result = processed_data
+      }
+    }
+    
+    communicate {
+      if memory.processed_result {
+        emit "data_processed" {
+          original_data: memory.incoming_message.data,
+          processed_data: memory.processed_result
+        }
+      }
+    }
+  }
+}`,
+            explanation: "This example shows how to handle incoming messages and send responses."
+          })
+        }
+      }
+    }
+  }
+
+  recipe "generate_advanced_examples" {
+    needs: ast
+    gives: advanced_examples
+    
+    brain {
+      plan {
+        plan = { action: "create_advanced_examples" }
+      }
+      
+      execute {
+        if plan.action == "create_advanced_examples" {
+          advanced_examples = []
+          
+          // Example 1: Complex helper with multiple capabilities
+          advanced_examples.push({
+            title: "Advanced Helper with Multiple Capabilities",
+            description: "A sophisticated helper with complex state management",
+            code: `helper "data_processor" {
+  can_do: ["data_validation", "data_transformation", "data_analysis", "error_handling"]
+  
+  remember {
+    processing_stats: {
+      total_processed: int = 0,
+      successful: int = 0,
+      failed: int = 0,
+      average_processing_time: float = 0.0
+    }
+    current_batch: array = []
+    error_log: array = []
+    processing_config: {
+      batch_size: int = 100,
+      timeout: int = 5000,
+      retry_attempts: int = 3
+    }
+  }
+
+  receive {
+    from "data_source" as "data_batch" {
+      type: "data_batch"
+      bind: memory.incoming_batch
+      on_receive: brain.process_data_batch
+    }
+    
+    from "error_handler" as "error_notification" {
+      type: "processing_error"
+      bind: memory.error_notification
+      on_receive: brain.handle_error
+    }
+  }
+
+  brain {
+    plan {
+      if memory.incoming_batch {
+        plan = { action: "process_batch", batch: memory.incoming_batch }
+      } else if memory.error_notification {
+        plan = { action: "handle_error", error: memory.error_notification }
+      } else if memory.current_batch.length >= memory.processing_config.batch_size {
+        plan = { action: "process_current_batch" }
+      } else {
+        plan = { action: "wait_for_more_data" }
+      }
+    }
+    
+    execute {
+      if plan.action == "process_batch" {
+        start_time = get_timestamp()
+        
+        try {
+          // Validate data
+          validated_data = validate_data(plan.batch)
+          
+          // Transform data
+          transformed_data = transform_data(validated_data)
+          
+          // Analyze data
+          analysis_result = analyze_data(transformed_data)
+          
+          // Update statistics
+          processing_time = get_timestamp() - start_time
+          memory.processing_stats.total_processed += plan.batch.length
+          memory.processing_stats.successful += plan.batch.length
+          memory.processing_stats.average_processing_time = 
+            (memory.processing_stats.average_processing_time + processing_time) / 2
+          
+          memory.current_batch.push(...analysis_result)
+          
+        } catch error {
+          memory.processing_stats.failed += plan.batch.length
+          memory.error_log.push({
+            error: error,
+            batch: plan.batch,
+            timestamp: get_timestamp()
+          })
+        }
+      } else if plan.action == "handle_error" {
+        // Implement error recovery logic
+        recovery_result = attempt_error_recovery(plan.error)
+        
+        if recovery_result.success {
+          memory.processing_stats.successful += 1
+        } else {
+          memory.processing_stats.failed += 1
+        }
+      } else if plan.action == "process_current_batch" {
+        // Process accumulated batch
+        batch_result = process_accumulated_batch(memory.current_batch)
+        memory.current_batch = []
+      }
+    }
+    
+    remember {
+      memory.last_processing_time = get_timestamp()
+    }
+    
+    communicate {
+      if memory.processing_stats.total_processed > 0 {
+        emit "processing_stats_update" {
+          stats: memory.processing_stats,
+          error_count: memory.error_log.length
+        }
+      }
+      
+      if memory.current_batch.length > 0 {
+        emit "batch_ready" {
+          batch_size: memory.current_batch.length
+        }
+      }
+    }
+  }
+}`,
+            explanation: "This advanced example demonstrates complex state management, error handling, and batch processing."
+          })
+          
+          // Example 2: Inter-helper communication
+          advanced_examples.push({
+            title: "Inter-Helper Communication",
+            description: "Multiple helpers working together",
+            code: `helper "coordinator" {
+  can_do: ["orchestration", "task_distribution", "result_aggregation"]
+  
+  remember {
+    active_workers: array = []
+    pending_tasks: array = []
+    completed_results: array = []
+    worker_status: object = {}
+  }
+
+  receive {
+    from "worker" as "worker_ready" {
+      type: "worker_available"
+      bind: memory.worker_ready
+      on_receive: brain.assign_task
+    }
+    
+    from "worker" as "task_complete" {
+      type: "task_result"
+      bind: memory.task_complete
+      on_receive: brain.process_result
+    }
+  }
+
+  brain {
+    plan {
+      if memory.worker_ready {
+        plan = { action: "assign_task_to_worker", worker: memory.worker_ready }
+      } else if memory.task_complete {
+        plan = { action: "process_task_result", result: memory.task_complete }
+      } else if memory.pending_tasks.length > 0 {
+        plan = { action: "distribute_tasks" }
+      } else {
+        plan = { action: "monitor_progress" }
+      }
+    }
+    
+    execute {
+      if plan.action == "assign_task_to_worker" {
+        if memory.pending_tasks.length > 0 {
+          task = memory.pending_tasks.shift()
+          assign_task_to_worker(plan.worker, task)
+          memory.worker_status[plan.worker.id] = "busy"
+        }
+      } else if plan.action == "process_task_result" {
+        memory.completed_results.push(plan.result)
+        memory.worker_status[plan.result.worker_id] = "available"
+        
+        if all_tasks_completed() {
+          final_result = aggregate_results(memory.completed_results)
+          emit "all_tasks_complete" { result: final_result }
+        }
+      } else if plan.action == "distribute_tasks" {
+        available_workers = get_available_workers()
+        for each worker in available_workers {
+          if memory.pending_tasks.length > 0 {
+            task = memory.pending_tasks.shift()
+            assign_task_to_worker(worker, task)
+            memory.worker_status[worker.id] = "busy"
+          }
+        }
+      }
+    }
+    
+    communicate {
+      if memory.completed_results.length > 0 {
+        emit "progress_update" {
+          completed: memory.completed_results.length,
+          total: memory.completed_results.length + memory.pending_tasks.length
+        }
+      }
+    }
+  }
+}`,
+            explanation: "This example shows how multiple helpers can coordinate and communicate to accomplish complex tasks."
+          })
+        }
+      }
+    }
+  }
+
+  recipe "generate_integration_examples" {
+    needs: ast
+    gives: integration_examples
+    
+    brain {
+      plan {
+        plan = { action: "create_integration_examples" }
+      }
+      
+      execute {
+        if plan.action == "create_integration_examples" {
+          integration_examples = []
+          
+          // Example: Complete application
+          integration_examples.push({
+            title: "Complete GX Application",
+            description: "A full application demonstrating multiple components working together",
+            code: `// Main application orchestrator
+helper "app_orchestrator" {
+  can_do: ["application_lifecycle", "component_coordination", "error_handling"]
+  
+  remember {
+    app_status: string = "initializing"
+    active_components: array = []
+    error_count: int = 0
+    startup_sequence: array = [
+      "config_manager",
+      "data_processor", 
+      "ui_renderer",
+      "network_handler"
+    ]
+  }
+
+  receive {
+    from "component" as "component_ready" {
+      type: "component_initialized"
+      bind: memory.component_ready
+      on_receive: brain.handle_component_ready
+    }
+    
+    from "component" as "component_error" {
+      type: "component_error"
+      bind: memory.component_error
+      on_receive: brain.handle_component_error
+    }
+  }
+
+  brain {
+    plan {
+      if memory.app_status == "initializing" {
+        plan = { action: "initialize_application" }
+      } else if memory.component_ready {
+        plan = { action: "handle_component_ready", component: memory.component_ready }
+      } else if memory.component_error {
+        plan = { action: "handle_component_error", error: memory.component_error }
+      } else if memory.app_status == "running" {
+        plan = { action: "monitor_application" }
+      }
+    }
+    
+    execute {
+      if plan.action == "initialize_application" {
+        // Start components in sequence
+        for each component_name in memory.startup_sequence {
+          start_component(component_name)
+        }
+        
+        memory.app_status = "starting"
+      } else if plan.action == "handle_component_ready" {
+        memory.active_components.push(plan.component.name)
+        
+        if all_components_ready() {
+          memory.app_status = "running"
+          emit "application_ready"
+        }
+      } else if plan.action == "handle_component_error" {
+        memory.error_count += 1
+        
+        if memory.error_count > 3 {
+          memory.app_status = "error"
+          emit "application_error" { error: plan.error }
+        } else {
+          // Attempt to restart component
+          restart_component(plan.component.name)
+        }
+      } else if plan.action == "monitor_application" {
+        // Monitor application health
+        health_status = check_application_health()
+        
+        if not health_status.healthy {
+          emit "health_warning" { status: health_status }
+        }
+      }
+    }
+    
+    communicate {
+      if memory.app_status == "running" {
+        emit "application_status" {
+          status: memory.app_status,
+          active_components: memory.active_components.length,
+          error_count: memory.error_count
+        }
+      }
+    }
+  }
+}
+
+// Configuration manager
+helper "config_manager" {
+  can_do: ["configuration_management", "environment_setup"]
+  
+  remember {
+    config: object = {}
+    environment: string = "development"
+  }
+
+  brain {
+    plan {
+      plan = { action: "load_configuration" }
+    }
+    
+    execute {
+      if plan.action == "load_configuration" {
+        memory.config = load_environment_config(memory.environment)
+        emit "component_initialized" { name: "config_manager" }
+      }
+    }
+  }
+}
+
+// Data processor
+helper "data_processor" {
+  can_do: ["data_processing", "data_validation"]
+  
+  remember {
+    processing_queue: array = []
+    processed_count: int = 0
+  }
+
+  receive {
+    from "app_orchestrator" as "process_request" {
+      type: "process_data"
+      bind: memory.process_request
+      on_receive: brain.process_data
+    }
+  }
+
+  brain {
+    plan {
+      if memory.process_request {
+        plan = { action: "process_data", data: memory.process_request }
+      } else {
+        plan = { action: "wait_for_data" }
+      }
+    }
+    
+    execute {
+      if plan.action == "process_data" {
+        processed_data = process_data(plan.data)
+        memory.processed_count += 1
+        
+        emit "data_processed" {
+          original: plan.data,
+          processed: processed_data,
+          count: memory.processed_count
+        }
+      }
+    }
+  }
+}`,
+            explanation: "This integration example shows how multiple helpers work together to create a complete application."
+          })
+        }
+      }
+    }
+  }
+
+  recipe "generate_error_handling_examples" {
+    needs: ast
+    gives: error_examples
+    
+    brain {
+      plan {
+        plan = { action: "create_error_examples" }
+      }
+      
+      execute {
+        if plan.action == "create_error_examples" {
+          error_examples = []
+          
+          // Example: Error handling helper
+          error_examples.push({
+            title: "Error Handling Helper",
+            description: "A helper that demonstrates proper error handling patterns",
+            code: `helper "error_handler" {
+  can_do: ["error_handling", "error_recovery", "error_logging"]
+  
+  remember {
+    error_log: array = []
+    recovery_strategies: object = {}
+    error_count: int = 0
+  }
+
+  receive {
+    from "any_helper" as "error_event" {
+      type: "error_occurred"
+      bind: memory.error_event
+      on_receive: brain.handle_error
+    }
+  }
+
+  brain {
+    plan {
+      if memory.error_event {
+        plan = { action: "handle_error", error: memory.error_event }
+      } else {
+        plan = { action: "monitor_error_patterns" }
+      }
+    }
+    
+    execute {
+      if plan.action == "handle_error" {
+        try {
+          // Log the error
+          log_error(plan.error)
+          
+          // Determine error type
+          error_type = classify_error(plan.error)
+          
+          // Attempt recovery
+          recovery_result = attempt_recovery(error_type, plan.error)
+          
+          if recovery_result.success {
+            emit "error_recovered" {
+              error: plan.error,
+              recovery_strategy: recovery_result.strategy
+            }
+          } else {
+            emit "error_unrecoverable" {
+              error: plan.error,
+              reason: recovery_result.failure_reason
+            }
+          }
+          
+        } catch handling_error {
+          // Even error handling can fail
+          emit "error_handling_failed" {
+            original_error: plan.error,
+            handling_error: handling_error
+          }
+        }
+      } else if plan.action == "monitor_error_patterns" {
+        // Analyze error patterns
+        patterns = analyze_error_patterns(memory.error_log)
+        
+        if patterns.frequent_errors.length > 0 {
+          emit "error_pattern_detected" {
+            patterns: patterns.frequent_errors
+          }
+        }
+      }
+    }
+    
+    remember {
+      if memory.error_event {
+        memory.error_count += 1
+        memory.error_log.push({
+          error: memory.error_event,
+          timestamp: get_timestamp(),
+          handled: true
+        })
+      }
+    }
+  }
+}`,
+            explanation: "This example demonstrates comprehensive error handling with logging, classification, and recovery strategies."
+          })
+        }
+      }
+    }
+  }
+
+  recipe "update_doc_metrics" {
+    brain {
+      plan {
+        plan = { action: "calculate_doc_metrics" }
+      }
+      
+      execute {
+        if plan.action == "calculate_doc_metrics" {
+          // Update documentation metrics
+          memory.doc_metrics.total_docs_generated = Object.keys(memory.generated_docs).length
+          
+          // Calculate coverage metrics
+          total_components = memory.doc_metrics.api_endpoints_documented
+          if total_components > 0 {
+            memory.doc_metrics.documentation_coverage = 
+              (memory.doc_metrics.total_docs_generated / total_components) * 100
+          }
+        }
+      }
+    }
+  }
+
+  recipe "cleanup_old_documentation" {
+    brain {
+      plan {
+        plan = { action: "remove_old_docs" }
+      }
+      
+      execute {
+        if plan.action == "remove_old_docs" {
+          current_time = get_timestamp()
+          max_age = 7 * 24 * 60 * 60 * 1000  // 7 days
+          
+          for each doc_id in Object.keys(memory.generated_docs) {
+            doc = memory.generated_docs[doc_id]
+            if current_time - doc.generated_at > max_age {
+              memory.generated_docs[doc_id] = null
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "validate_documentation" {
+    brain {
+      plan {
+        plan = { action: "check_doc_quality" }
+      }
+      
+      execute {
+        if plan.action == "check_doc_quality" {
+          validation_results = []
+          
+          for each doc_id in Object.keys(memory.generated_docs) {
+            doc = memory.generated_docs[doc_id]
+            
+            // Check for required sections
+            if not doc.description {
+              validation_results.push({
+                doc_id: doc_id,
+                issue: "Missing description",
+                severity: "warning"
+              })
+            }
+            
+            if not doc.examples || doc.examples.length == 0 {
+              validation_results.push({
+                doc_id: doc_id,
+                issue: "No examples provided",
+                severity: "warning"
+              })
+            }
+            
+            // Check for outdated documentation
+            if doc.last_updated && get_timestamp() - doc.last_updated > 30 * 24 * 60 * 60 * 1000 {
+              validation_results.push({
+                doc_id: doc_id,
+                issue: "Documentation may be outdated",
+                severity: "info"
+              })
+            }
+          }
+          
+          if validation_results.length > 0 {
+            emit "documentation_validation_results" {
+              results: validation_results,
+              total_issues: validation_results.length
+            }
+          }
+        }
+      }
+    }
+  }
+} 

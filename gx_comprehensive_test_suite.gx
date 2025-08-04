@@ -1,0 +1,2033 @@
+helper "gx_comprehensive_test_suite" {
+  can_do: ["comprehensive_testing", "system_integration", "performance_testing", "security_testing", "regression_testing"]
+  
+  remember {
+    test_results = {
+      security_tests: {},
+      type_system_tests: {},
+      error_handling_tests: {},
+      package_management_tests: {},
+      testing_framework_tests: {},
+      documentation_tests: {},
+      ide_integration_tests: {},
+      logging_tests: {},
+      performance_tests: {},
+      memory_management_tests: {},
+      integration_tests: {}
+    }
+    
+    test_config = {
+      run_security_tests: true,
+      run_type_tests: true,
+      run_error_tests: true,
+      run_package_tests: true,
+      run_testing_tests: true,
+      run_doc_tests: true,
+      run_ide_tests: true,
+      run_logging_tests: true,
+      run_performance_tests: true,
+      run_memory_tests: true,
+      run_integration_tests: true
+    }
+    
+    test_metrics = {
+      total_tests: 0,
+      passed_tests: 0,
+      failed_tests: 0,
+      test_duration: 0,
+      coverage_percentage: 0
+    }
+  }
+
+  receive {
+    from "test_runner" as "test_execution_request" {
+      type: "run_comprehensive_tests"
+      bind: memory.test_request
+      on_receive: brain.execute_comprehensive_tests
+    }
+    
+    from "test_monitor" as "test_progress" {
+      type: "test_progress_update"
+      bind: memory.test_progress
+      on_receive: brain.update_test_progress
+    }
+  }
+
+  brain {
+    plan {
+      if memory.test_request {
+        plan = { action: "run_all_tests", request: memory.test_request }
+      } else if memory.test_progress {
+        plan = { action: "update_progress", progress: memory.test_progress }
+      } else {
+        plan = { action: "idle_test_monitoring" }
+      }
+    }
+
+    execute {
+      if plan.action == "run_all_tests" {
+        try {
+          start_time = get_timestamp()
+          
+          // Run all test suites
+          test_suites = [
+            "security_test_suite",
+            "type_system_test_suite", 
+            "error_handling_test_suite",
+            "package_management_test_suite",
+            "testing_framework_test_suite",
+            "documentation_test_suite",
+            "ide_integration_test_suite",
+            "logging_test_suite",
+            "performance_test_suite",
+            "memory_management_test_suite",
+            "integration_test_suite"
+          ]
+          
+          for each test_suite in test_suites {
+            suite_result = execute_test_suite(test_suite)
+            memory.test_results[test_suite] = suite_result
+            
+            // Update metrics
+            memory.test_metrics.total_tests += suite_result.total_tests
+            memory.test_metrics.passed_tests += suite_result.passed_tests
+            memory.test_metrics.failed_tests += suite_result.failed_tests
+          }
+          
+          memory.test_metrics.test_duration = get_timestamp() - start_time
+          memory.test_metrics.coverage_percentage = calculate_test_coverage()
+          
+          memory.comprehensive_test_result = {
+            success: memory.test_metrics.failed_tests == 0,
+            total_tests: memory.test_metrics.total_tests,
+            passed_tests: memory.test_metrics.passed_tests,
+            failed_tests: memory.test_metrics.failed_tests,
+            duration: memory.test_metrics.test_duration,
+            coverage: memory.test_metrics.coverage_percentage,
+            test_results: memory.test_results
+          }
+          
+        } catch test_error {
+          memory.comprehensive_test_result = {
+            success: false,
+            error: "Comprehensive testing failed: " + test_error
+          }
+        }
+      } else if plan.action == "update_progress" {
+        progress = plan.progress
+        memory.test_progress = progress
+      } else if plan.action == "idle_test_monitoring" {
+        // Monitor test health
+        monitor_test_health()
+        
+        // Update test statistics
+        update_test_statistics()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      if memory.comprehensive_test_result {
+        if memory.comprehensive_test_result.success {
+          emit "comprehensive_tests_passed" {
+            total_tests: memory.comprehensive_test_result.total_tests,
+            passed_tests: memory.comprehensive_test_result.passed_tests,
+            coverage: memory.comprehensive_test_result.coverage,
+            duration: memory.comprehensive_test_result.duration
+          }
+        } else {
+          emit "comprehensive_tests_failed" {
+            failed_tests: memory.comprehensive_test_result.failed_tests,
+            error: memory.comprehensive_test_result.error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "execute_test_suite" {
+    needs: test_suite_name
+    gives: suite_result
+    
+    brain {
+      plan {
+        plan = { action: "run_test_suite" }
+      }
+      
+      execute {
+        if plan.action == "run_test_suite" {
+          suite_result = {
+            name: test_suite_name,
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            duration: 0,
+            details: {}
+          }
+          
+          start_time = get_timestamp()
+          
+          switch test_suite_name {
+            case "security_test_suite":
+              suite_result = run_security_tests()
+              break
+            case "type_system_test_suite":
+              suite_result = run_type_system_tests()
+              break
+            case "error_handling_test_suite":
+              suite_result = run_error_handling_tests()
+              break
+            case "package_management_test_suite":
+              suite_result = run_package_management_tests()
+              break
+            case "testing_framework_test_suite":
+              suite_result = run_testing_framework_tests()
+              break
+            case "documentation_test_suite":
+              suite_result = run_documentation_tests()
+              break
+            case "ide_integration_test_suite":
+              suite_result = run_ide_integration_tests()
+              break
+            case "logging_test_suite":
+              suite_result = run_logging_tests()
+              break
+            case "performance_test_suite":
+              suite_result = run_performance_tests()
+              break
+            case "memory_management_test_suite":
+              suite_result = run_memory_management_tests()
+              break
+            case "integration_test_suite":
+              suite_result = run_integration_tests()
+              break
+          }
+          
+          suite_result.duration = get_timestamp() - start_time
+        }
+      }
+    }
+  }
+
+  recipe "run_security_tests" {
+    gives: security_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_security_components" }
+      }
+      
+      execute {
+        if plan.action == "test_security_components" {
+          security_test_result = {
+            name: "security_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Authentication System
+          auth_test = test_authentication_system()
+          security_test_result.total_tests += auth_test.total_tests
+          security_test_result.passed_tests += auth_test.passed_tests
+          security_test_result.failed_tests += auth_test.failed_tests
+          security_test_result.details.authentication = auth_test
+          
+          // Test 2: Authorization Framework
+          authz_test = test_authorization_framework()
+          security_test_result.total_tests += authz_test.total_tests
+          security_test_result.passed_tests += authz_test.passed_tests
+          security_test_result.failed_tests += authz_test.failed_tests
+          security_test_result.details.authorization = authz_test
+          
+          // Test 3: Secure Communication
+          comm_test = test_secure_communication()
+          security_test_result.total_tests += comm_test.total_tests
+          security_test_result.passed_tests += comm_test.passed_tests
+          security_test_result.failed_tests += comm_test.failed_tests
+          security_test_result.details.communication = comm_test
+          
+          // Test 4: JWT Token Validation
+          jwt_test = test_jwt_token_validation()
+          security_test_result.total_tests += jwt_test.total_tests
+          security_test_result.passed_tests += jwt_test.passed_tests
+          security_test_result.failed_tests += jwt_test.failed_tests
+          security_test_result.details.jwt = jwt_test
+          
+          // Test 5: Password Hashing
+          hash_test = test_password_hashing()
+          security_test_result.total_tests += hash_test.total_tests
+          security_test_result.passed_tests += hash_test.passed_tests
+          security_test_result.failed_tests += hash_test.failed_tests
+          security_test_result.details.hashing = hash_test
+        }
+      }
+    }
+  }
+
+  recipe "test_authentication_system" {
+    gives: auth_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_auth_system" }
+      }
+      
+      execute {
+        if plan.action == "test_auth_system" {
+          auth_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test user registration
+          try {
+            user_data = {
+              username: "testuser",
+              password: "securepassword123",
+              email: "test@example.com"
+            }
+            
+            registration_result = register_user(user_data)
+            if registration_result.success {
+              auth_test_result.passed_tests += 1
+              auth_test_result.details.registration = "PASSED"
+            } else {
+              auth_test_result.failed_tests += 1
+              auth_test_result.details.registration = "FAILED: " + registration_result.error
+            }
+            auth_test_result.total_tests += 1
+            
+          } catch error {
+            auth_test_result.failed_tests += 1
+            auth_test_result.details.registration = "FAILED: " + error
+            auth_test_result.total_tests += 1
+          }
+          
+          // Test user login
+          try {
+            login_data = {
+              username: "testuser",
+              password: "securepassword123"
+            }
+            
+            login_result = authenticate_user(login_data)
+            if login_result.success {
+              auth_test_result.passed_tests += 1
+              auth_test_result.details.login = "PASSED"
+            } else {
+              auth_test_result.failed_tests += 1
+              auth_test_result.details.login = "FAILED: " + login_result.error
+            }
+            auth_test_result.total_tests += 1
+            
+          } catch error {
+            auth_test_result.failed_tests += 1
+            auth_test_result.details.login = "FAILED: " + error
+            auth_test_result.total_tests += 1
+          }
+          
+          // Test session management
+          try {
+            session_result = create_user_session("testuser")
+            if session_result.success {
+              auth_test_result.passed_tests += 1
+              auth_test_result.details.session = "PASSED"
+            } else {
+              auth_test_result.failed_tests += 1
+              auth_test_result.details.session = "FAILED: " + session_result.error
+            }
+            auth_test_result.total_tests += 1
+            
+          } catch error {
+            auth_test_result.failed_tests += 1
+            auth_test_result.details.session = "FAILED: " + error
+            auth_test_result.total_tests += 1
+          }
+        }
+      }
+    }
+  }
+
+  recipe "run_type_system_tests" {
+    gives: type_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_type_system" }
+      }
+      
+      execute {
+        if plan.action == "test_type_system" {
+          type_test_result = {
+            name: "type_system_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Basic Type Checking
+          basic_test = test_basic_type_checking()
+          type_test_result.total_tests += basic_test.total_tests
+          type_test_result.passed_tests += basic_test.passed_tests
+          type_test_result.failed_tests += basic_test.failed_tests
+          type_test_result.details.basic_types = basic_test
+          
+          // Test 2: Type Inference
+          inference_test = test_type_inference()
+          type_test_result.total_tests += inference_test.total_tests
+          type_test_result.passed_tests += inference_test.passed_tests
+          type_test_result.failed_tests += inference_test.failed_tests
+          type_test_result.details.type_inference = inference_test
+          
+          // Test 3: Runtime Type Validation
+          runtime_test = test_runtime_type_validation()
+          type_test_result.total_tests += runtime_test.total_tests
+          type_test_result.passed_tests += runtime_test.passed_tests
+          type_test_result.failed_tests += runtime_test.failed_tests
+          type_test_result.details.runtime_validation = runtime_test
+          
+          // Test 4: Interface Contracts
+          interface_test = test_interface_contracts()
+          type_test_result.total_tests += interface_test.total_tests
+          type_test_result.passed_tests += interface_test.passed_tests
+          type_test_result.failed_tests += interface_test.failed_tests
+          type_test_result.details.interface_contracts = interface_test
+        }
+      }
+    }
+  }
+
+  recipe "test_basic_type_checking" {
+    gives: basic_type_result
+    
+    brain {
+      plan {
+        plan = { action: "test_basic_types" }
+      }
+      
+      execute {
+        if plan.action == "test_basic_types" {
+          basic_type_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test int type
+          try {
+            int_value: int = 42
+            if typeof int_value == "number" && Number.isInteger(int_value) {
+              basic_type_result.passed_tests += 1
+              basic_type_result.details.int_type = "PASSED"
+            } else {
+              basic_type_result.failed_tests += 1
+              basic_type_result.details.int_type = "FAILED"
+            }
+            basic_type_result.total_tests += 1
+          } catch error {
+            basic_type_result.failed_tests += 1
+            basic_type_result.details.int_type = "FAILED: " + error
+            basic_type_result.total_tests += 1
+          }
+          
+          // Test float type
+          try {
+            float_value: float = 3.14
+            if typeof float_value == "number" {
+              basic_type_result.passed_tests += 1
+              basic_type_result.details.float_type = "PASSED"
+            } else {
+              basic_type_result.failed_tests += 1
+              basic_type_result.details.float_type = "FAILED"
+            }
+            basic_type_result.total_tests += 1
+          } catch error {
+            basic_type_result.failed_tests += 1
+            basic_type_result.details.float_type = "FAILED: " + error
+            basic_type_result.total_tests += 1
+          }
+          
+          // Test string type
+          try {
+            string_value: string = "Hello, GX!"
+            if typeof string_value == "string" {
+              basic_type_result.passed_tests += 1
+              basic_type_result.details.string_type = "PASSED"
+            } else {
+              basic_type_result.failed_tests += 1
+              basic_type_result.details.string_type = "FAILED"
+            }
+            basic_type_result.total_tests += 1
+          } catch error {
+            basic_type_result.failed_tests += 1
+            basic_type_result.details.string_type = "FAILED: " + error
+            basic_type_result.total_tests += 1
+          }
+          
+          // Test bool type
+          try {
+            bool_value: bool = true
+            if typeof bool_value == "boolean" {
+              basic_type_result.passed_tests += 1
+              basic_type_result.details.bool_type = "PASSED"
+            } else {
+              basic_type_result.failed_tests += 1
+              basic_type_result.details.bool_type = "FAILED"
+            }
+            basic_type_result.total_tests += 1
+          } catch error {
+            basic_type_result.failed_tests += 1
+            basic_type_result.details.bool_type = "FAILED: " + error
+            basic_type_result.total_tests += 1
+          }
+        }
+      }
+    }
+  }
+
+  recipe "run_error_handling_tests" {
+    gives: error_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_error_handling" }
+      }
+      
+      execute {
+        if plan.action == "test_error_handling" {
+          error_test_result = {
+            name: "error_handling_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Error Creation
+          creation_test = test_error_creation()
+          error_test_result.total_tests += creation_test.total_tests
+          error_test_result.passed_tests += creation_test.passed_tests
+          error_test_result.failed_tests += creation_test.failed_tests
+          error_test_result.details.error_creation = creation_test
+          
+          // Test 2: Stack Trace Generation
+          stack_test = test_stack_trace_generation()
+          error_test_result.total_tests += stack_test.total_tests
+          error_test_result.passed_tests += stack_test.passed_tests
+          error_test_result.failed_tests += stack_test.failed_tests
+          error_test_result.details.stack_trace = stack_test
+          
+          // Test 3: Error Recovery
+          recovery_test = test_error_recovery()
+          error_test_result.total_tests += recovery_test.total_tests
+          error_test_result.passed_tests += recovery_test.passed_tests
+          error_test_result.failed_tests += recovery_test.failed_tests
+          error_test_result.details.error_recovery = recovery_test
+          
+          // Test 4: Error Logging
+          logging_test = test_error_logging()
+          error_test_result.total_tests += logging_test.total_tests
+          error_test_result.passed_tests += logging_test.passed_tests
+          error_test_result.failed_tests += logging_test.failed_tests
+          error_test_result.details.error_logging = logging_test
+        }
+      }
+    }
+  }
+
+  recipe "test_error_creation" {
+    gives: error_creation_result
+    
+    brain {
+      plan {
+        plan = { action: "test_error_types" }
+      }
+      
+      execute {
+        if plan.action == "test_error_types" {
+          error_creation_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test GXTypeError
+          try {
+            type_error = create_error("GXTypeError", "Type mismatch in variable assignment")
+            if type_error.type == "GXTypeError" && type_error.message.includes("Type mismatch") {
+              error_creation_result.passed_tests += 1
+              error_creation_result.details.type_error = "PASSED"
+            } else {
+              error_creation_result.failed_tests += 1
+              error_creation_result.details.type_error = "FAILED"
+            }
+            error_creation_result.total_tests += 1
+          } catch error {
+            error_creation_result.failed_tests += 1
+            error_creation_result.details.type_error = "FAILED: " + error
+            error_creation_result.total_tests += 1
+          }
+          
+          // Test GXRuntimeError
+          try {
+            runtime_error = create_error("GXRuntimeError", "Division by zero")
+            if runtime_error.type == "GXRuntimeError" && runtime_error.message.includes("Division by zero") {
+              error_creation_result.passed_tests += 1
+              error_creation_result.details.runtime_error = "PASSED"
+            } else {
+              error_creation_result.failed_tests += 1
+              error_creation_result.details.runtime_error = "FAILED"
+            }
+            error_creation_result.total_tests += 1
+          } catch error {
+            error_creation_result.failed_tests += 1
+            error_creation_result.details.runtime_error = "FAILED: " + error
+            error_creation_result.total_tests += 1
+          }
+          
+          // Test GXMemoryError
+          try {
+            memory_error = create_error("GXMemoryError", "Out of memory")
+            if memory_error.type == "GXMemoryError" && memory_error.message.includes("Out of memory") {
+              error_creation_result.passed_tests += 1
+              error_creation_result.details.memory_error = "PASSED"
+            } else {
+              error_creation_result.failed_tests += 1
+              error_creation_result.details.memory_error = "FAILED"
+            }
+            error_creation_result.total_tests += 1
+          } catch error {
+            error_creation_result.failed_tests += 1
+            error_creation_result.details.memory_error = "FAILED: " + error
+            error_creation_result.total_tests += 1
+          }
+        }
+      }
+    }
+  }
+
+  recipe "run_package_management_tests" {
+    gives: package_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_package_management" }
+      }
+      
+      execute {
+        if plan.action == "test_package_management" {
+          package_test_result = {
+            name: "package_management_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Package Registration
+          registration_test = test_package_registration()
+          package_test_result.total_tests += registration_test.total_tests
+          package_test_result.passed_tests += registration_test.passed_tests
+          package_test_result.failed_tests += registration_test.failed_tests
+          package_test_result.details.registration = registration_test
+          
+          // Test 2: Package Discovery
+          discovery_test = test_package_discovery()
+          package_test_result.total_tests += discovery_test.total_tests
+          package_test_result.passed_tests += discovery_test.passed_tests
+          package_test_result.failed_tests += discovery_test.failed_tests
+          package_test_result.details.discovery = discovery_test
+          
+          // Test 3: Dependency Resolution
+          dependency_test = test_dependency_resolution()
+          package_test_result.total_tests += dependency_test.total_tests
+          package_test_result.passed_tests += dependency_test.passed_tests
+          package_test_result.failed_tests += dependency_test.failed_tests
+          package_test_result.details.dependency_resolution = dependency_test
+          
+          // Test 4: Version Management
+          version_test = test_version_management()
+          package_test_result.total_tests += version_test.total_tests
+          package_test_result.passed_tests += version_test.passed_tests
+          package_test_result.failed_tests += version_test.failed_tests
+          package_test_result.details.version_management = version_test
+        }
+      }
+    }
+  }
+
+  recipe "run_testing_framework_tests" {
+    gives: testing_framework_result
+    
+    brain {
+      plan {
+        plan = { action: "test_testing_framework" }
+      }
+      
+      execute {
+        if plan.action == "test_testing_framework" {
+          testing_framework_result = {
+            name: "testing_framework_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Test Discovery
+          discovery_test = test_test_discovery()
+          testing_framework_result.total_tests += discovery_test.total_tests
+          testing_framework_result.passed_tests += discovery_test.passed_tests
+          testing_framework_result.failed_tests += discovery_test.failed_tests
+          testing_framework_result.details.discovery = discovery_test
+          
+          // Test 2: Test Execution
+          execution_test = test_test_execution()
+          testing_framework_result.total_tests += execution_test.total_tests
+          testing_framework_result.passed_tests += execution_test.passed_tests
+          testing_framework_result.failed_tests += execution_test.failed_tests
+          testing_framework_result.details.execution = execution_test
+          
+          // Test 3: Assertions
+          assertion_test = test_assertions()
+          testing_framework_result.total_tests += assertion_test.total_tests
+          testing_framework_result.passed_tests += assertion_test.passed_tests
+          testing_framework_result.failed_tests += assertion_test.failed_tests
+          testing_framework_result.details.assertions = assertion_test
+          
+          // Test 4: Test Coverage
+          coverage_test = test_coverage_analysis()
+          testing_framework_result.total_tests += coverage_test.total_tests
+          testing_framework_result.passed_tests += coverage_test.passed_tests
+          testing_framework_result.failed_tests += coverage_test.failed_tests
+          testing_framework_result.details.coverage = coverage_test
+        }
+      }
+    }
+  }
+
+  recipe "run_documentation_tests" {
+    gives: doc_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_documentation_system" }
+      }
+      
+      execute {
+        if plan.action == "test_documentation_system" {
+          doc_test_result = {
+            name: "documentation_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: API Documentation Generation
+          api_doc_test = test_api_documentation_generation()
+          doc_test_result.total_tests += api_doc_test.total_tests
+          doc_test_result.passed_tests += api_doc_test.passed_tests
+          doc_test_result.failed_tests += api_doc_test.failed_tests
+          doc_test_result.details.api_documentation = api_doc_test
+          
+          // Test 2: Example Generation
+          example_test = test_example_generation()
+          doc_test_result.total_tests += example_test.total_tests
+          doc_test_result.passed_tests += example_test.passed_tests
+          doc_test_result.failed_tests += example_test.failed_tests
+          doc_test_result.details.example_generation = example_test
+          
+          // Test 3: Documentation Validation
+          validation_test = test_documentation_validation()
+          doc_test_result.total_tests += validation_test.total_tests
+          doc_test_result.passed_tests += validation_test.passed_tests
+          doc_test_result.failed_tests += validation_test.failed_tests
+          doc_test_result.details.documentation_validation = validation_test
+        }
+      }
+    }
+  }
+
+  recipe "run_ide_integration_tests" {
+    gives: ide_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_ide_integration" }
+      }
+      
+      execute {
+        if plan.action == "test_ide_integration" {
+          ide_test_result = {
+            name: "ide_integration_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Language Server Protocol
+          lsp_test = test_language_server_protocol()
+          ide_test_result.total_tests += lsp_test.total_tests
+          ide_test_result.passed_tests += lsp_test.passed_tests
+          ide_test_result.failed_tests += lsp_test.failed_tests
+          ide_test_result.details.language_server = lsp_test
+          
+          // Test 2: Code Completion
+          completion_test = test_code_completion()
+          ide_test_result.total_tests += completion_test.total_tests
+          ide_test_result.passed_tests += completion_test.passed_tests
+          ide_test_result.failed_tests += completion_test.failed_tests
+          ide_test_result.details.code_completion = completion_test
+          
+          // Test 3: Error Diagnostics
+          diagnostics_test = test_error_diagnostics()
+          ide_test_result.total_tests += diagnostics_test.total_tests
+          ide_test_result.passed_tests += diagnostics_test.passed_tests
+          ide_test_result.failed_tests += diagnostics_test.failed_tests
+          ide_test_result.details.error_diagnostics = diagnostics_test
+          
+          // Test 4: Code Navigation
+          navigation_test = test_code_navigation()
+          ide_test_result.total_tests += navigation_test.total_tests
+          ide_test_result.passed_tests += navigation_test.passed_tests
+          ide_test_result.failed_tests += navigation_test.failed_tests
+          ide_test_result.details.code_navigation = navigation_test
+        }
+      }
+    }
+  }
+
+  recipe "run_logging_tests" {
+    gives: logging_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_logging_system" }
+      }
+      
+      execute {
+        if plan.action == "test_logging_system" {
+          logging_test_result = {
+            name: "logging_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Structured Logging
+          structured_test = test_structured_logging()
+          logging_test_result.total_tests += structured_test.total_tests
+          logging_test_result.passed_tests += structured_test.passed_tests
+          logging_test_result.failed_tests += structured_test.failed_tests
+          logging_test_result.details.structured_logging = structured_test
+          
+          // Test 2: Log Aggregation
+          aggregation_test = test_log_aggregation()
+          logging_test_result.total_tests += aggregation_test.total_tests
+          logging_test_result.passed_tests += aggregation_test.passed_tests
+          logging_test_result.failed_tests += aggregation_test.failed_tests
+          logging_test_result.details.log_aggregation = aggregation_test
+          
+          // Test 3: Log Visualization
+          visualization_test = test_log_visualization()
+          logging_test_result.total_tests += visualization_test.total_tests
+          logging_test_result.passed_tests += visualization_test.passed_tests
+          logging_test_result.failed_tests += visualization_test.failed_tests
+          logging_test_result.details.log_visualization = visualization_test
+          
+          // Test 4: Log Alerting
+          alerting_test = test_log_alerting()
+          logging_test_result.total_tests += alerting_test.total_tests
+          logging_test_result.passed_tests += alerting_test.passed_tests
+          logging_test_result.failed_tests += alerting_test.failed_tests
+          logging_test_result.details.log_alerting = alerting_test
+        }
+      }
+    }
+  }
+
+  recipe "run_performance_tests" {
+    gives: performance_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_performance_optimization" }
+      }
+      
+      execute {
+        if plan.action == "test_performance_optimization" {
+          performance_test_result = {
+            name: "performance_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: JIT Compilation
+          jit_test = test_jit_compilation()
+          performance_test_result.total_tests += jit_test.total_tests
+          performance_test_result.passed_tests += jit_test.passed_tests
+          performance_test_result.failed_tests += jit_test.failed_tests
+          performance_test_result.details.jit_compilation = jit_test
+          
+          // Test 2: Hot Path Optimization
+          hot_path_test = test_hot_path_optimization()
+          performance_test_result.total_tests += hot_path_test.total_tests
+          performance_test_result.passed_tests += hot_path_test.passed_tests
+          performance_test_result.failed_tests += hot_path_test.failed_tests
+          performance_test_result.details.hot_path_optimization = hot_path_test
+          
+          // Test 3: Runtime Optimization
+          runtime_test = test_runtime_optimization()
+          performance_test_result.total_tests += runtime_test.total_tests
+          performance_test_result.passed_tests += runtime_test.passed_tests
+          performance_test_result.failed_tests += runtime_test.failed_tests
+          performance_test_result.details.runtime_optimization = runtime_test
+          
+          // Test 4: Adaptive Optimization
+          adaptive_test = test_adaptive_optimization()
+          performance_test_result.total_tests += adaptive_test.total_tests
+          performance_test_result.passed_tests += adaptive_test.passed_tests
+          performance_test_result.failed_tests += adaptive_test.failed_tests
+          performance_test_result.details.adaptive_optimization = adaptive_test
+        }
+      }
+    }
+  }
+
+  recipe "run_memory_management_tests" {
+    gives: memory_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_memory_management" }
+      }
+      
+      execute {
+        if plan.action == "test_memory_management" {
+          memory_test_result = {
+            name: "memory_management_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Garbage Collection
+          gc_test = test_garbage_collection()
+          memory_test_result.total_tests += gc_test.total_tests
+          memory_test_result.passed_tests += gc_test.passed_tests
+          memory_test_result.failed_tests += gc_test.failed_tests
+          memory_test_result.details.garbage_collection = gc_test
+          
+          // Test 2: Memory Profiling
+          profiling_test = test_memory_profiling()
+          memory_test_result.total_tests += profiling_test.total_tests
+          memory_test_result.passed_tests += profiling_test.passed_tests
+          memory_test_result.failed_tests += profiling_test.failed_tests
+          memory_test_result.details.memory_profiling = profiling_test
+          
+          // Test 3: Leak Detection
+          leak_test = test_leak_detection()
+          memory_test_result.total_tests += leak_test.total_tests
+          memory_test_result.passed_tests += leak_test.passed_tests
+          memory_test_result.failed_tests += leak_test.failed_tests
+          memory_test_result.details.leak_detection = leak_test
+          
+          // Test 4: Memory Optimization
+          optimization_test = test_memory_optimization()
+          memory_test_result.total_tests += optimization_test.total_tests
+          memory_test_result.passed_tests += optimization_test.passed_tests
+          memory_test_result.failed_tests += optimization_test.failed_tests
+          memory_test_result.details.memory_optimization = optimization_test
+        }
+      }
+    }
+  }
+
+  recipe "run_integration_tests" {
+    gives: integration_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_system_integration" }
+      }
+      
+      execute {
+        if plan.action == "test_system_integration" {
+          integration_test_result = {
+            name: "integration_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test 1: Security + Type System Integration
+          security_type_test = test_security_type_integration()
+          integration_test_result.total_tests += security_type_test.total_tests
+          integration_test_result.passed_tests += security_type_test.passed_tests
+          integration_test_result.failed_tests += security_type_test.failed_tests
+          integration_test_result.details.security_type_integration = security_type_test
+          
+          // Test 2: Package Management + Testing Integration
+          package_test_integration = test_package_testing_integration()
+          integration_test_result.total_tests += package_test_integration.total_tests
+          integration_test_result.passed_tests += package_test_integration.passed_tests
+          integration_test_result.failed_tests += package_test_integration.failed_tests
+          integration_test_result.details.package_testing_integration = package_test_integration
+          
+          // Test 3: IDE + Documentation Integration
+          ide_doc_integration = test_ide_documentation_integration()
+          integration_test_result.total_tests += ide_doc_integration.total_tests
+          integration_test_result.passed_tests += ide_doc_integration.passed_tests
+          integration_test_result.failed_tests += ide_doc_integration.failed_tests
+          integration_test_result.details.ide_documentation_integration = ide_doc_integration
+          
+          // Test 4: Performance + Memory Integration
+          perf_memory_integration = test_performance_memory_integration()
+          integration_test_result.total_tests += perf_memory_integration.total_tests
+          integration_test_result.passed_tests += perf_memory_integration.passed_tests
+          integration_test_result.failed_tests += perf_memory_integration.failed_tests
+          integration_test_result.details.performance_memory_integration = perf_memory_integration
+          
+          // Test 5: Full System Integration
+          full_system_test = test_full_system_integration()
+          integration_test_result.total_tests += full_system_test.total_tests
+          integration_test_result.passed_tests += full_system_test.passed_tests
+          integration_test_result.failed_tests += full_system_test.failed_tests
+          integration_test_result.details.full_system_integration = full_system_test
+        }
+      }
+    }
+  }
+
+  recipe "calculate_test_coverage" {
+    gives: coverage_percentage
+    
+    brain {
+      plan {
+        plan = { action: "calculate_coverage" }
+      }
+      
+      execute {
+        if plan.action == "calculate_coverage" {
+          total_components = 10  // Number of implemented components
+          tested_components = 0
+          
+          // Count tested components
+          for each test_suite in Object.keys(memory.test_results) {
+            suite_result = memory.test_results[test_suite]
+            if suite_result.passed_tests > 0 {
+              tested_components += 1
+            }
+          }
+          
+          coverage_percentage = (tested_components / total_components) * 100
+        }
+      }
+    }
+  }
+
+  recipe "monitor_test_health" {
+    brain {
+      plan {
+        plan = { action: "check_test_health" }
+      }
+      
+      execute {
+        if plan.action == "check_test_health" {
+          // Check for test failures
+          total_failures = memory.test_metrics.failed_tests
+          if total_failures > 0 {
+            emit "test_health_warning" {
+              failed_tests: total_failures,
+              total_tests: memory.test_metrics.total_tests,
+              failure_rate: (total_failures / memory.test_metrics.total_tests) * 100
+            }
+          }
+          
+          // Check test coverage
+          if memory.test_metrics.coverage_percentage < 90 {
+            emit "coverage_warning" {
+              current_coverage: memory.test_metrics.coverage_percentage,
+              target_coverage: 90
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_test_statistics" {
+    brain {
+      plan {
+        plan = { action: "update_statistics" }
+      }
+      
+      execute {
+        if plan.action == "update_statistics" {
+          // Calculate success rate
+          if memory.test_metrics.total_tests > 0 {
+            memory.test_metrics.success_rate = 
+              (memory.test_metrics.passed_tests / memory.test_metrics.total_tests) * 100
+          }
+          
+          // Calculate average test duration
+          if memory.test_metrics.total_tests > 0 {
+            memory.test_metrics.average_test_duration = 
+              memory.test_metrics.test_duration / memory.test_metrics.total_tests
+          }
+        }
+      }
+    }
+  }
+
+  recipe "run_concurrency_tests" {
+    gives: concurrency_result
+    
+    brain {
+      plan {
+        plan = { action: "test_concurrency_components" }
+      }
+      
+      execute {
+        if plan.action == "test_concurrency_components" {
+          concurrency_result = {
+            name: "concurrency_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test Async/Await
+          try {
+            async_await_test = test_async_await_functionality()
+            concurrency_result.total_tests += async_await_test.total_tests
+            concurrency_result.passed_tests += async_await_test.passed_tests
+            concurrency_result.failed_tests += async_await_test.failed_tests
+            concurrency_result.details.async_await = async_await_test
+          } catch error {
+            concurrency_result.failed_tests += 1
+            concurrency_result.total_tests += 1
+            concurrency_result.details.async_await = { error: error }
+          }
+          
+          // Test Channels
+          try {
+            channels_test = test_channel_functionality()
+            concurrency_result.total_tests += channels_test.total_tests
+            concurrency_result.passed_tests += channels_test.passed_tests
+            concurrency_result.failed_tests += channels_test.failed_tests
+            concurrency_result.details.channels = channels_test
+          } catch error {
+            concurrency_result.failed_tests += 1
+            concurrency_result.total_tests += 1
+            concurrency_result.details.channels = { error: error }
+          }
+          
+          // Test Actors
+          try {
+            actors_test = test_actor_functionality()
+            concurrency_result.total_tests += actors_test.total_tests
+            concurrency_result.passed_tests += actors_test.passed_tests
+            concurrency_result.failed_tests += actors_test.failed_tests
+            concurrency_result.details.actors = actors_test
+          } catch error {
+            concurrency_result.failed_tests += 1
+            concurrency_result.total_tests += 1
+            concurrency_result.details.actors = { error: error }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_async_await_functionality" {
+    gives: async_await_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_async_await" }
+      }
+      
+      execute {
+        if plan.action == "test_async_await" {
+          async_await_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test async function creation
+          try {
+            async_function = create_async_function("test_async", function() { return "success" })
+            if async_function && async_function.id {
+              async_await_test_result.passed_tests += 1
+              async_await_test_result.details.async_creation = "PASSED"
+            } else {
+              async_await_test_result.failed_tests += 1
+              async_await_test_result.details.async_creation = "FAILED"
+            }
+            async_await_test_result.total_tests += 1
+          } catch error {
+            async_await_test_result.failed_tests += 1
+            async_await_test_result.total_tests += 1
+            async_await_test_result.details.async_creation = "FAILED: " + error
+          }
+          
+          // Test promise resolution
+          try {
+            promise = create_promise("test_promise")
+            resolve_promise("test_promise", "test_result")
+            if promise.status == "resolved" && promise.result == "test_result" {
+              async_await_test_result.passed_tests += 1
+              async_await_test_result.details.promise_resolution = "PASSED"
+            } else {
+              async_await_test_result.failed_tests += 1
+              async_await_test_result.details.promise_resolution = "FAILED"
+            }
+            async_await_test_result.total_tests += 1
+          } catch error {
+            async_await_test_result.failed_tests += 1
+            async_await_test_result.total_tests += 1
+            async_await_test_result.details.promise_resolution = "FAILED: " + error
+          }
+          
+          // Test await functionality
+          try {
+            await_result = await_expression(promise)
+            if await_result == "test_result" {
+              async_await_test_result.passed_tests += 1
+              async_await_test_result.details.await_functionality = "PASSED"
+            } else {
+              async_await_test_result.failed_tests += 1
+              async_await_test_result.details.await_functionality = "FAILED"
+            }
+            async_await_test_result.total_tests += 1
+          } catch error {
+            async_await_test_result.failed_tests += 1
+            async_await_test_result.total_tests += 1
+            async_await_test_result.details.await_functionality = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_channel_functionality" {
+    gives: channels_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_channels" }
+      }
+      
+      execute {
+        if plan.action == "test_channels" {
+          channels_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test channel creation
+          try {
+            channel = create_channel("test_channel", 5)
+            if channel && channel.name == "test_channel" && channel.buffer_size == 5 {
+              channels_test_result.passed_tests += 1
+              channels_test_result.details.channel_creation = "PASSED"
+            } else {
+              channels_test_result.failed_tests += 1
+              channels_test_result.details.channel_creation = "FAILED"
+            }
+            channels_test_result.total_tests += 1
+          } catch error {
+            channels_test_result.failed_tests += 1
+            channels_test_result.total_tests += 1
+            channels_test_result.details.channel_creation = "FAILED: " + error
+          }
+          
+          // Test message sending
+          try {
+            send_result = send_message_to_channel("test_channel", "test_message")
+            if send_result {
+              channels_test_result.passed_tests += 1
+              channels_test_result.details.message_sending = "PASSED"
+            } else {
+              channels_test_result.failed_tests += 1
+              channels_test_result.details.message_sending = "FAILED"
+            }
+            channels_test_result.total_tests += 1
+          } catch error {
+            channels_test_result.failed_tests += 1
+            channels_test_result.total_tests += 1
+            channels_test_result.details.message_sending = "FAILED: " + error
+          }
+          
+          // Test message receiving
+          try {
+            received_message = receive_message_from_channel("test_channel")
+            if received_message && received_message.data == "test_message" {
+              channels_test_result.passed_tests += 1
+              channels_test_result.details.message_receiving = "PASSED"
+            } else {
+              channels_test_result.failed_tests += 1
+              channels_test_result.details.message_receiving = "FAILED"
+            }
+            channels_test_result.total_tests += 1
+          } catch error {
+            channels_test_result.failed_tests += 1
+            channels_test_result.total_tests += 1
+            channels_test_result.details.message_receiving = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_actor_functionality" {
+    gives: actors_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_actors" }
+      }
+      
+      execute {
+        if plan.action == "test_actors" {
+          actors_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test actor creation
+          try {
+            actor_behavior = function(state, message) {
+              return { type: "reply", data: "processed: " + message, state: state }
+            }
+            actor = create_actor("test_actor", actor_behavior, null)
+            if actor && actor.name == "test_actor" && actor.status == "active" {
+              actors_test_result.passed_tests += 1
+              actors_test_result.details.actor_creation = "PASSED"
+            } else {
+              actors_test_result.failed_tests += 1
+              actors_test_result.details.actor_creation = "FAILED"
+            }
+            actors_test_result.total_tests += 1
+          } catch error {
+            actors_test_result.failed_tests += 1
+            actors_test_result.total_tests += 1
+            actors_test_result.details.actor_creation = "FAILED: " + error
+          }
+          
+          // Test message sending to actor
+          try {
+            send_result = send_message_to_actor("test_actor", "test_message")
+            if send_result {
+              actors_test_result.passed_tests += 1
+              actors_test_result.details.actor_message_sending = "PASSED"
+            } else {
+              actors_test_result.failed_tests += 1
+              actors_test_result.details.actor_message_sending = "FAILED"
+            }
+            actors_test_result.total_tests += 1
+          } catch error {
+            actors_test_result.failed_tests += 1
+            actors_test_result.total_tests += 1
+            actors_test_result.details.actor_message_sending = "FAILED: " + error
+          }
+          
+          // Test actor behavior execution
+          try {
+            behavior_result = execute_actor_behavior(actor, { data: "test_message" })
+            if behavior_result && behavior_result.type == "reply" {
+              actors_test_result.passed_tests += 1
+              actors_test_result.details.actor_behavior = "PASSED"
+            } else {
+              actors_test_result.failed_tests += 1
+              actors_test_result.details.actor_behavior = "FAILED"
+            }
+            actors_test_result.total_tests += 1
+          } catch error {
+            actors_test_result.failed_tests += 1
+            actors_test_result.total_tests += 1
+            actors_test_result.details.actor_behavior = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "run_advanced_types_tests" {
+    gives: advanced_types_result
+    
+    brain {
+      plan {
+        plan = { action: "test_advanced_types" }
+      }
+      
+      execute {
+        if plan.action == "test_advanced_types" {
+          advanced_types_result = {
+            name: "advanced_types_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test Higher-Kinded Types
+          try {
+            hkt_test = test_higher_kinded_types()
+            advanced_types_result.total_tests += hkt_test.total_tests
+            advanced_types_result.passed_tests += hkt_test.passed_tests
+            advanced_types_result.failed_tests += hkt_test.failed_tests
+            advanced_types_result.details.higher_kinded_types = hkt_test
+          } catch error {
+            advanced_types_result.failed_tests += 1
+            advanced_types_result.total_tests += 1
+            advanced_types_result.details.higher_kinded_types = { error: error }
+          }
+          
+          // Test Type Classes
+          try {
+            type_class_test = test_type_classes()
+            advanced_types_result.total_tests += type_class_test.total_tests
+            advanced_types_result.passed_tests += type_class_test.passed_tests
+            advanced_types_result.failed_tests += type_class_test.failed_tests
+            advanced_types_result.details.type_classes = type_class_test
+          } catch error {
+            advanced_types_result.failed_tests += 1
+            advanced_types_result.total_tests += 1
+            advanced_types_result.details.type_classes = { error: error }
+          }
+          
+          // Test Dependent Types
+          try {
+            dependent_test = test_dependent_types()
+            advanced_types_result.total_tests += dependent_test.total_tests
+            advanced_types_result.passed_tests += dependent_test.passed_tests
+            advanced_types_result.failed_tests += dependent_test.failed_tests
+            advanced_types_result.details.dependent_types = dependent_test
+          } catch error {
+            advanced_types_result.failed_tests += 1
+            advanced_types_result.total_tests += 1
+            advanced_types_result.details.dependent_types = { error: error }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_higher_kinded_types" {
+    gives: hkt_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_hkt" }
+      }
+      
+      execute {
+        if plan.action == "test_hkt" {
+          hkt_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test higher-kinded type definition
+          try {
+            hkt_type = define_higher_kinded_type("TestHKT", "* -> *", ["T"])
+            if hkt_type && hkt_type.kind == "* -> *" {
+              hkt_test_result.passed_tests += 1
+              hkt_test_result.details.hkt_definition = "PASSED"
+            } else {
+              hkt_test_result.failed_tests += 1
+              hkt_test_result.details.hkt_definition = "FAILED"
+            }
+            hkt_test_result.total_tests += 1
+          } catch error {
+            hkt_test_result.failed_tests += 1
+            hkt_test_result.total_tests += 1
+            hkt_test_result.details.hkt_definition = "FAILED: " + error
+          }
+          
+          // Test higher-kinded type checking
+          try {
+            test_value = function(x) { return x }
+            hkt_check = check_higher_kinded_type("TestHKT", test_value)
+            if hkt_check.valid {
+              hkt_test_result.passed_tests += 1
+              hkt_test_result.details.hkt_checking = "PASSED"
+            } else {
+              hkt_test_result.failed_tests += 1
+              hkt_test_result.details.hkt_checking = "FAILED"
+            }
+            hkt_test_result.total_tests += 1
+          } catch error {
+            hkt_test_result.failed_tests += 1
+            hkt_test_result.total_tests += 1
+            hkt_test_result.details.hkt_checking = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_type_classes" {
+    gives: type_class_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_type_class" }
+      }
+      
+      execute {
+        if plan.action == "test_type_class" {
+          type_class_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test type class definition
+          try {
+            type_class = define_type_class("TestClass", [], { test_method: "function" })
+            if type_class && type_class.name == "TestClass" {
+              type_class_test_result.passed_tests += 1
+              type_class_test_result.details.type_class_definition = "PASSED"
+            } else {
+              type_class_test_result.failed_tests += 1
+              type_class_test_result.details.type_class_definition = "FAILED"
+            }
+            type_class_test_result.total_tests += 1
+          } catch error {
+            type_class_test_result.failed_tests += 1
+            type_class_test_result.total_tests += 1
+            type_class_test_result.details.type_class_definition = "FAILED: " + error
+          }
+          
+          // Test type class instance checking
+          try {
+            test_instance = { test_method: function() { return "test" } }
+            instance_check = check_type_class_instance("TestClass", test_instance)
+            if instance_check.valid {
+              type_class_test_result.passed_tests += 1
+              type_class_test_result.details.instance_checking = "PASSED"
+            } else {
+              type_class_test_result.failed_tests += 1
+              type_class_test_result.details.instance_checking = "FAILED"
+            }
+            type_class_test_result.total_tests += 1
+          } catch error {
+            type_class_test_result.failed_tests += 1
+            type_class_test_result.total_tests += 1
+            type_class_test_result.details.instance_checking = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_dependent_types" {
+    gives: dependent_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_dependent" }
+      }
+      
+      execute {
+        if plan.action == "test_dependent" {
+          dependent_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test dependent type definition
+          try {
+            dependent_type = define_dependent_type("TestDependent", ["n"], "n > 0")
+            if dependent_type && dependent_type.name == "TestDependent" {
+              dependent_test_result.passed_tests += 1
+              dependent_test_result.details.dependent_definition = "PASSED"
+            } else {
+              dependent_test_result.failed_tests += 1
+              dependent_test_result.details.dependent_definition = "FAILED"
+            }
+            dependent_test_result.total_tests += 1
+          } catch error {
+            dependent_test_result.failed_tests += 1
+            dependent_test_result.total_tests += 1
+            dependent_test_result.details.dependent_definition = "FAILED: " + error
+          }
+          
+          // Test dependent type checking
+          try {
+            test_value = 5
+            dependent_check = check_dependent_type("TestDependent", test_value)
+            if dependent_check.valid {
+              dependent_test_result.passed_tests += 1
+              dependent_test_result.details.dependent_checking = "PASSED"
+            } else {
+              dependent_test_result.failed_tests += 1
+              dependent_test_result.details.dependent_checking = "FAILED"
+            }
+            dependent_test_result.total_tests += 1
+          } catch error {
+            dependent_test_result.failed_tests += 1
+            dependent_test_result.total_tests += 1
+            dependent_test_result.details.dependent_checking = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "run_ai_integration_tests" {
+    gives: ai_integration_result
+    
+    brain {
+      plan {
+        plan = { action: "test_ai_integration" }
+      }
+      
+      execute {
+        if plan.action == "test_ai_integration" {
+          ai_integration_result = {
+            name: "ai_integration_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test AI Code Generation
+          try {
+            code_gen_test = test_ai_code_generation()
+            ai_integration_result.total_tests += code_gen_test.total_tests
+            ai_integration_result.passed_tests += code_gen_test.passed_tests
+            ai_integration_result.failed_tests += code_gen_test.failed_tests
+            ai_integration_result.details.code_generation = code_gen_test
+          } catch error {
+            ai_integration_result.failed_tests += 1
+            ai_integration_result.total_tests += 1
+            ai_integration_result.details.code_generation = { error: error }
+          }
+          
+          // Test AI Debugging
+          try {
+            debugging_test = test_ai_debugging()
+            ai_integration_result.total_tests += debugging_test.total_tests
+            ai_integration_result.passed_tests += debugging_test.passed_tests
+            ai_integration_result.failed_tests += debugging_test.failed_tests
+            ai_integration_result.details.debugging = debugging_test
+          } catch error {
+            ai_integration_result.failed_tests += 1
+            ai_integration_result.total_tests += 1
+            ai_integration_result.details.debugging = { error: error }
+          }
+          
+          // Test AI Optimization
+          try {
+            optimization_test = test_ai_optimization()
+            ai_integration_result.total_tests += optimization_test.total_tests
+            ai_integration_result.passed_tests += optimization_test.passed_tests
+            ai_integration_result.failed_tests += optimization_test.failed_tests
+            ai_integration_result.details.optimization = optimization_test
+          } catch error {
+            ai_integration_result.failed_tests += 1
+            ai_integration_result.total_tests += 1
+            ai_integration_result.details.optimization = { error: error }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_ai_code_generation" {
+    gives: code_gen_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_code_generation" }
+      }
+      
+      execute {
+        if plan.action == "test_code_generation" {
+          code_gen_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test code generation
+          try {
+            context = { language: "gx", domain: "testing" }
+            requirements = { functionality: ["test_function"], constraints: [] }
+            generated_code = generate_code_suggestion(context, requirements)
+            if generated_code && generated_code.code {
+              code_gen_test_result.passed_tests += 1
+              code_gen_test_result.details.code_generation = "PASSED"
+            } else {
+              code_gen_test_result.failed_tests += 1
+              code_gen_test_result.details.code_generation = "FAILED"
+            }
+            code_gen_test_result.total_tests += 1
+          } catch error {
+            code_gen_test_result.failed_tests += 1
+            code_gen_test_result.total_tests += 1
+            code_gen_test_result.details.code_generation = "FAILED: " + error
+          }
+          
+          // Test confidence calculation
+          try {
+            if generated_code && generated_code.confidence >= 0 && generated_code.confidence <= 1 {
+              code_gen_test_result.passed_tests += 1
+              code_gen_test_result.details.confidence_calculation = "PASSED"
+            } else {
+              code_gen_test_result.failed_tests += 1
+              code_gen_test_result.details.confidence_calculation = "FAILED"
+            }
+            code_gen_test_result.total_tests += 1
+          } catch error {
+            code_gen_test_result.failed_tests += 1
+            code_gen_test_result.total_tests += 1
+            code_gen_test_result.details.confidence_calculation = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_ai_debugging" {
+    gives: debugging_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_ai_debugging" }
+      }
+      
+      execute {
+        if plan.action == "test_ai_debugging" {
+          debugging_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test debugging suggestion
+          try {
+            test_code = "helper test { brain { execute { x = 1 / 0 } } }"
+            test_error = { type: "GXRuntimeError", message: "Division by zero" }
+            debugging_suggestion = provide_debugging_suggestion(test_code, test_error)
+            if debugging_suggestion && debugging_suggestion.suggestion {
+              debugging_test_result.passed_tests += 1
+              debugging_test_result.details.debugging_suggestion = "PASSED"
+            } else {
+              debugging_test_result.failed_tests += 1
+              debugging_test_result.details.debugging_suggestion = "FAILED"
+            }
+            debugging_test_result.total_tests += 1
+          } catch error {
+            debugging_test_result.failed_tests += 1
+            debugging_test_result.total_tests += 1
+            debugging_test_result.details.debugging_suggestion = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_ai_optimization" {
+    gives: optimization_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_ai_optimization" }
+      }
+      
+      execute {
+        if plan.action == "test_ai_optimization" {
+          optimization_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test optimization suggestion
+          try {
+            test_code = "helper slow { brain { execute { for i in range(1000) { x = i * 2 } } } }"
+            performance_goals = { complexity: "O(n)", memory: "low" }
+            optimization_suggestion = provide_optimization_suggestion(test_code, performance_goals)
+            if optimization_suggestion && optimization_suggestion.suggestion {
+              optimization_test_result.passed_tests += 1
+              optimization_test_result.details.optimization_suggestion = "PASSED"
+            } else {
+              optimization_test_result.failed_tests += 1
+              optimization_test_result.details.optimization_suggestion = "FAILED"
+            }
+            optimization_test_result.total_tests += 1
+          } catch error {
+            optimization_test_result.failed_tests += 1
+            optimization_test_result.total_tests += 1
+            optimization_test_result.details.optimization_suggestion = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "run_quantum_computing_tests" {
+    gives: quantum_result
+    
+    brain {
+      plan {
+        plan = { action: "test_quantum_computing" }
+      }
+      
+      execute {
+        if plan.action == "test_quantum_computing" {
+          quantum_result = {
+            name: "quantum_computing_test_suite",
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test quantum circuit simulation
+          try {
+            circuit_test = test_quantum_circuit_simulation()
+            quantum_result.total_tests += circuit_test.total_tests
+            quantum_result.passed_tests += circuit_test.passed_tests
+            quantum_result.failed_tests += circuit_test.failed_tests
+            quantum_result.details.circuit_simulation = circuit_test
+          } catch error {
+            quantum_result.failed_tests += 1
+            quantum_result.total_tests += 1
+            quantum_result.details.circuit_simulation = { error: error }
+          }
+          
+          // Test quantum gate operations
+          try {
+            gates_test = test_quantum_gate_operations()
+            quantum_result.total_tests += gates_test.total_tests
+            quantum_result.passed_tests += gates_test.passed_tests
+            quantum_result.failed_tests += gates_test.failed_tests
+            quantum_result.details.gate_operations = gates_test
+          } catch error {
+            quantum_result.failed_tests += 1
+            quantum_result.total_tests += 1
+            quantum_result.details.gate_operations = { error: error }
+          }
+          
+          // Test quantum algorithms
+          try {
+            algorithms_test = test_quantum_algorithms()
+            quantum_result.total_tests += algorithms_test.total_tests
+            quantum_result.passed_tests += algorithms_test.passed_tests
+            quantum_result.failed_tests += algorithms_test.failed_tests
+            quantum_result.details.algorithms = algorithms_test
+          } catch error {
+            quantum_result.failed_tests += 1
+            quantum_result.total_tests += 1
+            quantum_result.details.algorithms = { error: error }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_quantum_circuit_simulation" {
+    gives: circuit_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_quantum_circuit" }
+      }
+      
+      execute {
+        if plan.action == "test_quantum_circuit" {
+          circuit_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test quantum circuit creation
+          try {
+            circuit = create_quantum_circuit(2) // 2 qubits
+            if circuit && circuit.qubits == 2 {
+              circuit_test_result.passed_tests += 1
+              circuit_test_result.details.circuit_creation = "PASSED"
+            } else {
+              circuit_test_result.failed_tests += 1
+              circuit_test_result.details.circuit_creation = "FAILED"
+            }
+            circuit_test_result.total_tests += 1
+          } catch error {
+            circuit_test_result.failed_tests += 1
+            circuit_test_result.total_tests += 1
+            circuit_test_result.details.circuit_creation = "FAILED: " + error
+          }
+          
+          // Test circuit simulation
+          try {
+            simulation_result = simulate_quantum_circuit(circuit)
+            if simulation_result && simulation_result.state {
+              circuit_test_result.passed_tests += 1
+              circuit_test_result.details.circuit_simulation = "PASSED"
+            } else {
+              circuit_test_result.failed_tests += 1
+              circuit_test_result.details.circuit_simulation = "FAILED"
+            }
+            circuit_test_result.total_tests += 1
+          } catch error {
+            circuit_test_result.failed_tests += 1
+            circuit_test_result.total_tests += 1
+            circuit_test_result.details.circuit_simulation = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_quantum_gate_operations" {
+    gives: gates_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_quantum_gates" }
+      }
+      
+      execute {
+        if plan.action == "test_quantum_gates" {
+          gates_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test Hadamard gate
+          try {
+            hadamard_result = apply_hadamard_gate(0) // Apply to qubit 0
+            if hadamard_result && hadamard_result.gate == "H" {
+              gates_test_result.passed_tests += 1
+              gates_test_result.details.hadamard_gate = "PASSED"
+            } else {
+              gates_test_result.failed_tests += 1
+              gates_test_result.details.hadamard_gate = "FAILED"
+            }
+            gates_test_result.total_tests += 1
+          } catch error {
+            gates_test_result.failed_tests += 1
+            gates_test_result.total_tests += 1
+            gates_test_result.details.hadamard_gate = "FAILED: " + error
+          }
+          
+          // Test CNOT gate
+          try {
+            cnot_result = apply_cnot_gate(0, 1) // Control qubit 0, target qubit 1
+            if cnot_result && cnot_result.gate == "CNOT" {
+              gates_test_result.passed_tests += 1
+              gates_test_result.details.cnot_gate = "PASSED"
+            } else {
+              gates_test_result.failed_tests += 1
+              gates_test_result.details.cnot_gate = "FAILED"
+            }
+            gates_test_result.total_tests += 1
+          } catch error {
+            gates_test_result.failed_tests += 1
+            gates_test_result.total_tests += 1
+            gates_test_result.details.cnot_gate = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "test_quantum_algorithms" {
+    gives: algorithms_test_result
+    
+    brain {
+      plan {
+        plan = { action: "test_quantum_algorithms" }
+      }
+      
+      execute {
+        if plan.action == "test_quantum_algorithms" {
+          algorithms_test_result = {
+            total_tests: 0,
+            passed_tests: 0,
+            failed_tests: 0,
+            details: {}
+          }
+          
+          // Test Grover's algorithm
+          try {
+            grover_result = run_grovers_algorithm([1, 0, 0, 0], 2) // Search for |10⟩
+            if grover_result && grover_result.found {
+              algorithms_test_result.passed_tests += 1
+              algorithms_test_result.details.grovers_algorithm = "PASSED"
+            } else {
+              algorithms_test_result.failed_tests += 1
+              algorithms_test_result.details.grovers_algorithm = "FAILED"
+            }
+            algorithms_test_result.total_tests += 1
+          } catch error {
+            algorithms_test_result.failed_tests += 1
+            algorithms_test_result.total_tests += 1
+            algorithms_test_result.details.grovers_algorithm = "FAILED: " + error
+          }
+          
+          // Test quantum teleportation
+          try {
+            teleport_result = run_quantum_teleportation(0, 1, 2) // Teleport qubit 0 to qubit 2
+            if teleport_result && teleport_result.success {
+              algorithms_test_result.passed_tests += 1
+              algorithms_test_result.details.quantum_teleportation = "PASSED"
+            } else {
+              algorithms_test_result.failed_tests += 1
+              algorithms_test_result.details.quantum_teleportation = "FAILED"
+            }
+            algorithms_test_result.total_tests += 1
+          } catch error {
+            algorithms_test_result.failed_tests += 1
+            algorithms_test_result.total_tests += 1
+            algorithms_test_result.details.quantum_teleportation = "FAILED: " + error
+          }
+        }
+      }
+    }
+  }
+} 

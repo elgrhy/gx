@@ -1,0 +1,635 @@
+helper "gx_package_registry" {
+  can_do: ["package_discovery", "package_metadata", "version_management", "dependency_resolution", "package_verification"]
+  
+  remember {
+    package_database = {}
+    package_metadata_cache = {}
+    dependency_graph = {}
+    version_compatibility_matrix = {}
+    
+    registry_config = {
+      registry_url: "https://registry.gx.dev",
+      api_version: "v1",
+      max_package_size: 100 * 1024 * 1024,  // 100MB
+      max_versions_per_package: 100,
+      require_package_signing: true,
+      enable_package_verification: true
+    }
+    
+    registry_metrics = {
+      total_packages: 0,
+      total_versions: 0,
+      downloads_today: 0,
+      uploads_today: 0,
+      active_packages: 0
+    }
+  }
+
+  receive {
+    from "package_manager" as "package_search" {
+      type: "package_search_request"
+      bind: memory.search_request
+      on_receive: brain.search_packages
+    }
+    
+    from "package_manager" as "package_info" {
+      type: "package_info_request"
+      bind: memory.info_request
+      on_receive: brain.get_package_info
+    }
+    
+    from "package_manager" as "dependency_resolution" {
+      type: "dependency_resolution_request"
+      bind: memory.dependency_request
+      on_receive: brain.resolve_dependencies
+    }
+    
+    from "package_publisher" as "package_publish" {
+      type: "package_publish_request"
+      bind: memory.publish_request
+      on_receive: brain.publish_package
+    }
+  }
+
+  brain {
+    plan {
+      if memory.search_request {
+        plan = { action: "search_packages", request: memory.search_request }
+      } else if memory.info_request {
+        plan = { action: "get_package_info", request: memory.info_request }
+      } else if memory.dependency_request {
+        plan = { action: "resolve_dependencies", request: memory.dependency_request }
+      } else if memory.publish_request {
+        plan = { action: "publish_package", request: memory.publish_request }
+      } else {
+        plan = { action: "idle_registry_maintenance" }
+      }
+    }
+
+    execute {
+      if plan.action == "search_packages" {
+        try {
+          request = plan.request
+          query = request.query
+          filters = request.filters || {}
+          
+          // Search packages by name, description, or tags
+          search_results = search_packages_by_query(query, filters)
+          
+          // Apply additional filters
+          if filters.category {
+            search_results = filter_by_category(search_results, filters.category)
+          }
+          
+          if filters.version {
+            search_results = filter_by_version(search_results, filters.version)
+          }
+          
+          if filters.license {
+            search_results = filter_by_license(search_results, filters.license)
+          }
+          
+          memory.search_result = {
+            query: query,
+            results: search_results,
+            total_count: search_results.length,
+            filters_applied: filters
+          }
+          
+        } catch search_error {
+          memory.search_result = {
+            query: request.query,
+            error: "Search failed: " + search_error,
+            results: []
+          }
+        }
+      } else if plan.action == "get_package_info" {
+        try {
+          request = plan.request
+          package_name = request.package_name
+          version = request.version || "latest"
+          
+          // Get package metadata
+          package_info = get_package_metadata(package_name, version)
+          
+          if package_info {
+            // Get download statistics
+            download_stats = get_package_download_stats(package_name)
+            
+            // Get dependency information
+            dependencies = get_package_dependencies(package_name, version)
+            
+            memory.package_info_result = {
+              package_name: package_name,
+              version: version,
+              info: package_info,
+              download_stats: download_stats,
+              dependencies: dependencies,
+              available_versions: get_available_versions(package_name)
+            }
+          } else {
+            memory.package_info_result = {
+              package_name: package_name,
+              version: version,
+              error: "Package not found"
+            }
+          }
+          
+        } catch info_error {
+          memory.package_info_result = {
+            package_name: request.package_name,
+            error: "Failed to get package info: " + info_error
+          }
+        }
+      } else if plan.action == "resolve_dependencies" {
+        try {
+          request = plan.request
+          package_name = request.package_name
+          version = request.version || "latest"
+          
+          // Resolve direct dependencies
+          direct_dependencies = get_package_dependencies(package_name, version)
+          
+          // Resolve transitive dependencies
+          all_dependencies = resolve_transitive_dependencies(direct_dependencies)
+          
+          // Check for dependency conflicts
+          conflicts = detect_dependency_conflicts(all_dependencies)
+          
+          // Generate dependency tree
+          dependency_tree = build_dependency_tree(package_name, version, all_dependencies)
+          
+          memory.dependency_result = {
+            package_name: package_name,
+            version: version,
+            direct_dependencies: direct_dependencies,
+            all_dependencies: all_dependencies,
+            conflicts: conflicts,
+            dependency_tree: dependency_tree,
+            resolution_successful: conflicts.length == 0
+          }
+          
+        } catch resolution_error {
+          memory.dependency_result = {
+            package_name: request.package_name,
+            error: "Dependency resolution failed: " + resolution_error
+          }
+        }
+      } else if plan.action == "publish_package" {
+        try {
+          request = plan.request
+          package_data = request.package_data
+          
+          // Validate package metadata
+          validation_result = validate_package_metadata(package_data)
+          
+          if validation_result.valid {
+            // Check for naming conflicts
+            if package_exists(package_data.name) {
+              memory.publish_result = {
+                success: false,
+                error: "Package name already exists: " + package_data.name
+              }
+            } else {
+              // Store package metadata
+              store_package_metadata(package_data)
+              
+              // Update registry metrics
+              memory.registry_metrics.total_packages += 1
+              memory.registry_metrics.uploads_today += 1
+              
+              memory.publish_result = {
+                success: true,
+                package_name: package_data.name,
+                version: package_data.version,
+                published_at: get_timestamp()
+              }
+            }
+          } else {
+            memory.publish_result = {
+              success: false,
+              error: "Package validation failed: " + validation_result.errors.join(", ")
+            }
+          }
+          
+        } catch publish_error {
+          memory.publish_result = {
+            success: false,
+            error: "Package publication failed: " + publish_error
+          }
+        }
+      } else if plan.action == "idle_registry_maintenance" {
+        // Clean up old package metadata
+        cleanup_old_package_metadata()
+        
+        // Update registry statistics
+        update_registry_statistics()
+        
+        // Verify package integrity
+        verify_package_integrity()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+      
+      // Update registry metrics
+      if memory.publish_result && memory.publish_result.success {
+        memory.registry_metrics.uploads_today += 1
+      }
+    }
+
+    communicate {
+      if memory.search_result {
+        emit "package_search_complete" {
+          query: memory.search_result.query,
+          results_count: memory.search_result.total_count,
+          results: memory.search_result.results
+        }
+      }
+      
+      if memory.package_info_result {
+        emit "package_info_retrieved" {
+          package_name: memory.package_info_result.package_name,
+          version: memory.package_info_result.version,
+          has_info: memory.package_info_result.info != null
+        }
+      }
+      
+      if memory.dependency_result {
+        emit "dependency_resolution_complete" {
+          package_name: memory.dependency_result.package_name,
+          dependencies_count: memory.dependency_result.all_dependencies.length,
+          has_conflicts: memory.dependency_result.conflicts.length > 0
+        }
+      }
+      
+      if memory.publish_result {
+        if memory.publish_result.success {
+          emit "package_published" {
+            package_name: memory.publish_result.package_name,
+            version: memory.publish_result.version
+          }
+        } else {
+          emit "package_publish_failed" {
+            package_name: request.package_data.name,
+            error: memory.publish_result.error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "search_packages_by_query" {
+    needs: query, filters
+    gives: search_results
+    
+    brain {
+      plan {
+        plan = { action: "perform_package_search" }
+      }
+      
+      execute {
+        if plan.action == "perform_package_search" {
+          search_results = []
+          
+          // Search by package name
+          for each package_name in Object.keys(memory.package_database) {
+            if package_name.toLowerCase().includes(query.toLowerCase()) {
+              package_info = memory.package_database[package_name]
+              search_results.push({
+                name: package_name,
+                description: package_info.description,
+                version: package_info.latest_version,
+                author: package_info.author,
+                downloads: package_info.downloads,
+                score: calculate_search_score(package_name, query)
+              })
+            }
+          }
+          
+          // Search by description
+          for each package_name in Object.keys(memory.package_database) {
+            package_info = memory.package_database[package_name]
+            if package_info.description && package_info.description.toLowerCase().includes(query.toLowerCase()) {
+              if not search_results.find(r => r.name == package_name) {
+                search_results.push({
+                  name: package_name,
+                  description: package_info.description,
+                  version: package_info.latest_version,
+                  author: package_info.author,
+                  downloads: package_info.downloads,
+                  score: calculate_search_score(package_name, query)
+                })
+              }
+            }
+          }
+          
+          // Sort by relevance score
+          search_results.sort((a, b) => b.score - a.score)
+        }
+      }
+    }
+  }
+
+  recipe "get_package_metadata" {
+    needs: package_name, version
+    gives: package_info
+    
+    brain {
+      plan {
+        plan = { action: "retrieve_package_metadata" }
+      }
+      
+      execute {
+        if plan.action == "retrieve_package_metadata" {
+          if memory.package_database[package_name] {
+            package_data = memory.package_database[package_name]
+            
+            if version == "latest" {
+              version = package_data.latest_version
+            }
+            
+            if package_data.versions[version] {
+              package_info = {
+                name: package_name,
+                version: version,
+                description: package_data.description,
+                author: package_data.author,
+                license: package_data.license,
+                repository: package_data.repository,
+                homepage: package_data.homepage,
+                keywords: package_data.keywords,
+                dependencies: package_data.versions[version].dependencies,
+                files: package_data.versions[version].files,
+                size: package_data.versions[version].size,
+                published_at: package_data.versions[version].published_at,
+                downloads: package_data.downloads,
+                rating: package_data.rating
+              }
+            } else {
+              package_info = null
+            }
+          } else {
+            package_info = null
+          }
+        }
+      }
+    }
+  }
+
+  recipe "resolve_transitive_dependencies" {
+    needs: direct_dependencies
+    gives: all_dependencies
+    
+    brain {
+      plan {
+        plan = { action: "resolve_dependency_tree" }
+      }
+      
+      execute {
+        if plan.action == "resolve_dependency_tree" {
+          all_dependencies = {}
+          dependency_queue = []
+          
+          // Add direct dependencies to queue
+          for each dep in direct_dependencies {
+            dependency_queue.push(dep)
+          }
+          
+          // Process queue until empty
+          while dependency_queue.length > 0 {
+            current_dep = dependency_queue.shift()
+            dep_name = current_dep.name
+            dep_version = current_dep.version
+            
+            if not all_dependencies[dep_name] {
+              // Get dependency info
+              dep_info = get_package_metadata(dep_name, dep_version)
+              if dep_info {
+                all_dependencies[dep_name] = {
+                  name: dep_name,
+                  version: dep_version,
+                  info: dep_info
+                }
+                
+                // Add sub-dependencies to queue
+                if dep_info.dependencies {
+                  for each sub_dep in dep_info.dependencies {
+                    dependency_queue.push(sub_dep)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "detect_dependency_conflicts" {
+    needs: all_dependencies
+    gives: conflicts
+    
+    brain {
+      plan {
+        plan = { action: "analyze_dependency_conflicts" }
+      }
+      
+      execute {
+        if plan.action == "analyze_dependency_conflicts" {
+          conflicts = []
+          version_map = {}
+          
+          // Build version map
+          for each dep_name in Object.keys(all_dependencies) {
+            dep = all_dependencies[dep_name]
+            if not version_map[dep_name] {
+              version_map[dep_name] = []
+            }
+            version_map[dep_name].push(dep.version)
+          }
+          
+          // Check for version conflicts
+          for each dep_name in Object.keys(version_map) {
+            versions = version_map[dep_name]
+            if versions.length > 1 {
+              // Check if versions are compatible
+              if not versions_are_compatible(versions) {
+                conflicts.push({
+                  package: dep_name,
+                  versions: versions,
+                  type: "version_conflict"
+                })
+              }
+            }
+          }
+          
+          // Check for circular dependencies
+          circular_deps = detect_circular_dependencies(all_dependencies)
+          for each circular in circular_deps {
+            conflicts.push({
+              packages: circular,
+              type: "circular_dependency"
+            })
+          }
+        }
+      }
+    }
+  }
+
+  recipe "validate_package_metadata" {
+    needs: package_data
+    gives: validation_result
+    
+    brain {
+      plan {
+        plan = { action: "validate_package_data" }
+      }
+      
+      execute {
+        if plan.action == "validate_package_data" {
+          validation_result = { valid: true, errors: [] }
+          
+          // Check required fields
+          required_fields = ["name", "version", "description", "author"]
+          for each field in required_fields {
+            if not package_data[field] {
+              validation_result.errors.push("Missing required field: " + field)
+              validation_result.valid = false
+            }
+          }
+          
+          // Validate package name
+          if package_data.name {
+            if not is_valid_package_name(package_data.name) {
+              validation_result.errors.push("Invalid package name: " + package_data.name)
+              validation_result.valid = false
+            }
+          }
+          
+          // Validate version format
+          if package_data.version {
+            if not is_valid_version_format(package_data.version) {
+              validation_result.errors.push("Invalid version format: " + package_data.version)
+              validation_result.valid = false
+            }
+          }
+          
+          // Check package size
+          if package_data.size > memory.registry_config.max_package_size {
+            validation_result.errors.push("Package size exceeds maximum allowed size")
+            validation_result.valid = false
+          }
+          
+          // Validate dependencies
+          if package_data.dependencies {
+            for each dep in package_data.dependencies {
+              if not is_valid_dependency_format(dep) {
+                validation_result.errors.push("Invalid dependency format: " + JSON.stringify(dep))
+                validation_result.valid = false
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "store_package_metadata" {
+    needs: package_data
+    gives: void
+    
+    brain {
+      plan {
+        plan = { action: "save_package_data" }
+      }
+      
+      execute {
+        if plan.action == "save_package_data" {
+          package_name = package_data.name
+          
+          if not memory.package_database[package_name] {
+            memory.package_database[package_name] = {
+              name: package_name,
+              description: package_data.description,
+              author: package_data.author,
+              license: package_data.license,
+              repository: package_data.repository,
+              homepage: package_data.homepage,
+              keywords: package_data.keywords,
+              latest_version: package_data.version,
+              versions: {},
+              downloads: 0,
+              rating: 0,
+              created_at: get_timestamp()
+            }
+          }
+          
+          // Add version
+          memory.package_database[package_name].versions[package_data.version] = {
+            version: package_data.version,
+            dependencies: package_data.dependencies || {},
+            files: package_data.files || [],
+            size: package_data.size,
+            published_at: get_timestamp()
+          }
+          
+          // Update latest version if newer
+          if is_newer_version(package_data.version, memory.package_database[package_name].latest_version) {
+            memory.package_database[package_name].latest_version = package_data.version
+          }
+        }
+      }
+    }
+  }
+
+  recipe "cleanup_old_package_metadata" {
+    brain {
+      plan {
+        plan = { action: "remove_old_metadata" }
+      }
+      
+      execute {
+        if plan.action == "remove_old_metadata" {
+          current_time = get_timestamp()
+          max_age = 30 * 24 * 60 * 60 * 1000  // 30 days
+          
+          for each package_name in Object.keys(memory.package_metadata_cache) {
+            cache_entry = memory.package_metadata_cache[package_name]
+            if current_time - cache_entry.timestamp > max_age {
+              memory.package_metadata_cache[package_name] = null
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_registry_statistics" {
+    brain {
+      plan {
+        plan = { action: "calculate_registry_stats" }
+      }
+      
+      execute {
+        if plan.action == "calculate_registry_stats" {
+          memory.registry_metrics.total_packages = Object.keys(memory.package_database).length
+          memory.registry_metrics.active_packages = 0
+          memory.registry_metrics.total_versions = 0
+          
+          for each package_name in Object.keys(memory.package_database) {
+            package_data = memory.package_database[package_name]
+            memory.registry_metrics.total_versions += Object.keys(package_data.versions).length
+            
+            // Check if package is active (downloaded in last 30 days)
+            if package_data.downloads > 0 {
+              memory.registry_metrics.active_packages += 1
+            }
+          }
+        }
+      }
+    }
+  }
+} 

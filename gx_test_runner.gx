@@ -1,0 +1,400 @@
+helper "gx_test_runner" {
+  can_do: ["test_execution", "test_orchestration", "test_reporting", "test_monitoring", "test_automation"]
+  
+  remember {
+    test_execution_config = {
+      run_all_tests: true,
+      parallel_execution: true,
+      max_parallel_tests: 5,
+      test_timeout: 300000,  // 5 minutes
+      stop_on_failure: false,
+      generate_reports: true
+    }
+    
+    test_execution_results = {
+      security_tests: null,
+      type_system_tests: null,
+      error_handling_tests: null,
+      package_management_tests: null,
+      testing_framework_tests: null,
+      documentation_tests: null,
+      ide_integration_tests: null,
+      logging_tests: null,
+      performance_tests: null,
+      memory_management_tests: null,
+      integration_tests: null
+    }
+    
+    execution_metrics = {
+      total_execution_time: 0,
+      tests_executed: 0,
+      tests_passed: 0,
+      tests_failed: 0,
+      tests_skipped: 0
+    }
+  }
+
+  receive {
+    from "comprehensive_test_suite" as "test_results" {
+      type: "comprehensive_test_results"
+      bind: memory.test_results
+      on_receive: brain.process_test_results
+    }
+    
+    from "test_monitor" as "execution_status" {
+      type: "test_execution_status"
+      bind: memory.execution_status
+      on_receive: brain.update_execution_status
+    }
+  }
+
+  brain {
+    plan {
+      if memory.test_results {
+        plan = { action: "process_comprehensive_results", results: memory.test_results }
+      } else if memory.execution_status {
+        plan = { action: "update_execution_status", status: memory.execution_status }
+      } else {
+        plan = { action: "idle_test_monitoring" }
+      }
+    }
+
+    execute {
+      if plan.action == "process_comprehensive_results" {
+        try {
+          results = plan.results
+          
+          // Process each test suite result
+          for each suite_name in Object.keys(results) {
+            suite_result = results[suite_name]
+            memory.test_execution_results[suite_name] = suite_result
+            
+            // Update execution metrics
+            memory.execution_metrics.tests_executed += suite_result.total_tests
+            memory.execution_metrics.tests_passed += suite_result.passed_tests
+            memory.execution_metrics.tests_failed += suite_result.failed_tests
+          }
+          
+          // Generate comprehensive report
+          comprehensive_report = generate_comprehensive_report(results)
+          
+          // Determine overall success
+          overall_success = memory.execution_metrics.tests_failed == 0
+          
+          memory.test_runner_result = {
+            success: overall_success,
+            total_tests: memory.execution_metrics.tests_executed,
+            passed_tests: memory.execution_metrics.tests_passed,
+            failed_tests: memory.execution_metrics.tests_failed,
+            success_rate: (memory.execution_metrics.tests_passed / memory.execution_metrics.tests_executed) * 100,
+            report: comprehensive_report,
+            execution_time: memory.execution_metrics.total_execution_time
+          }
+          
+        } catch processing_error {
+          memory.test_runner_result = {
+            success: false,
+            error: "Test result processing failed: " + processing_error
+          }
+        }
+      } else if plan.action == "update_execution_status" {
+        status = plan.status
+        memory.execution_metrics.total_execution_time = status.execution_time
+        memory.execution_metrics.tests_executed = status.tests_executed
+        memory.execution_metrics.tests_passed = status.tests_passed
+        memory.execution_metrics.tests_failed = status.tests_failed
+      } else if plan.action == "idle_test_monitoring" {
+        // Monitor test execution health
+        monitor_test_execution_health()
+        
+        // Update execution statistics
+        update_execution_statistics()
+      }
+    }
+
+    remember {
+      memory.last_action = plan.action
+      memory.last_timestamp = get_timestamp()
+    }
+
+    communicate {
+      if memory.test_runner_result {
+        if memory.test_runner_result.success {
+          emit "all_tests_passed" {
+            total_tests: memory.test_runner_result.total_tests,
+            passed_tests: memory.test_runner_result.passed_tests,
+            success_rate: memory.test_runner_result.success_rate,
+            execution_time: memory.test_runner_result.execution_time
+          }
+        } else {
+          emit "tests_failed" {
+            failed_tests: memory.test_runner_result.failed_tests,
+            success_rate: memory.test_runner_result.success_rate,
+            error: memory.test_runner_result.error
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_comprehensive_report" {
+    needs: test_results
+    gives: comprehensive_report
+    
+    brain {
+      plan {
+        plan = { action: "create_comprehensive_report" }
+      }
+      
+      execute {
+        if plan.action == "create_comprehensive_report" {
+          comprehensive_report = {
+            summary: {
+              total_test_suites: Object.keys(test_results).length,
+              total_tests: 0,
+              passed_tests: 0,
+              failed_tests: 0,
+              success_rate: 0,
+              execution_time: memory.execution_metrics.total_execution_time
+            },
+            test_suites: {},
+            recommendations: [],
+            next_steps: []
+          }
+          
+          // Process each test suite
+          for each suite_name in Object.keys(test_results) {
+            suite_result = test_results[suite_name]
+            
+            comprehensive_report.summary.total_tests += suite_result.total_tests
+            comprehensive_report.summary.passed_tests += suite_result.passed_tests
+            comprehensive_report.summary.failed_tests += suite_result.failed_tests
+            
+            comprehensive_report.test_suites[suite_name] = {
+              status: suite_result.failed_tests == 0 ? "PASSED" : "FAILED",
+              total_tests: suite_result.total_tests,
+              passed_tests: suite_result.passed_tests,
+              failed_tests: suite_result.failed_tests,
+              success_rate: suite_result.total_tests > 0 ? 
+                (suite_result.passed_tests / suite_result.total_tests) * 100 : 0,
+              details: suite_result.details || {}
+            }
+          }
+          
+          // Calculate overall success rate
+          if comprehensive_report.summary.total_tests > 0 {
+            comprehensive_report.summary.success_rate = 
+              (comprehensive_report.summary.passed_tests / comprehensive_report.summary.total_tests) * 100
+          }
+          
+          // Generate recommendations
+          comprehensive_report.recommendations = generate_recommendations(test_results)
+          
+          // Generate next steps
+          comprehensive_report.next_steps = generate_next_steps(test_results)
+        }
+      }
+    }
+  }
+
+  recipe "generate_recommendations" {
+    needs: test_results
+    gives: recommendations
+    
+    brain {
+      plan {
+        plan = { action: "analyze_test_results" }
+      }
+      
+      execute {
+        if plan.action == "analyze_test_results" {
+          recommendations = []
+          
+          // Check for failed test suites
+          for each suite_name in Object.keys(test_results) {
+            suite_result = test_results[suite_name]
+            
+            if suite_result.failed_tests > 0 {
+              recommendations.push({
+                type: "critical",
+                suite: suite_name,
+                message: "Fix " + suite_result.failed_tests + " failed tests in " + suite_name,
+                priority: "high"
+              })
+            }
+            
+            // Check for low success rates
+            if suite_result.total_tests > 0 {
+              success_rate = (suite_result.passed_tests / suite_result.total_tests) * 100
+              if success_rate < 80 {
+                recommendations.push({
+                  type: "warning",
+                  suite: suite_name,
+                  message: "Improve test coverage in " + suite_name + " (current: " + success_rate.toFixed(1) + "%)",
+                  priority: "medium"
+                })
+              }
+            }
+          }
+          
+          // Overall recommendations
+          total_failed = 0
+          for each suite_name in Object.keys(test_results) {
+            total_failed += test_results[suite_name].failed_tests
+          }
+          
+          if total_failed == 0 {
+            recommendations.push({
+              type: "success",
+              message: "All tests passed! GX is ready for production deployment.",
+              priority: "low"
+            })
+          } else {
+            recommendations.push({
+              type: "critical",
+              message: "Fix " + total_failed + " failed tests before production deployment.",
+              priority: "high"
+            })
+          }
+        }
+      }
+    }
+  }
+
+  recipe "generate_next_steps" {
+    needs: test_results
+    gives: next_steps
+    
+    brain {
+      plan {
+        plan = { action: "plan_next_steps" }
+      }
+      
+      execute {
+        if plan.action == "plan_next_steps" {
+          next_steps = []
+          
+          // Check if all tests passed
+          all_passed = true
+          for each suite_name in Object.keys(test_results) {
+            if test_results[suite_name].failed_tests > 0 {
+              all_passed = false
+              break
+            }
+          }
+          
+          if all_passed {
+            next_steps.push({
+              action: "deploy_to_production",
+              description: "Deploy GX to production environment",
+              priority: "high"
+            })
+            
+            next_steps.push({
+              action: "create_user_documentation",
+              description: "Create comprehensive user documentation",
+              priority: "medium"
+            })
+            
+            next_steps.push({
+              action: "setup_community",
+              description: "Setup developer community and forums",
+              priority: "medium"
+            })
+          } else {
+            next_steps.push({
+              action: "fix_failed_tests",
+              description: "Fix all failed tests before proceeding",
+              priority: "critical"
+            })
+            
+            next_steps.push({
+              action: "improve_test_coverage",
+              description: "Improve test coverage for better reliability",
+              priority: "high"
+            })
+          }
+          
+          next_steps.push({
+            action: "implement_phase_4",
+            description: "Implement remaining Phase 4 components",
+            priority: "low"
+          })
+          
+          next_steps.push({
+            action: "performance_optimization",
+            description: "Optimize performance based on test results",
+            priority: "medium"
+          })
+        }
+      }
+    }
+  }
+
+  recipe "monitor_test_execution_health" {
+    brain {
+      plan {
+        plan = { action: "check_execution_health" }
+      }
+      
+      execute {
+        if plan.action == "check_execution_health" {
+          // Check for execution timeouts
+          if memory.execution_metrics.total_execution_time > memory.test_execution_config.test_timeout {
+            emit "execution_timeout_warning" {
+              execution_time: memory.execution_metrics.total_execution_time,
+              timeout_limit: memory.test_execution_config.test_timeout
+            }
+          }
+          
+          // Check for high failure rates
+          if memory.execution_metrics.tests_executed > 0 {
+            failure_rate = (memory.execution_metrics.tests_failed / memory.execution_metrics.tests_executed) * 100
+            if failure_rate > 20 {
+              emit "high_failure_rate_warning" {
+                failure_rate: failure_rate,
+                failed_tests: memory.execution_metrics.tests_failed,
+                total_tests: memory.execution_metrics.tests_executed
+              }
+            }
+          }
+          
+          // Check for test execution issues
+          if memory.execution_metrics.tests_executed == 0 && memory.execution_metrics.total_execution_time > 0 {
+            emit "no_tests_executed_warning" {
+              execution_time: memory.execution_metrics.total_execution_time
+            }
+          }
+        }
+      }
+    }
+  }
+
+  recipe "update_execution_statistics" {
+    brain {
+      plan {
+        plan = { action: "calculate_execution_stats" }
+      }
+      
+      execute {
+        if plan.action == "calculate_execution_stats" {
+          // Calculate success rate
+          if memory.execution_metrics.tests_executed > 0 {
+            memory.execution_metrics.success_rate = 
+              (memory.execution_metrics.tests_passed / memory.execution_metrics.tests_executed) * 100
+          }
+          
+          // Calculate average test duration
+          if memory.execution_metrics.tests_executed > 0 {
+            memory.execution_metrics.average_test_duration = 
+              memory.execution_metrics.total_execution_time / memory.execution_metrics.tests_executed
+          }
+          
+          // Calculate test efficiency
+          memory.execution_metrics.tests_per_minute = 
+            (memory.execution_metrics.tests_executed / (memory.execution_metrics.total_execution_time / 60000))
+        }
+      }
+    }
+  }
+} 
