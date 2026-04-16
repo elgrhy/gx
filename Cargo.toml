@@ -1,0 +1,16 @@
+[package]
+name = "gx"
+version = "0.1.0"
+edition = "2021"
+description = "GX — brain-first programming language for building transparent AI assistants"
+authors = ["Ahmed Elgarhy <ahmed@devjsx.com>"]
+
+[[bin]]
+name = "gx"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+strip = true

@@ -1,108 +1,58 @@
 helper "calculator" {
-  can_do: ["arithmetic", "computation", "math_operations"]
-  
-  remember {
-    operations = {
-      add: function(a, b) { return a + b },
-      subtract: function(a, b) { return a - b },
-      multiply: function(a, b) { return a * b },
-      divide: function(a, b) { return a / b },
-      power: function(a, b) { return a ** b }
-    }
-    results = []
-    last_operation = null
-  }
+  can_do: ["addition", "multiplication", "subtraction", "division"]
 
-  receive {
-    from "input" as "calculation_request" {
-      type: "math_operation"
-      bind: memory.request
-      on_receive: brain.calculate
-    }
+  remember {
+    calculations_performed = 0
+    last_result = 0
+    history = []
   }
 
   brain {
     plan {
-      if memory.request {
-        plan = {
-          action: "perform_calculation",
-          operation: memory.request.operation,
-          operands: memory.request.operands
-        }
+      if memory.calculations_performed == 0 {
+        plan = { action: "add_numbers" }
+      } else if memory.calculations_performed == 1 {
+        plan = { action: "multiply_numbers" }
+      } else if memory.calculations_performed == 2 {
+        plan = { action: "subtract_numbers" }
+      } else {
+        plan = { action: "divide_numbers" }
       }
     }
-    
+
     execute {
-      if plan.action == "perform_calculation" {
-        operation = plan.operation
-        operands = plan.operands
-        
-        if memory.operations[operation] {
-          result = memory.operations[operation](operands[0], operands[1])
-          memory.results.push({
-            operation: operation,
-            operands: operands,
-            result: result,
-            timestamp: get_timestamp()
-          })
-          memory.last_operation = result
-        } else {
-          memory.last_operation = "Invalid operation: " + operation
-        }
+      if plan.action == "add_numbers" {
+        result = 5 + 3
+        memory.last_result = result
+        memory.calculations_performed = memory.calculations_performed + 1
+        output("5 + 3 = " + result)
+      } else if plan.action == "multiply_numbers" {
+        result = 4 * 6
+        memory.last_result = result
+        memory.calculations_performed = memory.calculations_performed + 1
+        output("4 * 6 = " + result)
+      } else if plan.action == "subtract_numbers" {
+        result = 10 - 4
+        memory.last_result = result
+        memory.calculations_performed = memory.calculations_performed + 1
+        output("10 - 4 = " + result)
+      } else if plan.action == "divide_numbers" {
+        result = 20 / 4
+        memory.last_result = result
+        memory.calculations_performed = memory.calculations_performed + 1
+        output("20 / 4 = " + result)
       }
     }
-    
+
     remember {
-      memory.request = null
+      memory.total_calculations = memory.calculations_performed
     }
-    
+
     communicate {
-      broadcast "calculation_complete" {
-        result: memory.last_operation
+      emit "calculation_complete" {
+        result: memory.last_result,
+        total_calculations: memory.total_calculations
       }
     }
   }
-
-  recipe "calculate_sum" {
-    needs: numbers
-    gives: sum
-    
-    brain {
-      plan {
-        plan = { action: "sum_numbers" }
-      }
-      
-      execute {
-        if plan.action == "sum_numbers" {
-          sum = 0
-          for each number in numbers {
-            sum += number
-          }
-        }
-      }
-    }
-  }
-
-  recipe "calculate_average" {
-    needs: numbers
-    gives: average
-    
-    brain {
-      plan {
-        plan = { action: "calculate_mean" }
-      }
-      
-      execute {
-        if plan.action == "calculate_mean" {
-          sum = 0
-          count = 0
-          for each number in numbers {
-            sum += number
-            count += 1
-          }
-          average = sum / count
-        }
-      }
-    }
-  }
-} 
+}
