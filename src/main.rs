@@ -3,6 +3,7 @@
 mod ai;
 mod ast;
 mod bridge;
+mod indent_parser;
 mod interpreter;
 mod lexer;
 mod parser;
@@ -13,6 +14,7 @@ use std::fs;
 use std::path::Path;
 use std::process;
 
+use indent_parser::is_indent_syntax;
 use interpreter::Interpreter;
 use lexer::Lexer;
 use parser::Parser;
@@ -99,21 +101,34 @@ fn main() {
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
+fn parse_file(source: &str, path: &str) -> Result<crate::ast::Program, String> {
+    if is_indent_syntax(source) {
+        indent_parser::parse(source).map_err(|e| format!("{}: {}", path, e))
+    } else {
+        let tokens = Lexer::new(source)
+            .tokenize()
+            .map_err(|e| format!("{}: {}", path, e))?;
+        Parser::new(tokens)
+            .parse()
+            .map_err(|e| format!("{}: {}", path, e))
+    }
+}
+
 fn cmd_run(path: &str, debug: bool) -> Result<(), String> {
     let source = read_file(path)?;
     if debug {
         eprintln!("[gx] file: {}", path);
+        eprintln!(
+            "[gx] syntax: {}",
+            if is_indent_syntax(&source) {
+                "indentation"
+            } else {
+                "brace"
+            }
+        );
     }
 
-    let mut lexer = Lexer::new(&source);
-    let tokens = lexer.tokenize().map_err(|e| format!("{}: {}", path, e))?;
-    if debug {
-        eprintln!("[gx] tokens: {}", tokens.len());
-    }
-
-    let program = Parser::new(tokens)
-        .parse()
-        .map_err(|e| format!("{}: {}", path, e))?;
+    let program = parse_file(&source, path)?;
     if debug {
         eprintln!("[gx] helpers: {}", program.helpers.len());
         for h in &program.helpers {
@@ -133,13 +148,7 @@ fn cmd_run(path: &str, debug: bool) -> Result<(), String> {
 
 fn cmd_check(path: &str) -> Result<(), String> {
     let source = read_file(path)?;
-
-    let tokens = Lexer::new(&source)
-        .tokenize()
-        .map_err(|e| format!("{}: {}", path, e))?;
-    let program = Parser::new(tokens)
-        .parse()
-        .map_err(|e| format!("{}: {}", path, e))?;
+    let program = parse_file(&source, path)?;
 
     println!(
         "{}: OK ({} helper{}, {} import{})",

@@ -1232,6 +1232,17 @@ impl Parser {
         }
     }
 
+    /// Public: parse a single statement from the current position (for indent_parser)
+    pub fn parse_one_stmt(&mut self) -> Result<Stmt, String> {
+        self.skip_newlines();
+        self.parse_stmt()
+    }
+
+    /// Public: parse a single expression from the current position (for indent_parser)
+    pub fn parse_one_expr(&mut self) -> Result<Expr, String> {
+        self.parse_expr()
+    }
+
     fn parse_kv_pairs(&mut self) -> Result<Vec<(String, Expr)>, String> {
         let mut pairs = Vec::new();
         loop {

@@ -1,0 +1,52 @@
+// Test: progressive indentation-based syntax
+// Level 1 — pure intent
+// Level 2 — named behaviors
+// Level 3 — explicit brain cycle
+
+Agent test_progressive
+passed = 0
+failed = 0
+
+// Level 1: bare string literal auto-prints
+// (tested by running without error)
+
+// Level 2: named behavior blocks
+CheckMath:
+  result = 3 + 4
+  If result == 7
+    memory.passed += 1
+  else
+    log("FAIL: math in behavior")
+    memory.failed += 1
+
+CheckString:
+  s = "hello"
+  If s == "hello"
+    memory.passed += 1
+  else
+    log("FAIL: string in behavior")
+    memory.failed += 1
+
+CheckLoop:
+  total = 0
+  For n in [1, 2, 3, 4, 5]
+    total += n
+  If total == 15
+    memory.passed += 1
+  else
+    log("FAIL: loop in behavior")
+    memory.failed += 1
+
+CheckMemory:
+  If memory.passed > 0
+    memory.passed += 1
+  else
+    log("FAIL: memory access in behavior")
+    memory.failed += 1
+
+On start:
+  CheckMath
+  CheckString
+  CheckLoop
+  CheckMemory
+  log("test_progressive: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")

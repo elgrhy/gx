@@ -357,7 +357,18 @@ impl Interpreter {
                 Err(Signal::EscalateToHuman)
             }
 
-            Stmt::Expr { expr, .. } => self.eval_expr(expr, env),
+            Stmt::Expr { expr, .. } => {
+                // Auto-call zero-arg user functions referenced as bare identifiers.
+                // Use call_behavior so memory changes propagate back to the caller.
+                if let Expr::Ident(ref name) = expr {
+                    if let Some(func) = self.functions.get(name).cloned() {
+                        if func.params.is_empty() {
+                            return self.call_behavior(&func, env);
+                        }
+                    }
+                }
+                self.eval_expr(expr, env)
+            }
         }
     }
 
@@ -470,7 +481,17 @@ impl Interpreter {
                 Ok(Value::Str(s))
             }
 
-            Expr::Ident(name) => Ok(env.get(name)),
+            Expr::Ident(name) => {
+                let val = env.get(name);
+                // Memory fallback: bare `name` → `memory.name` (progressive syntax)
+                if matches!(val, Value::Null) {
+                    let mem = env.get_memory();
+                    if let Some(v) = mem.get(name) {
+                        return Ok(v.clone());
+                    }
+                }
+                Ok(val)
+            }
 
             Expr::FieldAccess { object, field } => {
                 let obj = self.eval_expr(object, env)?;
@@ -656,7 +677,9 @@ impl Interpreter {
         if let Expr::Ident(name) = callee {
             // User-defined functions take priority over builtins
             if let Some(func) = self.functions.get(name).cloned() {
-                return self.call_user_function(&func, args);
+                // Pass parent memory so behavior blocks can read agent state
+                let mem = env.get_memory();
+                return self.call_user_function(&func, args, Some(mem));
             }
             return self.eval_builtin(name, args, env);
         }
@@ -664,8 +687,32 @@ impl Interpreter {
         Err(Signal::Error(format!("Cannot call {:?}", callee)))
     }
 
-    fn call_user_function(&mut self, func: &FunctionDef, args: Vec<Value>) -> IResult {
+    /// Call a zero-arg behavior block with shared memory.
+    /// Memory changes inside the behavior are written back to the caller's env.
+    fn call_behavior(&mut self, func: &FunctionDef, caller_env: &mut Env) -> IResult {
         let mut env = Env::new();
+        env.set_memory(caller_env.get_memory());
+        let body = func.body.clone();
+        let result = match self.run_stmts(&body, &mut env) {
+            Ok(v) => v,
+            Err(Signal::Return(v)) => v,
+            Err(e) => return Err(e),
+        };
+        caller_env.set_memory(env.get_memory());
+        Ok(result)
+    }
+
+    fn call_user_function(
+        &mut self,
+        func: &FunctionDef,
+        args: Vec<Value>,
+        parent_memory: Option<std::collections::HashMap<String, Value>>,
+    ) -> IResult {
+        let mut env = Env::new();
+        // Give the function access to caller's memory (for behavior blocks)
+        if let Some(mem) = parent_memory {
+            env.set_memory(mem);
+        }
         for (i, param) in func.params.iter().enumerate() {
             env.set(param, args.get(i).cloned().unwrap_or(Value::Null));
         }
