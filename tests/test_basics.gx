@@ -1,0 +1,41 @@
+// Test: basic arithmetic, strings, booleans, memory
+helper "test_basics" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+      // Arithmetic
+      if 1 + 1 == 2 { memory.passed += 1 } else { log("FAIL: 1+1") memory.failed += 1 }
+      if 10 - 3 == 7 { memory.passed += 1 } else { log("FAIL: 10-3") memory.failed += 1 }
+      if 4 * 5 == 20 { memory.passed += 1 } else { log("FAIL: 4*5") memory.failed += 1 }
+      if 9 / 3 == 3 { memory.passed += 1 } else { log("FAIL: 9/3") memory.failed += 1 }
+      if 10 % 3 == 1 { memory.passed += 1 } else { log("FAIL: 10%3") memory.failed += 1 }
+
+      // String concat
+      s = "hello" + " " + "world"
+      if s == "hello world" { memory.passed += 1 } else { log("FAIL: concat") memory.failed += 1 }
+
+      // Boolean logic
+      if true and true { memory.passed += 1 } else { log("FAIL: and") memory.failed += 1 }
+      if not false { memory.passed += 1 } else { log("FAIL: not") memory.failed += 1 }
+      if true or false { memory.passed += 1 } else { log("FAIL: or") memory.failed += 1 }
+
+      // Memory
+      memory.x = 42
+      if memory.x == 42 { memory.passed += 1 } else { log("FAIL: memory") memory.failed += 1 }
+
+      // Augmented assignment
+      memory.n = 0
+      memory.n += 5
+      if memory.n == 5 { memory.passed += 1 } else { log("FAIL: +=") memory.failed += 1 }
+
+      log("test_basics: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}

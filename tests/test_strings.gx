@@ -1,0 +1,35 @@
+// Test: string operations and interpolation
+helper "test_strings" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+      // Interpolation
+      name = "GX"
+      s = "Hello, {name}!"
+      if s == "Hello, GX!" { memory.passed += 1 } else { log("FAIL: interpolation") memory.failed += 1 }
+
+      // Methods
+      if "hello".to_upper() == "HELLO" { memory.passed += 1 } else { log("FAIL: upper") memory.failed += 1 }
+      if "HELLO".to_lower() == "hello" { memory.passed += 1 } else { log("FAIL: lower") memory.failed += 1 }
+      if "  hi  ".trim() == "hi" { memory.passed += 1 } else { log("FAIL: trim") memory.failed += 1 }
+      if "hello world".contains("world") { memory.passed += 1 } else { log("FAIL: contains") memory.failed += 1 }
+      if "hello".replace("l", "r") == "herro" { memory.passed += 1 } else { log("FAIL: replace") memory.failed += 1 }
+
+      // Length (method, not standalone function)
+      if "hello".len() == 5 { memory.passed += 1 } else { log("FAIL: len") memory.failed += 1 }
+
+      // to_string and concat number
+      greeting = "count=" + to_string(99)
+      if greeting == "count=99" { memory.passed += 1 } else { log("FAIL: to_string") memory.failed += 1 }
+
+      log("test_strings: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}

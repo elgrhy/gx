@@ -245,7 +245,7 @@ if condition {
   // ...
 }
 
-for item in collection {
+for each item in collection {
   log(item)
 }
 

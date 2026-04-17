@@ -1,0 +1,54 @@
+// Test: if/else, for loops, try/catch
+helper "test_control_flow" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+      // if / else if / else
+      x = 15
+      if x > 10 {
+        memory.passed += 1
+      } else {
+        log("FAIL: if >") memory.failed += 1
+      }
+
+      if x < 5 {
+        log("FAIL: else branch") memory.failed += 1
+      } else if x < 20 {
+        memory.passed += 1
+      } else {
+        log("FAIL: else if") memory.failed += 1
+      }
+
+      // for each loop
+      total = 0
+      for each n in [1, 2, 3, 4, 5] {
+        total += n
+      }
+      if total == 15 { memory.passed += 1 } else { log("FAIL: for loop") memory.failed += 1 }
+
+      // nested memory in loop
+      memory.items = ["a", "b", "c"]
+      count = 0
+      for each item in memory.items {
+        count += 1
+      }
+      if count == 3 { memory.passed += 1 } else { log("FAIL: for memory") memory.failed += 1 }
+
+      // try / catch
+      try {
+        bad = 1 / 0
+      } catch e {
+        memory.passed += 1
+      }
+
+      log("test_control_flow: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}

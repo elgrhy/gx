@@ -1,5 +1,18 @@
+# Rust build output (Cargo.lock is intentionally tracked for binaries)
 /target/
-Cargo.lock
-*.o
-*.bc
+
+# GX build output
 dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env

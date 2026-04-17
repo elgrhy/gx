@@ -1,0 +1,33 @@
+// Test: agent syntax, when started, memory persistence
+agent "test_agent" {
+  remember {
+    started = false
+    count = 0
+  }
+
+  when started {
+    memory.started = true
+    memory.count += 1
+    log("PASS: when started fired")
+    log("PASS: count is " + to_string(memory.count))
+  }
+
+  brain {
+    plan { plan = { action: "check" } }
+    execute {
+      if memory.started {
+        log("PASS: memory persisted from when started")
+      } else {
+        log("FAIL: memory not persisted")
+      }
+
+      if memory.count == 1 {
+        log("PASS: count correct")
+      } else {
+        log("FAIL: count wrong, got " + to_string(memory.count))
+      }
+    }
+    remember {}
+    communicate {}
+  }
+}

@@ -150,7 +150,7 @@ if memory.count > 10 {
 ### `for` / `for each`
 
 ```gx
-for item in memory.items {
+for each item in memory.items {
   log(item)
 }
 
@@ -264,8 +264,8 @@ memory.matrix[1][2]
 "hello".length()
 "hello world".split(" ")
 " hello ".trim()
-"hello".upper()
-"HELLO".lower()
+"hello".to_upper()
+"HELLO".to_lower()
 "hello world".contains("world")
 "hello".replace("l", "r")
 [1, 2, 3].length()
@@ -296,9 +296,9 @@ len("hello")
 
 | Method | Description |
 |--------|-------------|
-| `.length()` | Character count |
-| `.upper()` | Uppercase |
-| `.lower()` | Lowercase |
+| `.length()` / `.len()` | Character count |
+| `.to_upper()` | Uppercase |
+| `.to_lower()` | Lowercase |
 | `.trim()` | Strip whitespace |
 | `.split(sep)` | Split into array |
 | `.contains(sub)` | Substring check |
