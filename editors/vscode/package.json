@@ -1,0 +1,45 @@
+{
+  "name": "gx-language",
+  "displayName": "GX Language",
+  "description": "Syntax highlighting, snippets, and code intelligence for the GX brain-first programming language",
+  "version": "0.1.0",
+  "publisher": "devjsx",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elgrhy/gx"
+  },
+  "homepage": "https://github.com/elgrhy/gx",
+  "bugs": {
+    "url": "https://github.com/elgrhy/gx/issues"
+  },
+  "keywords": ["gx", "gxlang", "brain-first", "ai", "agents"],
+  "categories": ["Programming Languages", "Snippets"],
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "gx",
+        "aliases": ["GX", "gx"],
+        "extensions": [".gx"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gx",
+        "scopeName": "source.gx",
+        "path": "./syntaxes/gx.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "gx",
+        "path": "./snippets/gx.json"
+      }
+    ]
+  }
+}

@@ -1,0 +1,151 @@
+{
+  "New Agent": {
+    "prefix": "agent",
+    "body": [
+      "agent \"${1:name}\" {",
+      "  remember {",
+      "    ${2:key} = ${3:value}",
+      "  }",
+      "",
+      "  when started {",
+      "    ${4:say \"Hello!\"}",
+      "  }",
+      "}"
+    ],
+    "description": "Create a new GX agent"
+  },
+  "New Helper (full syntax)": {
+    "prefix": "helper",
+    "body": [
+      "helper \"${1:name}\" {",
+      "  remember {",
+      "    ${2:key} = ${3:value}",
+      "  }",
+      "",
+      "  brain {",
+      "    plan {",
+      "      plan = { action: \"${4:default}\" }",
+      "    }",
+      "    execute {",
+      "      if plan.action == \"${4:default}\" {",
+      "        ${5:// your logic here}",
+      "      }",
+      "    }",
+      "    remember {",
+      "      memory.last_run = get_timestamp()",
+      "    }",
+      "    communicate {",
+      "      emit \"done\" {}",
+      "    }",
+      "  }",
+      "}"
+    ],
+    "description": "Create a new GX helper with full brain cycle"
+  },
+  "Brain block": {
+    "prefix": "brain",
+    "body": [
+      "brain {",
+      "  plan {",
+      "    plan = { action: \"${1:default}\" }",
+      "  }",
+      "  execute {",
+      "    ${2:// execute logic}",
+      "  }",
+      "  remember {",
+      "    ${3:// persist results}",
+      "  }",
+      "  communicate {",
+      "    ${4:// emit events}",
+      "  }",
+      "}"
+    ],
+    "description": "Full brain cycle block"
+  },
+  "When started block": {
+    "prefix": "when started",
+    "body": [
+      "when started {",
+      "  ${1:say \"Agent started!\"}",
+      "}"
+    ],
+    "description": "Run code when agent starts"
+  },
+  "Ask AI": {
+    "prefix": "ask",
+    "body": [
+      "result = ask ${1|openai,anthropic,ollama|} {",
+      "  prompt: \"${2:Your prompt here}\",",
+      "  max_tokens: ${3:200}",
+      "}",
+      "",
+      "if result.confidence > 0.8 {",
+      "  say result.text",
+      "} else {",
+      "  escalate to human",
+      "}"
+    ],
+    "description": "Ask an AI model and check confidence"
+  },
+  "Function definition": {
+    "prefix": "function",
+    "body": [
+      "function ${1:name}(${2:params}) {",
+      "  ${3:return null}",
+      "}"
+    ],
+    "description": "Define a reusable function"
+  },
+  "For loop": {
+    "prefix": "for",
+    "body": [
+      "for ${1:item} in ${2:memory.items} {",
+      "  ${3:log(item)}",
+      "}"
+    ],
+    "description": "For loop over a collection"
+  },
+  "If-else": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} {",
+      "  ${2:// true branch}",
+      "} else {",
+      "  ${3:// false branch}",
+      "}"
+    ],
+    "description": "If-else block"
+  },
+  "Try-catch": {
+    "prefix": "try",
+    "body": [
+      "try {",
+      "  ${1:// risky operation}",
+      "} catch ${2:err} {",
+      "  log(\"Error: \" + ${2:err})",
+      "}"
+    ],
+    "description": "Try-catch block"
+  },
+  "Import file": {
+    "prefix": "import",
+    "body": [
+      "import \"${1:path/to/file.gx}\""
+    ],
+    "description": "Import functions from another .gx file"
+  },
+  "Use package": {
+    "prefix": "use",
+    "body": [
+      "use ${1|js,py|}.${2:package}"
+    ],
+    "description": "Import a JS or Python package"
+  },
+  "Emit event": {
+    "prefix": "emit",
+    "body": [
+      "emit \"${1:event_name}\" { ${2:key}: ${3:value} }"
+    ],
+    "description": "Emit an event"
+  }
+}

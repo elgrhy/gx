@@ -1,0 +1,75 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "GX",
+  "scopeName": "source.gx",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#type-keyword" },
+    { "include": "#ai-keyword" },
+    { "include": "#builtin-function" },
+    { "include": "#boolean-null" },
+    { "include": "#operator" },
+    { "include": "#memory-access" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.gx",
+      "match": "//.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.gx",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.gx",
+          "match": "\\\\[ntr\"\\\\]"
+        },
+        {
+          "name": "variable.other.interpolated.gx",
+          "match": "\\{[^}]*\\}"
+        }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.gx",
+      "match": "\\b-?[0-9]+(\\.[0-9]+)?\\b"
+    },
+    "keyword": {
+      "name": "keyword.control.gx",
+      "match": "\\b(agent|helper|brain|plan|execute|remember|communicate|receive|channel|when|started|changes|if|else|for|each|in|try|catch|return|re-run|escalate|to|human|wait|emit|broadcast|use|import|function)\\b"
+    },
+    "type-keyword": {
+      "name": "keyword.declaration.gx",
+      "match": "\\b(recipe|objective|needs|gives|can_do)\\b"
+    },
+    "ai-keyword": {
+      "name": "keyword.other.ai.gx",
+      "match": "\\b(ask|embed|infer|classifier|openai|anthropic|ollama|claude|gpt|local)\\b"
+    },
+    "builtin-function": {
+      "name": "support.function.builtin.gx",
+      "match": "\\b(log|say|output|get_timestamp|to_string|to_number|len|count|type_of|is_null|keys|values|range|floor|ceil|round|abs|max|min)\\b"
+    },
+    "boolean-null": {
+      "name": "constant.language.gx",
+      "match": "\\b(true|false|null)\\b"
+    },
+    "operator": {
+      "name": "keyword.operator.gx",
+      "match": "(==|!=|<=|>=|<|>|\\+=|-=|\\*=|/=|\\+|-|\\*|/|%|=|and|or|not)"
+    },
+    "memory-access": {
+      "name": "variable.language.memory.gx",
+      "match": "\\bmemory\\b"
+    },
+    "identifier": {
+      "name": "variable.other.gx",
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+    }
+  }
+}
