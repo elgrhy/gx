@@ -1,6 +1,94 @@
-# GX Language — API Reference
+# GX Language — Reference
 
 Complete reference for GX syntax, built-in functions, and AI primitives.
+
+---
+
+## Syntax Levels
+
+GX has three progressive syntax levels that all compile to the same runtime. Use the level that matches the complexity of what you're building.
+
+### Level 1 — Pure intent
+
+No braces, no ceremony. Variables at agent level become memory automatically. String literals auto-print.
+
+```gx
+Agent greeter
+
+name = "World"
+
+"Hello {name}"
+```
+
+- `Agent Name` (no quotes, no braces) declares an agent
+- Variable assignments → stored in `memory`
+- String expressions → printed to stdout
+- GX infers the brain cycle automatically
+
+### Level 2 — Named behaviors
+
+Reusable labeled blocks. Behaviors share memory with the agent.
+
+```gx
+Agent assistant
+
+user = "Ahmed"
+
+Greet:
+  say "Hello {user}!"
+
+AskQuestion:
+  say "What do you need today, {user}?"
+
+On start:
+  Greet
+  AskQuestion
+```
+
+- `BehaviorName:` followed by indented body → named behavior (zero-arg function)
+- Calling `BehaviorName` (no parens) in another block → executes the behavior
+- `On start:` → runs on agent startup
+- Memory is shared: changes inside a behavior are visible to the caller
+
+### Level 3 — Explicit brain cycle
+
+Full control over Plan → Execute → Remember → Communicate. No braces required.
+
+```gx
+Agent counter
+
+count = 0
+
+Plan:
+  action = "increment"
+
+Execute:
+  If action == "increment"
+    count += 1
+
+Remember:
+  memory.count = count
+
+Communicate:
+  "Count is now {count}"
+```
+
+- `Plan:`, `Execute:`, `Remember:`, `Communicate:` → explicit brain phases
+- `If`, `For`, `Try` use indentation instead of braces
+- `Else` at same indentation as the preceding `If`
+
+### Classic brace syntax
+
+The original syntax is fully supported alongside progressive syntax.
+
+```gx
+agent "greeter" {
+  remember { name = "World" }
+  when started { say "Hello, {memory.name}!" }
+}
+```
+
+GX auto-detects which syntax to use based on the first meaningful line.
 
 ---
 

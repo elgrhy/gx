@@ -36,50 +36,68 @@ gx run main.gx
 
 ## The Language
 
-GX has two syntax levels. Both work the same way.
+GX has **three progressive syntax levels** — all compile to the same runtime. Use the level that fits what you're building.
 
-### Simple syntax (for beginners and AI code generation)
+### Level 1 — Pure intent (no ceremony)
+
+```gx
+Agent greeter
+
+name = "World"
+
+"Hello {name}"
+```
+
+No braces. Variables become memory automatically. Strings auto-print. GX infers the brain cycle.
+
+### Level 2 — Named behaviors
+
+```gx
+Agent assistant
+
+Greet:
+  "Hello {name}!"
+
+CheckIn:
+  result = ask openai { prompt: "How are things with {name}?" }
+  result.text
+
+On start:
+  Greet
+  CheckIn
+```
+
+Reusable, composable behavior blocks. Memory is shared between behaviors.
+
+### Level 3 — Explicit brain cycle
+
+```gx
+Agent counter
+
+count = 0
+
+Plan:
+  action = "increment"
+
+Execute:
+  If action == "increment"
+    count += 1
+
+Remember:
+  memory.count = count
+
+Communicate:
+  "Count is now {count}"
+```
+
+Full control over Plan → Execute → Remember → Communicate. Still no braces required.
+
+### Classic brace syntax (also fully supported)
 
 ```gx
 agent "greeter" {
-  remember {
-    name = "World"
-    count = 0
-  }
-
-  when started {
-    say "Hello, {memory.name}!"
-    memory.count += 1
-  }
-}
-```
-
-### Full syntax (when you need full control)
-
-```gx
-helper "greeter" {
-  remember {
-    name = "World"
-    count = 0
-  }
-
-  brain {
-    plan {
-      plan = { action: "greet" }
-    }
-    execute {
-      if plan.action == "greet" {
-        log("Hello, " + memory.name + "!")
-        memory.count += 1
-      }
-    }
-    remember {
-      memory.last_run = get_timestamp()
-    }
-    communicate {
-      emit "greeted" { count: memory.count }
-    }
-  }
+  remember { name = "World" }
+  when started { say "Hello, {memory.name}!" }
 }
 ```
 
@@ -348,16 +366,17 @@ See [`docs/examples/`](docs/examples/) for working examples:
 
 ```
 src/
-├── main.rs          CLI entry point
-├── lexer.rs         Tokenizer
-├── parser.rs        AST builder
-├── ast.rs           AST node types
-├── interpreter.rs   Tree-walking executor
-├── value.rs         Runtime value types
-├── ai.rs            AI provider connectors (OpenAI, Anthropic, Ollama)
-├── bridge.rs        JS/Python subprocess IPC
-├── toolchain.rs     gx init/build/install/fmt/make/test
-└── lib.rs           Public API for embedding
+├── main.rs           CLI entry point
+├── lexer.rs          Tokenizer (brace syntax)
+├── parser.rs         AST builder (brace syntax)
+├── indent_parser.rs  Parser for progressive indentation syntax
+├── ast.rs            AST node types
+├── interpreter.rs    Tree-walking executor
+├── value.rs          Runtime value types
+├── ai.rs             AI provider connectors (OpenAI, Anthropic, Ollama)
+├── bridge.rs         JS/Python subprocess IPC
+├── toolchain.rs      gx init/build/install/fmt/make/test
+└── lib.rs            Public API for embedding
 ```
 
 **Key design decisions:**

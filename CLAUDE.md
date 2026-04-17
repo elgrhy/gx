@@ -2,241 +2,135 @@
 
 ## What is GX?
 
-GX is a brain-first programming language designed to make building AI assistants as easy as writing a recipe — accessible to a 7-year-old, powerful enough for enterprise production systems.
-
-**Core philosophy:**
-- AI agents should be transparent, auditable, and non-hallucinating
-- Building AI should feel natural, not technical — humans AND machines write GX
-- GX is not starting from zero: it can use packages from JS (npm), Python (pip), and Rust (crates)
-- The produced AI assistant has no black box — every decision is visible and traceable
+GX is a brain-first programming language for building transparent, auditable AI assistants. The language makes every AI decision explicit, every AI call logged, and every agent fully debuggable.
 
 **Owner:** Ahmed Elgarhy, Founder of DEVJSX LIMITED (London, UK). Company No: 16618207.
 
 ---
 
-## Current State (Honest)
+## Current State (v0.1.0 — Real Implementation)
 
-The language syntax is well-defined. The runtime (`bin/gx`) is a **stub** — it reads .gx files and counts patterns but does NOT execute any GX code. No lexer, parser, AST, or interpreter exists yet.
+The GX interpreter is fully built and working. `gx run file.gx` executes real GX code.
 
-All `.gx` files in the repo (runtime, compiler, AI assistant, etc.) are design documents written in GX syntax. They cannot run yet.
-
-**The task is to build a real interpreter in Rust, then make GX self-hosting.**
-
----
-
-## Architecture Plan
-
-```
-Phase 1: Rust Interpreter (makes GX real)
-    src/
-    ├── lexer.rs         — tokenize .gx source
-    ├── parser.rs        — build AST
-    ├── ast.rs           — AST node types
-    ├── interpreter.rs   — tree-walking executor
-    ├── memory.rs        — per-helper scoped memory
-    ├── channels.rs      — message passing between helpers
-    ├── builtins.rs      — log(), output(), get_timestamp(), etc.
-    └── main.rs          — CLI entry point (gx run file.gx)
-
-Phase 2: AI Primitives (the core differentiator)
-    — ask, infer, embed as native keywords
-    — every AI call auto-logged to helper memory
-    — confidence scoring built in
-    — connectors: OpenAI, Anthropic, Ollama (local)
-
-Phase 3: Package Interop (use everything, start from nothing)
-    — js: prefix → calls npm packages via Node.js bridge
-    — py: prefix → calls Python packages via subprocess/PyO3
-    — rust: prefix → links Rust crates natively
-    — Example: use js.axios, use py.pandas, use rust.tokio
-
-Phase 4: Simple Syntax (7-year-old mode)
-    — Short-form syntax for common patterns
-    — AI-assisted code generation built into the CLI
-    — Natural language → GX code: `gx make "a weather bot"`
-
-Phase 5: Toolchain & Deployment
-    — gx init, gx run, gx build, gx install
-    — brew install gx / curl installer / npm install -g gxlang
-    — VS Code extension with syntax + AI autocomplete
-    — gxlang.dev with live playground
-```
+**What works:**
+- Lexer, parser, AST, tree-walking interpreter (all in Rust)
+- Two parsers: brace syntax (`parser.rs`) + progressive indentation syntax (`indent_parser.rs`)
+- `agent`/`helper` with `brain { plan {} execute {} remember {} communicate {} }`
+- `when started {}`, `when expr {}`, `when expr changes {}` trigger blocks
+- AI primitives: `ask openai/anthropic/ollama`, `embed`, `infer classifier`
+- Package interop: `use js.X`, `use py.X` (subprocess bridges)
+- User-defined functions: `function name(args) { body }`
+- File imports: `import "file.gx"`
+- Full toolchain: `gx run/check/build/init/test/fmt/make/install`
+- All operators: `+`, `-`, `*`, `/`, `%`, `+=`, `-=`, `*=`, `/=`, `==`, `!=`, `<`, `>`, `<=`, `>=`
+- Unary minus, `len()`, `range()`, string/array methods
 
 ---
 
-## GX Language Syntax Reference
+## Progressive Syntax (New)
 
-### Full Syntax (current, expressive)
+GX supports three syntax levels that all compile to the same AST/runtime:
 
+### Level 1 — Pure intent
 ```gx
-helper "agent_name" {
-  can_do: ["capability_1", "capability_2"]
-
-  remember {
-    key = value
-  }
-
-  receive {
-    channel "input_channel" {
-      source: "some_helper"
-      type: "message_type"
-      bind: memory.variable
-      on_receive: brain.handler_name
-    }
-  }
-
-  brain {
-    plan {
-      if memory.condition {
-        plan = { action: "do_something" }
-      }
-    }
-
-    execute {
-      if plan.action == "do_something" {
-        result = do_something(memory.key)
-      }
-    }
-
-    remember {
-      memory.last_result = result
-    }
-
-    communicate {
-      emit "event_name" { data: result }
-    }
-  }
-
-  recipe "function_name" {
-    needs: input_var
-    gives: output_var
-    brain { ... }
-  }
-
-  objective "goal_name" {
-    when memory.condition == true
-    then { action: "trigger_action" }
-  }
-}
+Agent greeter
+name = "World"
+"Hello {name}"
 ```
+- No braces, no `remember {}`, no `when started {}`
+- Variables at agent level → `memory` entries
+- String literals → auto-print
+- Detected automatically (no `{` in file)
 
-### Simple Syntax (target — Phase 4)
-
+### Level 2 — Named behaviors
 ```gx
-agent "weather bot" {
-  knows {
-    city = "London"
-  }
-
-  when asked for weather {
-    check city from user or use memory.city
-    ask ai "what is the weather in {city}?"
-    say result
-  }
-
-  when result.confidence < 0.8 {
-    say "I'm not sure, let me check again"
-    escalate to human
-  }
-}
+Agent assistant
+Greet:
+  "Hello {name}"
+On start:
+  Greet
 ```
+- `BehaviorName:` → extracted as a zero-arg function
+- Calling `BehaviorName` (no parens) → auto-calls the function
+- Memory changes propagate back from behaviors to the agent
+- `On start:` → `when started` block
 
-### AI Primitives (Phase 2)
-
+### Level 3 — Explicit brain cycle
 ```gx
-// Ask an AI model — result is always logged to memory
-result = ask openai {
-  prompt: "Summarize this: {memory.text}",
-  context: memory.conversation_history,
-  max_tokens: 200
-}
-
-// result.text       — the response
-// result.confidence — how confident (0.0 to 1.0)
-// result.trace      — full audit log, auto-saved to memory
-
-// Embed text for semantic search
-vector = embed "this is a document about space exploration"
-
-// Classify input
-label = infer classifier { input: user_message, classes: ["support", "sales", "spam"] }
+Agent counter
+Plan:
+  action = "increment"
+Execute:
+  If action == "increment"
+    count += 1
+Remember:
+  memory.count = count
+Communicate:
+  count
 ```
-
-### Package Interop (Phase 3)
-
-```gx
-// Use npm packages
-use js.axios
-use js.lodash
-
-// Use Python packages
-use py.pandas
-use py.sklearn
-
-// Use Rust crates
-use rust.serde
-use rust.tokio
-
-helper "data_agent" {
-  brain {
-    execute {
-      // Call npm package directly
-      data = js.axios.get("https://api.example.com/data")
-
-      // Call Python package
-      df = py.pandas.read_csv("data.csv")
-      model = py.sklearn.linear_model.LinearRegression()
-
-      // Use in GX logic normally
-      memory.processed = df.head(10)
-    }
-  }
-}
-```
+- `Plan:`, `Execute:`, `Remember:`, `Communicate:` → brain phases
+- `If`, `For`, `Try` use indentation instead of braces
 
 ---
 
-## Key Files
+## Architecture
 
-| File | Purpose |
-|------|---------|
-| `build/gx_minimal.c` | The current stub — starting point for Rust port |
-| `bin/gx` | Built binary (stub only, does not execute GX) |
-| `docs/examples/hello_world.gx` | Simplest valid GX program |
-| `docs/examples/calculator.gx` | Basic helper with brain cycle |
-| `gx_ai_assistant.gx` | AI assistant design (not executable yet) |
-| `gx_runtime.gx` | Runtime design (not executable yet) |
-| `gx_compiler_implementation.gx` | Compiler design (not executable yet) |
-| `MASTER_PLAN.md` | Full build roadmap |
+```
+src/
+├── main.rs           CLI entry point
+├── lexer.rs          Tokenizer (keywords, operators, literals)
+├── parser.rs         Recursive descent parser → AST (brace syntax)
+├── indent_parser.rs  Line-by-line parser → AST (progressive syntax)
+├── ast.rs            AST node types (Program, HelperDef, Stmt, Expr, ...)
+├── interpreter.rs    Tree-walking executor
+├── value.rs          Runtime values (Null, Bool, Number, Str, Array, Object)
+├── ai.rs             AI provider connectors (OpenAI, Anthropic, Ollama)
+├── bridge.rs         JS (node -e subprocess) / Python (persistent process) IPC
+├── toolchain.rs      gx init/build/install/fmt/make/test
+└── lib.rs            Public API: parse_source(), run_source(), check_source()
+```
+
+**Key design decisions:**
+- Tree-walking interpreter — no bytecode, simple to debug
+- Two front-ends (brace + indent) compile to one AST
+- Flat `memory` scope per agent — predictable, auditable
+- Memory fallback: bare `name` resolves to `memory.name` in progressive syntax
+- Behavior calls are zero-arg functions with shared memory (changes propagate back)
+- Every AI call auto-logged to `memory.ai_trace`
+- JS bridge: one-shot `node -e` subprocess per call
+- Python bridge: persistent child process with JSON IPC
+
+---
+
+## Tests
+
+```bash
+cargo test                 # 30 Rust unit tests
+cargo run -- run tests/test_basics.gx
+cargo run -- run tests/test_control_flow.gx
+cargo run -- run tests/test_strings.gx
+cargo run -- run tests/test_agent.gx
+cargo run -- run tests/test_functions.gx
+cargo run -- run tests/test_import.gx
+cargo run -- run tests/test_progressive_syntax.gx
+```
+
+CI runs: `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check` on ubuntu/macos/windows.
 
 ---
 
 ## What NOT to Do
 
-- Do not claim any existing .gx files "work" — they are design docs, not running code
-- Do not extend the C stub — we are moving to Rust
-- Do not add features before the core interpreter can run `hello_world.gx`
-- Do not over-engineer: get `hello_world.gx` working first, then build up
+- Do not claim GX is self-hosting — the interpreter is written in Rust, not GX
+- Do not claim there's an OS kernel or DNKN networking — these don't exist
+- Do not break the progressive syntax detection: `is_indent_syntax()` in `indent_parser.rs`
+- Do not remove the memory fallback (`name` → `memory.name`) without updating all progressive syntax tests
+- The brace syntax tests in `tests/*.gx` use `for each`, `{}` blocks, etc. — don't break them
 
-## What to Do Next
+## Key Invariants
 
-1. `cargo init` in the repo root and build the Rust interpreter
-2. Get `docs/examples/hello_world.gx` printing "Hello, Brain-First World!" for real
-3. Then add brain cycle, memory, recipes
-4. Then AI primitives
-5. Then package interop
-
----
-
-## Definition of Done for Phase 1
-
-- [ ] `gx run docs/examples/hello_world.gx` prints the greeting
-- [ ] `gx run docs/examples/calculator.gx` runs the brain cycle
-- [ ] Helpers, brain (plan/execute/remember/communicate), memory, log() all work
-- [ ] Error messages show file name and line number
-- [ ] `cargo test` passes
-
-## Testing Strategy
-
-Every new language feature gets a `.gx` test file in `tests/` plus a Rust unit test.
-Run all tests: `cargo test && gx run tests/run_all.gx`
+- `cargo test` must pass 30 tests
+- `cargo clippy -- -D warnings` must be clean
+- `cargo fmt --check` must be clean
+- Both brace and indentation parsers must produce valid Programs
+- CI on GitHub Actions must stay green (ubuntu + macos + windows)
