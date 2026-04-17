@@ -1,5 +1,5 @@
-/// GX AI Primitives — ask, embed, infer
-/// Connectors: openai, anthropic, ollama (local)
+//! GX AI Primitives — ask, embed, infer
+//! Connectors: openai, anthropic, ollama (local)
 
 use std::collections::HashMap;
 use crate::value::Value;
@@ -15,7 +15,7 @@ pub struct AiResponse {
 }
 
 impl AiResponse {
-    pub fn to_value(self) -> Value {
+    pub fn into_value(self) -> Value {
         let mut map = HashMap::new();
         map.insert("text".into(), Value::Str(self.text));
         map.insert("confidence".into(), Value::Number(self.confidence));
@@ -185,7 +185,7 @@ fn parse_openai_response(resp: ureq::Response, model: &str) -> Value {
             };
             // Reduce confidence if response contains hedging language
             let confidence = adjust_confidence_for_hedging(confidence, &text);
-            AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "openai".into() }.to_value()
+            AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "openai".into() }.into_value()
         }
         Err(e) => AiResponse::error("openai", format!("Failed to parse response: {}", e)),
     }
@@ -231,7 +231,7 @@ fn parse_anthropic_response(resp: ureq::Response, model: &str) -> Value {
             let tokens = json["usage"]["input_tokens"].as_u64().unwrap_or(0)
                        + json["usage"]["output_tokens"].as_u64().unwrap_or(0);
             let confidence = adjust_confidence_for_hedging(0.9, &text);
-            AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "anthropic".into() }.to_value()
+            AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "anthropic".into() }.into_value()
         }
         Err(e) => AiResponse::error("anthropic", format!("Failed to parse response: {}", e)),
     }
@@ -262,7 +262,7 @@ fn ask_ollama(model: &str, prompt: &str, system: Option<&str>) -> Value {
                     let text = json["response"].as_str().unwrap_or("").to_string();
                     let tokens = json["eval_count"].as_u64().unwrap_or(0);
                     let confidence = adjust_confidence_for_hedging(0.85, &text);
-                    AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "ollama".into() }.to_value()
+                    AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "ollama".into() }.into_value()
                 }
                 Err(e) => AiResponse::error("ollama", format!("Parse error: {}", e)),
             }
@@ -280,7 +280,7 @@ fn adjust_confidence_for_hedging(base: f64, text: &str) -> f64 {
     let hedges = ["i'm not sure", "i think", "maybe", "possibly", "i believe",
                   "not certain", "might be", "could be", "i'm unsure", "unclear"];
     let hedge_count = hedges.iter().filter(|h| lower.contains(*h)).count();
-    (base - hedge_count as f64 * 0.05).max(0.1).min(1.0)
+    (base - hedge_count as f64 * 0.05).clamp(0.1, 1.0)
 }
 
 fn truncate(s: &str, max: usize) -> String {

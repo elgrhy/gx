@@ -1,4 +1,4 @@
-/// GX Parser — turns a token stream into an AST.
+//! GX Parser — turns a token stream into an AST.
 
 use std::collections::HashSet;
 use crate::lexer::{Token, TokenKind};

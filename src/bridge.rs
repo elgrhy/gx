@@ -1,5 +1,5 @@
-/// GX Package Interop Bridge
-/// JS (Node.js) and Python bridges via subprocess JSON IPC.
+//! GX Package Interop Bridge
+//! JS (Node.js) and Python bridges via subprocess JSON IPC.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -149,8 +149,7 @@ impl Bridge {
 
         // Send the shim code
         // Use CommonJS shim (avoid --input-type=module issues)
-        let cjs_shim = JS_SHIM.replace("const readline = require('readline');", "const readline = require('readline');");
-        writeln!(stdin, "{}", cjs_shim).map_err(|e| format!("Shim write failed: {}", e))?;
+        writeln!(stdin, "{}", JS_SHIM).map_err(|e| format!("Shim write failed: {}", e))?;
 
         Ok(Bridge { kind: BridgeKind::Js, _child: child, stdin, stdout })
     }

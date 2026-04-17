@@ -1,5 +1,8 @@
-/// GX Runtime Library — public API for embedding GX in other programs
-/// and for `gx build` to produce standalone binaries.
+//! GX Runtime Library — public API for embedding GX in other programs
+//! and for `gx build` to produce standalone binaries.
+
+// Many AST fields and bridge helpers are reserved for future phases.
+#![allow(dead_code)]
 
 pub mod lexer;
 pub mod ast;

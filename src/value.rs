@@ -1,4 +1,4 @@
-/// GX runtime values — what variables hold at runtime.
+//! GX runtime values — what variables hold at runtime.
 
 use std::collections::HashMap;
 use std::fmt;

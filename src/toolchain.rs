@@ -1,4 +1,4 @@
-/// GX Toolchain — gx init, gx build, gx install, gx fmt, gx make, gx test
+//! GX Toolchain — gx init, gx build, gx install, gx fmt, gx make, gx test
 
 use std::fs;
 use std::path::Path;
@@ -99,10 +99,10 @@ helper "test_basic" {{
         .map_err(|e| format!("Failed to write .gitignore: {}", e))?;
 
     println!("Created GX project '{}'", name);
-    println!("");
+    println!();
     println!("  cd {}", name);
     println!("  gx run main.gx");
-    println!("");
+    println!();
     println!("Files created:");
     println!("  {}/main.gx        — entry point", name);
     println!("  {}/gx.json        — project manifest", name);
@@ -186,12 +186,12 @@ exit $STATUS
 
 pub fn install(package: &str) -> Result<(), String> {
     // Parse package: js.axios, py.requests, or bare name
-    let (namespace, pkg) = if package.starts_with("js.") {
-        ("js", &package[3..])
-    } else if package.starts_with("py.") {
-        ("py", &package[3..])
-    } else if package.starts_with("rust.") {
-        ("rust", &package[5..])
+    let (namespace, pkg): (&str, &str) = if let Some(rest) = package.strip_prefix("js.") {
+        ("js", rest)
+    } else if let Some(rest) = package.strip_prefix("py.") {
+        ("py", rest)
+    } else if let Some(rest) = package.strip_prefix("rust.") {
+        ("rust", rest)
     } else {
         // Try to detect from context or default to js
         ("js", package)

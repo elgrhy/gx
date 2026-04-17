@@ -1,10 +1,10 @@
-/// GX Interpreter — executes the AST produced by the parser.
+//! GX Interpreter — executes the AST produced by the parser.
 
 use std::collections::HashMap;
 use crate::ast::*;
 use crate::value::Value;
 use crate::ai;
-use crate::bridge::{Bridge, BridgeKind};
+use crate::bridge::Bridge;
 
 // ── Control flow signals ──────────────────────────────────────────────────────
 
@@ -54,8 +54,15 @@ pub struct Interpreter {
     helpers: HashMap<String, HelperDef>,
     imports: Vec<ImportDecl>,
     pub events: Vec<(String, Vec<(String, Value)>)>,
+    #[allow(dead_code)]
     js_bridge: Option<Bridge>,
     py_bridge: Option<Bridge>,
+}
+
+impl Default for Interpreter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Interpreter {
@@ -339,6 +346,7 @@ impl Interpreter {
         self.eval_expr(expr, env).unwrap_or(Value::Null)
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn expr_root_name(&self, expr: &Expr) -> String {
         match expr {
             Expr::Ident(s) => s.clone(),
@@ -649,7 +657,7 @@ impl Interpreter {
             (Value::Str(s), "replace") => {
                 let from = args.first().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 let to   = args.get(1).and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                Ok(Value::Str(s.replace(&*from, &*to)))
+                Ok(Value::Str(s.replace(&*from, &to)))
             }
             (Value::Object(m), "has") | (Value::Object(m), "has_key") => {
                 let key = args.first().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
