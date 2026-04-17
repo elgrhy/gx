@@ -1,9 +1,9 @@
 //! GX Package Interop Bridge
 //! JS (Node.js) and Python bridges via subprocess JSON IPC.
 
+use crate::value::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use crate::value::Value;
 
 // ── JS Shim (embedded) ────────────────────────────────────────────────────────
 
@@ -128,7 +128,10 @@ pub struct Bridge {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum BridgeKind { Js, Python }
+pub enum BridgeKind {
+    Js,
+    Python,
+}
 
 impl Bridge {
     pub fn new_js() -> Result<Self, String> {
@@ -151,7 +154,12 @@ impl Bridge {
         // Use CommonJS shim (avoid --input-type=module issues)
         writeln!(stdin, "{}", JS_SHIM).map_err(|e| format!("Shim write failed: {}", e))?;
 
-        Ok(Bridge { kind: BridgeKind::Js, _child: child, stdin, stdout })
+        Ok(Bridge {
+            kind: BridgeKind::Js,
+            _child: child,
+            stdin,
+            stdout,
+        })
     }
 
     pub fn new_python() -> Result<Self, String> {
@@ -168,7 +176,12 @@ impl Bridge {
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
 
-        Ok(Bridge { kind: BridgeKind::Python, _child: child, stdin, stdout })
+        Ok(Bridge {
+            kind: BridgeKind::Python,
+            _child: child,
+            stdin,
+            stdout,
+        })
     }
 
     pub fn call(&mut self, module: &str, method: &str, args: &[Value]) -> Result<Value, String> {
@@ -184,7 +197,8 @@ impl Bridge {
         writeln!(self.stdin, "{}", msg).map_err(|e| format!("Bridge write failed: {}", e))?;
 
         let mut response_line = String::new();
-        self.stdout.read_line(&mut response_line)
+        self.stdout
+            .read_line(&mut response_line)
             .map_err(|e| format!("Bridge read failed: {}", e))?;
 
         if response_line.is_empty() {
@@ -203,7 +217,10 @@ impl Bridge {
     }
 
     fn kind_name(&self) -> &str {
-        match self.kind { BridgeKind::Js => "JS", BridgeKind::Python => "Python" }
+        match self.kind {
+            BridgeKind::Js => "JS",
+            BridgeKind::Python => "Python",
+        }
     }
 }
 
@@ -217,14 +234,16 @@ impl Drop for Bridge {
 
 pub fn value_to_json(v: &Value) -> serde_json::Value {
     match v {
-        Value::Null       => serde_json::Value::Null,
-        Value::Bool(b)    => serde_json::json!(b),
-        Value::Number(n)  => serde_json::json!(n),
-        Value::Str(s)     => serde_json::json!(s),
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::json!(b),
+        Value::Number(n) => serde_json::json!(n),
+        Value::Str(s) => serde_json::json!(s),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
-        Value::Object(m)  => {
+        Value::Object(m) => {
             let mut map = serde_json::Map::new();
-            for (k, v) in m { map.insert(k.clone(), value_to_json(v)); }
+            for (k, v) in m {
+                map.insert(k.clone(), value_to_json(v));
+            }
             serde_json::Value::Object(map)
         }
     }
@@ -232,14 +251,16 @@ pub fn value_to_json(v: &Value) -> serde_json::Value {
 
 pub fn json_to_value(v: &serde_json::Value) -> Value {
     match v {
-        serde_json::Value::Null       => Value::Null,
-        serde_json::Value::Bool(b)    => Value::Bool(*b),
-        serde_json::Value::Number(n)  => Value::Number(n.as_f64().unwrap_or(0.0)),
-        serde_json::Value::String(s)  => Value::Str(s.clone()),
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => Value::Number(n.as_f64().unwrap_or(0.0)),
+        serde_json::Value::String(s) => Value::Str(s.clone()),
         serde_json::Value::Array(arr) => Value::Array(arr.iter().map(json_to_value).collect()),
-        serde_json::Value::Object(m)  => {
+        serde_json::Value::Object(m) => {
             let mut map = std::collections::HashMap::new();
-            for (k, v) in m { map.insert(k.clone(), json_to_value(v)); }
+            for (k, v) in m {
+                map.insert(k.clone(), json_to_value(v));
+            }
             Value::Object(map)
         }
     }

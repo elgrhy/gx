@@ -53,8 +53,15 @@ impl Value {
 
     pub fn set_field(&mut self, field: &str, val: Value) -> Result<(), String> {
         match self {
-            Value::Object(map) => { map.insert(field.to_string(), val); Ok(()) }
-            other => Err(format!("Cannot set field '{}' on {}", field, other.type_name()))
+            Value::Object(map) => {
+                map.insert(field.to_string(), val);
+                Ok(())
+            }
+            other => Err(format!(
+                "Cannot set field '{}' on {}",
+                field,
+                other.type_name()
+            )),
         }
     }
 
@@ -64,19 +71,23 @@ impl Value {
                 let i = *n as usize;
                 arr.get(i).cloned().unwrap_or(Value::Null)
             }
-            (Value::Object(map), Value::Str(key)) => {
-                map.get(key).cloned().unwrap_or(Value::Null)
-            }
+            (Value::Object(map), Value::Str(key)) => map.get(key).cloned().unwrap_or(Value::Null),
             _ => Value::Null,
         }
     }
 
     pub fn as_number(&self) -> Option<f64> {
-        match self { Value::Number(n) => Some(*n), _ => None }
+        match self {
+            Value::Number(n) => Some(*n),
+            _ => None,
+        }
     }
 
     pub fn as_str(&self) -> Option<&str> {
-        match self { Value::Str(s) => Some(s.as_str()), _ => None }
+        match self {
+            Value::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
     }
 
     pub fn iter(&self) -> Result<Vec<Value>, String> {
@@ -105,7 +116,9 @@ impl fmt::Display for Value {
             Value::Array(arr) => {
                 write!(f, "[")?;
                 for (i, v) in arr.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", v)?;
                 }
                 write!(f, "]")
@@ -114,7 +127,9 @@ impl fmt::Display for Value {
                 write!(f, "{{")?;
                 let mut first = true;
                 for (k, v) in map {
-                    if !first { write!(f, ", ")?; }
+                    if !first {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}: {}", k, v)?;
                     first = false;
                 }

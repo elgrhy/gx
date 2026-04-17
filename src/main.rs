@@ -1,21 +1,21 @@
 #![allow(dead_code)]
 
-mod lexer;
-mod ast;
-mod parser;
-mod value;
-mod interpreter;
 mod ai;
+mod ast;
 mod bridge;
+mod interpreter;
+mod lexer;
+mod parser;
 mod toolchain;
+mod value;
 
 use std::fs;
 use std::path::Path;
 use std::process;
 
+use interpreter::Interpreter;
 use lexer::Lexer;
 use parser::Parser;
-use interpreter::Interpreter;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -43,7 +43,9 @@ fn main() {
         }
         "build" => {
             let file = require_arg(&args, 2, "gx build <file.gx>");
-            let output = args.iter().position(|a| a == "--output" || a == "-o")
+            let output = args
+                .iter()
+                .position(|a| a == "--output" || a == "-o")
                 .and_then(|i| args.get(i + 1))
                 .map(|s| s.as_str());
             toolchain::build(file, output)
@@ -58,7 +60,9 @@ fn main() {
         }
         "make" => {
             let desc = require_arg(&args, 2, "gx make \"description of what to build\"");
-            let output = args.iter().position(|a| a == "--output" || a == "-o")
+            let output = args
+                .iter()
+                .position(|a| a == "--output" || a == "-o")
                 .and_then(|i| args.get(i + 1))
                 .map(|s| s.as_str());
             toolchain::make(desc, output)
@@ -97,31 +101,48 @@ fn main() {
 
 fn cmd_run(path: &str, debug: bool) -> Result<(), String> {
     let source = read_file(path)?;
-    if debug { eprintln!("[gx] file: {}", path); }
+    if debug {
+        eprintln!("[gx] file: {}", path);
+    }
 
     let mut lexer = Lexer::new(&source);
     let tokens = lexer.tokenize().map_err(|e| format!("{}: {}", path, e))?;
-    if debug { eprintln!("[gx] tokens: {}", tokens.len()); }
+    if debug {
+        eprintln!("[gx] tokens: {}", tokens.len());
+    }
 
-    let program = Parser::new(tokens).parse().map_err(|e| format!("{}: {}", path, e))?;
+    let program = Parser::new(tokens)
+        .parse()
+        .map_err(|e| format!("{}: {}", path, e))?;
     if debug {
         eprintln!("[gx] helpers: {}", program.helpers.len());
-        for h in &program.helpers { eprintln!("[gx]   - {}", h.name); }
+        for h in &program.helpers {
+            eprintln!("[gx]   - {}", h.name);
+        }
         if !program.imports.is_empty() {
-            for i in &program.imports { eprintln!("[gx]   use {}.{}", i.namespace, i.package); }
+            for i in &program.imports {
+                eprintln!("[gx]   use {}.{}", i.namespace, i.package);
+            }
         }
     }
 
-    Interpreter::new().run_program(&program).map_err(|e| format!("{}: {}", path, e))
+    Interpreter::new()
+        .run_program(&program)
+        .map_err(|e| format!("{}: {}", path, e))
 }
 
 fn cmd_check(path: &str) -> Result<(), String> {
     let source = read_file(path)?;
 
-    let tokens = Lexer::new(&source).tokenize().map_err(|e| format!("{}: {}", path, e))?;
-    let program = Parser::new(tokens).parse().map_err(|e| format!("{}: {}", path, e))?;
+    let tokens = Lexer::new(&source)
+        .tokenize()
+        .map_err(|e| format!("{}: {}", path, e))?;
+    let program = Parser::new(tokens)
+        .parse()
+        .map_err(|e| format!("{}: {}", path, e))?;
 
-    println!("{}: OK ({} helper{}, {} import{})",
+    println!(
+        "{}: OK ({} helper{}, {} import{})",
         path,
         program.helpers.len(),
         if program.helpers.len() == 1 { "" } else { "s" },

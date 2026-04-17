@@ -4,18 +4,18 @@
 // Many AST fields and bridge helpers are reserved for future phases.
 #![allow(dead_code)]
 
-pub mod lexer;
-pub mod ast;
-pub mod parser;
-pub mod value;
-pub mod interpreter;
 pub mod ai;
+pub mod ast;
 pub mod bridge;
+pub mod interpreter;
+pub mod lexer;
+pub mod parser;
 pub mod toolchain;
+pub mod value;
 
+use interpreter::Interpreter;
 use lexer::Lexer;
 use parser::Parser;
-use interpreter::Interpreter;
 
 /// Run GX source code from a string. Prints output to stdout.
 /// Returns Ok(()) or an error message.

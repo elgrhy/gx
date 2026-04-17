@@ -1,8 +1,8 @@
 //! GX Parser — turns a token stream into an AST.
 
-use std::collections::HashSet;
-use crate::lexer::{Token, TokenKind};
 use crate::ast::*;
+use crate::lexer::{Token, TokenKind};
+use std::collections::HashSet;
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -15,7 +15,11 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0, namespaces: HashSet::new() }
+        Parser {
+            tokens,
+            pos: 0,
+            namespaces: HashSet::new(),
+        }
     }
 
     fn peek_kind(&self) -> &TokenKind {
@@ -28,70 +32,86 @@ impl Parser {
 
     fn advance(&mut self) -> &Token {
         let t = &self.tokens[self.pos];
-        if self.pos + 1 < self.tokens.len() { self.pos += 1; }
+        if self.pos + 1 < self.tokens.len() {
+            self.pos += 1;
+        }
         t
     }
 
     fn skip_newlines(&mut self) {
-        while matches!(self.peek_kind(), TokenKind::Newline) { self.advance(); }
+        while matches!(self.peek_kind(), TokenKind::Newline) {
+            self.advance();
+        }
     }
 
     fn expect(&mut self, kind: &TokenKind) -> Result<(), String> {
         self.skip_newlines();
         if std::mem::discriminant(self.peek_kind()) == std::mem::discriminant(kind) {
-            self.advance(); Ok(())
+            self.advance();
+            Ok(())
         } else {
-            Err(format!("Line {}: expected {:?}, got {:?}", self.line(), kind, self.peek_kind()))
+            Err(format!(
+                "Line {}: expected {:?}, got {:?}",
+                self.line(),
+                kind,
+                self.peek_kind()
+            ))
         }
     }
 
     fn expect_ident(&mut self) -> Result<String, String> {
         self.skip_newlines();
         let name = match self.peek_kind().clone() {
-            TokenKind::Ident(s)    => s,
-            TokenKind::Plan        => "plan".into(),
-            TokenKind::Execute     => "execute".into(),
-            TokenKind::Remember    => "remember".into(),
+            TokenKind::Ident(s) => s,
+            TokenKind::Plan => "plan".into(),
+            TokenKind::Execute => "execute".into(),
+            TokenKind::Remember => "remember".into(),
             TokenKind::Communicate => "communicate".into(),
-            TokenKind::Type        => "type".into(),
-            TokenKind::Source      => "source".into(),
-            TokenKind::Bind        => "bind".into(),
-            TokenKind::On          => "on".into(),
-            TokenKind::Memory      => "memory".into(),
-            TokenKind::Count       => "count".into(),
-            TokenKind::Push        => "push".into(),
-            TokenKind::Log         => "log".into(),
-            TokenKind::Output      => "output".into(),
-            TokenKind::Assign      => "assign".into(),
-            TokenKind::Spawn       => "spawn".into(),
-            TokenKind::Wait        => "wait".into(),
-            TokenKind::Channel     => "channel".into(),
-            TokenKind::Receive     => "receive".into(),
-            TokenKind::Needs       => "needs".into(),
-            TokenKind::Gives       => "gives".into(),
-            TokenKind::From        => "from".into(),
-            TokenKind::As          => "as".into(),
-            TokenKind::Do          => "do".into(),
-            TokenKind::When        => "when".into(),
-            TokenKind::Then        => "then".into(),
-            TokenKind::In          => "in".into(),
-            TokenKind::And         => "and".into(),
-            TokenKind::Or          => "or".into(),
-            TokenKind::Not         => "not".into(),
-            TokenKind::Use         => "use".into(),
-            TokenKind::Started     => "started".into(),
-            TokenKind::Escalate    => "escalate".into(),
-            TokenKind::Human       => "human".into(),
-            TokenKind::Changes     => "changes".into(),
-            TokenKind::Ask         => "ask".into(),
-            TokenKind::Embed       => "embed".into(),
-            TokenKind::Infer       => "infer".into(),
-            TokenKind::Classifier  => "classifier".into(),
-            TokenKind::Broadcast   => "broadcast".into(),
-            TokenKind::Emit        => "emit".into(),
-            TokenKind::Recipe      => "recipe".into(),
-            TokenKind::Objective   => "objective".into(),
-            other => return Err(format!("Line {}: expected identifier, got {:?}", self.line(), other))
+            TokenKind::Type => "type".into(),
+            TokenKind::Source => "source".into(),
+            TokenKind::Bind => "bind".into(),
+            TokenKind::On => "on".into(),
+            TokenKind::Memory => "memory".into(),
+            TokenKind::Count => "count".into(),
+            TokenKind::Push => "push".into(),
+            TokenKind::Log => "log".into(),
+            TokenKind::Output => "output".into(),
+            TokenKind::Assign => "assign".into(),
+            TokenKind::Spawn => "spawn".into(),
+            TokenKind::Wait => "wait".into(),
+            TokenKind::Channel => "channel".into(),
+            TokenKind::Receive => "receive".into(),
+            TokenKind::Needs => "needs".into(),
+            TokenKind::Gives => "gives".into(),
+            TokenKind::From => "from".into(),
+            TokenKind::As => "as".into(),
+            TokenKind::Do => "do".into(),
+            TokenKind::When => "when".into(),
+            TokenKind::Then => "then".into(),
+            TokenKind::In => "in".into(),
+            TokenKind::And => "and".into(),
+            TokenKind::Or => "or".into(),
+            TokenKind::Not => "not".into(),
+            TokenKind::Use => "use".into(),
+            TokenKind::Started => "started".into(),
+            TokenKind::Escalate => "escalate".into(),
+            TokenKind::Human => "human".into(),
+            TokenKind::Changes => "changes".into(),
+            TokenKind::Ask => "ask".into(),
+            TokenKind::Embed => "embed".into(),
+            TokenKind::Infer => "infer".into(),
+            TokenKind::Classifier => "classifier".into(),
+            TokenKind::Broadcast => "broadcast".into(),
+            TokenKind::Emit => "emit".into(),
+            TokenKind::Recipe => "recipe".into(),
+            TokenKind::Objective => "objective".into(),
+            other => {
+                return Err(format!(
+                    "Line {}: expected identifier, got {:?}",
+                    self.line(),
+                    other
+                ))
+            }
         };
         self.advance();
         Ok(name)
@@ -100,28 +120,51 @@ impl Parser {
     fn expect_string(&mut self) -> Result<String, String> {
         self.skip_newlines();
         match self.peek_kind().clone() {
-            TokenKind::StringLit(s) => { self.advance(); Ok(s) }
-            other => Err(format!("Line {}: expected string, got {:?}", self.line(), other))
+            TokenKind::StringLit(s) => {
+                self.advance();
+                Ok(s)
+            }
+            other => Err(format!(
+                "Line {}: expected string, got {:?}",
+                self.line(),
+                other
+            )),
         }
     }
 
     fn eat(&mut self, kind: &TokenKind) -> bool {
         self.skip_newlines();
         if std::mem::discriminant(self.peek_kind()) == std::mem::discriminant(kind) {
-            self.advance(); true
-        } else { false }
+            self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     fn skip_block(&mut self) -> Result<(), String> {
         self.skip_newlines();
-        if !self.eat(&TokenKind::LBrace) { return Ok(()); }
+        if !self.eat(&TokenKind::LBrace) {
+            return Ok(());
+        }
         let mut depth = 1usize;
         loop {
             match self.peek_kind() {
                 TokenKind::Eof => return Err("Unclosed block".into()),
-                TokenKind::LBrace => { depth += 1; self.advance(); }
-                TokenKind::RBrace => { self.advance(); depth -= 1; if depth == 0 { break; } }
-                _ => { self.advance(); }
+                TokenKind::LBrace => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenKind::RBrace => {
+                    self.advance();
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {
+                    self.advance();
+                }
             }
         }
         Ok(())
@@ -150,12 +193,20 @@ impl Parser {
                     top_level_brain = Some(self.parse_brain_block()?);
                 }
                 other => {
-                    return Err(format!("Line {}: unexpected top-level token {:?}", self.line(), other));
+                    return Err(format!(
+                        "Line {}: unexpected top-level token {:?}",
+                        self.line(),
+                        other
+                    ));
                 }
             }
         }
 
-        Ok(Program { imports, helpers, top_level_brain })
+        Ok(Program {
+            imports,
+            helpers,
+            top_level_brain,
+        })
     }
 
     fn parse_import(&mut self) -> Result<ImportDecl, String> {
@@ -165,7 +216,11 @@ impl Parser {
         self.expect(&TokenKind::Dot)?;
         let package = self.expect_ident()?;
         self.namespaces.insert(namespace.clone());
-        Ok(ImportDecl { namespace, package, line })
+        Ok(ImportDecl {
+            namespace,
+            package,
+            line,
+        })
     }
 
     fn parse_helper(&mut self) -> Result<HelperDef, String> {
@@ -185,7 +240,10 @@ impl Parser {
         loop {
             self.skip_newlines();
             match self.peek_kind().clone() {
-                TokenKind::RBrace => { self.advance(); break; }
+                TokenKind::RBrace => {
+                    self.advance();
+                    break;
+                }
                 TokenKind::Eof => return Err(format!("Line {}: unclosed helper '{}'", line, name)),
 
                 TokenKind::Ident(ref s) if s == "can_do" || s == "capabilities" => {
@@ -212,7 +270,11 @@ impl Parser {
                         let key = self.expect_ident()?;
                         self.expect(&TokenKind::Eq)?;
                         let value = self.parse_expr()?;
-                        memory.push(MemoryEntry { key, value, line: entry_line });
+                        memory.push(MemoryEntry {
+                            key,
+                            value,
+                            line: entry_line,
+                        });
                     }
                 }
 
@@ -222,9 +284,15 @@ impl Parser {
                     receive_block = self.parse_receive_block()?;
                 }
 
-                TokenKind::Brain => { brain = Some(self.parse_brain_block()?); }
-                TokenKind::Recipe => { recipes.push(self.parse_recipe()?); }
-                TokenKind::Objective => { objectives.push(self.parse_objective()?); }
+                TokenKind::Brain => {
+                    brain = Some(self.parse_brain_block()?);
+                }
+                TokenKind::Recipe => {
+                    recipes.push(self.parse_recipe()?);
+                }
+                TokenKind::Objective => {
+                    objectives.push(self.parse_objective()?);
+                }
 
                 // Phase 2: `when X { ... }` inside agent body
                 TokenKind::When => {
@@ -239,12 +307,27 @@ impl Parser {
                 }
 
                 other => {
-                    return Err(format!("Line {}: unexpected token in helper '{}' body: {:?}", self.line(), name, other));
+                    return Err(format!(
+                        "Line {}: unexpected token in helper '{}' body: {:?}",
+                        self.line(),
+                        name,
+                        other
+                    ));
                 }
             }
         }
 
-        Ok(HelperDef { name, can_do, memory, receive_block, brain, recipes, objectives, when_blocks, line })
+        Ok(HelperDef {
+            name,
+            can_do,
+            memory,
+            receive_block,
+            brain,
+            recipes,
+            objectives,
+            when_blocks,
+            line,
+        })
     }
 
     fn parse_string_array(&mut self) -> Result<Vec<String>, String> {
@@ -252,7 +335,9 @@ impl Parser {
         let mut items = Vec::new();
         loop {
             self.skip_newlines();
-            if self.eat(&TokenKind::RBracket) { break; }
+            if self.eat(&TokenKind::RBracket) {
+                break;
+            }
             items.push(self.expect_string()?);
             self.eat(&TokenKind::Comma);
         }
@@ -263,7 +348,9 @@ impl Parser {
         let mut entries = Vec::new();
         loop {
             self.skip_newlines();
-            if self.eat(&TokenKind::RBrace) { break; }
+            if self.eat(&TokenKind::RBrace) {
+                break;
+            }
             let line = self.line();
             let key = self.expect_ident()?;
             self.expect(&TokenKind::Eq)?;
@@ -278,7 +365,9 @@ impl Parser {
         let mut channels = Vec::new();
         loop {
             self.skip_newlines();
-            if self.eat(&TokenKind::RBrace) { break; }
+            if self.eat(&TokenKind::RBrace) {
+                break;
+            }
             let line = self.line();
             let name = if self.eat(&TokenKind::Channel) {
                 self.expect_string()?
@@ -298,20 +387,34 @@ impl Parser {
 
             loop {
                 self.skip_newlines();
-                if self.eat(&TokenKind::RBrace) { break; }
+                if self.eat(&TokenKind::RBrace) {
+                    break;
+                }
                 let key = self.expect_ident()?;
                 self.expect(&TokenKind::Colon)?;
                 match key.as_str() {
-                    "source"     => source = Some(self.expect_string()?),
-                    "type"       => msg_type = Some(self.expect_string()?),
-                    "bind"       => bind = Some(self.parse_expr()?),
-                    "on_receive" => { let v = self.parse_expr()?; on_receive = Some(format!("{:?}", v)); }
-                    _            => { let _ = self.parse_expr(); }
+                    "source" => source = Some(self.expect_string()?),
+                    "type" => msg_type = Some(self.expect_string()?),
+                    "bind" => bind = Some(self.parse_expr()?),
+                    "on_receive" => {
+                        let v = self.parse_expr()?;
+                        on_receive = Some(format!("{:?}", v));
+                    }
+                    _ => {
+                        let _ = self.parse_expr();
+                    }
                 }
                 self.eat(&TokenKind::Comma);
             }
 
-            channels.push(ChannelDef { name, source, msg_type, bind, on_receive, line });
+            channels.push(ChannelDef {
+                name,
+                source,
+                msg_type,
+                bind,
+                on_receive,
+                line,
+            });
         }
         Ok(channels)
     }
@@ -331,29 +434,48 @@ impl Parser {
         loop {
             self.skip_newlines();
             match self.peek_kind().clone() {
-                TokenKind::RBrace => { self.advance(); break; }
+                TokenKind::RBrace => {
+                    self.advance();
+                    break;
+                }
                 TokenKind::Eof => return Err(format!("Line {}: unclosed brain block", line)),
                 TokenKind::Plan => {
-                    self.advance(); self.expect(&TokenKind::LBrace)?;
+                    self.advance();
+                    self.expect(&TokenKind::LBrace)?;
                     plan = self.parse_stmts()?;
                 }
                 TokenKind::Execute => {
-                    self.advance(); self.expect(&TokenKind::LBrace)?;
+                    self.advance();
+                    self.expect(&TokenKind::LBrace)?;
                     execute = self.parse_stmts()?;
                 }
                 TokenKind::Remember => {
-                    self.advance(); self.expect(&TokenKind::LBrace)?;
+                    self.advance();
+                    self.expect(&TokenKind::LBrace)?;
                     remember = self.parse_stmts()?;
                 }
                 TokenKind::Communicate => {
-                    self.advance(); self.expect(&TokenKind::LBrace)?;
+                    self.advance();
+                    self.expect(&TokenKind::LBrace)?;
                     communicate = self.parse_stmts()?;
                 }
-                other => return Err(format!("Line {}: unexpected token in brain block: {:?}", self.line(), other)),
+                other => {
+                    return Err(format!(
+                        "Line {}: unexpected token in brain block: {:?}",
+                        self.line(),
+                        other
+                    ))
+                }
             }
         }
 
-        Ok(BrainBlock { plan, execute, remember, communicate, line })
+        Ok(BrainBlock {
+            plan,
+            execute,
+            remember,
+            communicate,
+            line,
+        })
     }
 
     // ── Recipe ────────────────────────────────────────────────────────────────
@@ -371,27 +493,41 @@ impl Parser {
         loop {
             self.skip_newlines();
             match self.peek_kind().clone() {
-                TokenKind::RBrace => { self.advance(); break; }
+                TokenKind::RBrace => {
+                    self.advance();
+                    break;
+                }
                 TokenKind::Eof => return Err(format!("Line {}: unclosed recipe '{}'", line, name)),
                 TokenKind::Needs => {
-                    self.advance(); self.expect(&TokenKind::Colon)?;
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
                     loop {
                         self.skip_newlines();
                         needs.push(self.expect_ident()?);
-                        if !self.eat(&TokenKind::Comma) { break; }
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
                     }
                 }
                 TokenKind::Gives => {
-                    self.advance(); self.expect(&TokenKind::Colon)?;
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
                     gives = Some(self.expect_ident()?);
                 }
                 TokenKind::Ident(ref s) if s == "receive" || s == "output" => {
                     let is_needs = self.peek_kind() == &TokenKind::Ident("receive".into());
-                    self.advance(); self.expect(&TokenKind::Colon)?;
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
                     let v = self.expect_ident()?;
-                    if is_needs { needs.push(v); } else { gives = Some(v); }
+                    if is_needs {
+                        needs.push(v);
+                    } else {
+                        gives = Some(v);
+                    }
                 }
-                TokenKind::Brain => { brain_opt = Some(self.parse_brain_block()?); }
+                TokenKind::Brain => {
+                    brain_opt = Some(self.parse_brain_block()?);
+                }
                 _ => {
                     let _ = self.expect_ident();
                     self.eat(&TokenKind::Colon);
@@ -401,8 +537,15 @@ impl Parser {
             }
         }
 
-        let brain = brain_opt.ok_or_else(|| format!("Line {}: recipe '{}' missing brain block", line, name))?;
-        Ok(RecipeDef { name, needs, gives, brain, line })
+        let brain = brain_opt
+            .ok_or_else(|| format!("Line {}: recipe '{}' missing brain block", line, name))?;
+        Ok(RecipeDef {
+            name,
+            needs,
+            gives,
+            brain,
+            line,
+        })
     }
 
     // ── Objective ─────────────────────────────────────────────────────────────
@@ -420,7 +563,12 @@ impl Parser {
         let then_action = self.parse_expr()?;
         self.skip_newlines();
         self.eat(&TokenKind::RBrace);
-        Ok(ObjectiveDef { name, when_expr, then_action, line })
+        Ok(ObjectiveDef {
+            name,
+            when_expr,
+            then_action,
+            line,
+        })
     }
 
     // ── When block (Phase 2 simple syntax) ────────────────────────────────────
@@ -444,7 +592,11 @@ impl Parser {
 
         self.expect(&TokenKind::LBrace)?;
         let body = self.parse_stmts()?;
-        Ok(WhenBlock { trigger, body, line })
+        Ok(WhenBlock {
+            trigger,
+            body,
+            line,
+        })
     }
 
     // ── Statements ────────────────────────────────────────────────────────────
@@ -467,11 +619,14 @@ impl Parser {
         self.skip_newlines();
 
         match self.peek_kind().clone() {
-            TokenKind::If     => self.parse_if(),
-            TokenKind::For    => self.parse_for_each(),
-            TokenKind::Try    => self.parse_try_catch(),
-            TokenKind::Emit   => self.parse_emit(),
-            TokenKind::ReRun  => { self.advance(); Ok(Stmt::ReRun { line }) }
+            TokenKind::If => self.parse_if(),
+            TokenKind::For => self.parse_for_each(),
+            TokenKind::Try => self.parse_try_catch(),
+            TokenKind::Emit => self.parse_emit(),
+            TokenKind::ReRun => {
+                self.advance();
+                Ok(Stmt::ReRun { line })
+            }
             TokenKind::Escalate => {
                 self.advance();
                 // consume optional `to human`
@@ -488,14 +643,20 @@ impl Parser {
                     let mut payload = Vec::new();
                     loop {
                         self.skip_newlines();
-                        if self.eat(&TokenKind::RBrace) { break; }
+                        if self.eat(&TokenKind::RBrace) {
+                            break;
+                        }
                         let key = self.expect_ident()?;
                         self.expect(&TokenKind::Colon)?;
                         let value = self.parse_expr()?;
                         payload.push((key, value));
                         self.eat(&TokenKind::Comma);
                     }
-                    Ok(Stmt::Emit { event, payload, line })
+                    Ok(Stmt::Emit {
+                        event,
+                        payload,
+                        line,
+                    })
                 } else {
                     Ok(Stmt::Broadcast { event, line })
                 }
@@ -522,10 +683,16 @@ impl Parser {
             TokenKind::Return => {
                 self.advance();
                 self.skip_newlines();
-                if matches!(self.peek_kind(), TokenKind::RBrace | TokenKind::Newline | TokenKind::Eof) {
+                if matches!(
+                    self.peek_kind(),
+                    TokenKind::RBrace | TokenKind::Newline | TokenKind::Eof
+                ) {
                     Ok(Stmt::Return { value: None, line })
                 } else {
-                    Ok(Stmt::Return { value: Some(self.parse_expr()?), line })
+                    Ok(Stmt::Return {
+                        value: Some(self.parse_expr()?),
+                        line,
+                    })
                 }
             }
             TokenKind::Wait => {
@@ -540,11 +707,19 @@ impl Parser {
                 self.skip_newlines();
                 if self.eat(&TokenKind::Eq) {
                     let value = self.parse_expr()?;
-                    return Ok(Stmt::Assign { target: expr, value, line });
+                    return Ok(Stmt::Assign {
+                        target: expr,
+                        value,
+                        line,
+                    });
                 }
                 if self.eat(&TokenKind::PlusEq) {
                     let value = self.parse_expr()?;
-                    return Ok(Stmt::PlusAssign { target: expr, value, line });
+                    return Ok(Stmt::PlusAssign {
+                        target: expr,
+                        value,
+                        line,
+                    });
                 }
                 Ok(Stmt::Expr { expr, line })
             }
@@ -563,7 +738,9 @@ impl Parser {
 
         loop {
             self.skip_newlines();
-            if !self.eat(&TokenKind::Else) { break; }
+            if !self.eat(&TokenKind::Else) {
+                break;
+            }
             self.skip_newlines();
             if self.eat(&TokenKind::If) {
                 let cond = self.parse_expr()?;
@@ -576,7 +753,11 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::If { branches, else_body, line })
+        Ok(Stmt::If {
+            branches,
+            else_body,
+            line,
+        })
     }
 
     fn parse_for_each(&mut self) -> Result<Stmt, String> {
@@ -588,7 +769,12 @@ impl Parser {
         let iter = self.parse_expr()?;
         self.expect(&TokenKind::LBrace)?;
         let body = self.parse_stmts()?;
-        Ok(Stmt::ForEach { var, iter, body, line })
+        Ok(Stmt::ForEach {
+            var,
+            iter,
+            body,
+            line,
+        })
     }
 
     fn parse_try_catch(&mut self) -> Result<Stmt, String> {
@@ -600,7 +786,12 @@ impl Parser {
         let catch_var = self.expect_ident()?;
         self.expect(&TokenKind::LBrace)?;
         let catch_body = self.parse_stmts()?;
-        Ok(Stmt::TryCatch { try_body, catch_var, catch_body, line })
+        Ok(Stmt::TryCatch {
+            try_body,
+            catch_var,
+            catch_body,
+            line,
+        })
     }
 
     fn parse_emit(&mut self) -> Result<Stmt, String> {
@@ -611,7 +802,9 @@ impl Parser {
         if self.eat(&TokenKind::LBrace) {
             loop {
                 self.skip_newlines();
-                if self.eat(&TokenKind::RBrace) { break; }
+                if self.eat(&TokenKind::RBrace) {
+                    break;
+                }
                 let key = self.expect_ident()?;
                 self.expect(&TokenKind::Colon)?;
                 let value = self.parse_expr()?;
@@ -619,12 +812,18 @@ impl Parser {
                 self.eat(&TokenKind::Comma);
             }
         }
-        Ok(Stmt::Emit { event, payload, line })
+        Ok(Stmt::Emit {
+            event,
+            payload,
+            line,
+        })
     }
 
     // ── Expressions ───────────────────────────────────────────────────────────
 
-    fn parse_expr(&mut self) -> Result<Expr, String> { self.parse_or() }
+    fn parse_expr(&mut self) -> Result<Expr, String> {
+        self.parse_or()
+    }
 
     fn parse_or(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_and()?;
@@ -632,8 +831,14 @@ impl Parser {
             self.skip_newlines();
             if self.eat(&TokenKind::Or) {
                 let right = self.parse_and()?;
-                left = Expr::BinOp { left: Box::new(left), op: BinOp::Or, right: Box::new(right) };
-            } else { break; }
+                left = Expr::BinOp {
+                    left: Box::new(left),
+                    op: BinOp::Or,
+                    right: Box::new(right),
+                };
+            } else {
+                break;
+            }
         }
         Ok(left)
     }
@@ -644,8 +849,14 @@ impl Parser {
             self.skip_newlines();
             if self.eat(&TokenKind::And) {
                 let right = self.parse_cmp()?;
-                left = Expr::BinOp { left: Box::new(left), op: BinOp::And, right: Box::new(right) };
-            } else { break; }
+                left = Expr::BinOp {
+                    left: Box::new(left),
+                    op: BinOp::And,
+                    right: Box::new(right),
+                };
+            } else {
+                break;
+            }
         }
         Ok(left)
     }
@@ -655,17 +866,21 @@ impl Parser {
         loop {
             self.skip_newlines();
             let op = match self.peek_kind() {
-                TokenKind::EqEq  => BinOp::Eq,
+                TokenKind::EqEq => BinOp::Eq,
                 TokenKind::NotEq => BinOp::NotEq,
-                TokenKind::Lt    => BinOp::Lt,
-                TokenKind::LtEq  => BinOp::LtEq,
-                TokenKind::Gt    => BinOp::Gt,
-                TokenKind::GtEq  => BinOp::GtEq,
+                TokenKind::Lt => BinOp::Lt,
+                TokenKind::LtEq => BinOp::LtEq,
+                TokenKind::Gt => BinOp::Gt,
+                TokenKind::GtEq => BinOp::GtEq,
                 _ => break,
             };
             self.advance();
             let right = self.parse_add()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -675,13 +890,17 @@ impl Parser {
         loop {
             self.skip_newlines();
             let op = match self.peek_kind() {
-                TokenKind::Plus  => BinOp::Add,
+                TokenKind::Plus => BinOp::Add,
                 TokenKind::Minus => BinOp::Sub,
                 _ => break,
             };
             self.advance();
             let right = self.parse_mul()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -691,14 +910,18 @@ impl Parser {
         loop {
             self.skip_newlines();
             let op = match self.peek_kind() {
-                TokenKind::Star    => BinOp::Mul,
-                TokenKind::Slash   => BinOp::Div,
+                TokenKind::Star => BinOp::Mul,
+                TokenKind::Slash => BinOp::Div,
                 TokenKind::Percent => BinOp::Mod,
                 _ => break,
             };
             self.advance();
             let right = self.parse_unary()?;
-            left = Expr::BinOp { left: Box::new(left), op, right: Box::new(right) };
+            left = Expr::BinOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -747,23 +970,35 @@ impl Parser {
                                     field: method,
                                 };
                             } else {
-                                expr = Expr::FieldAccess { object: Box::new(expr), field: module };
+                                expr = Expr::FieldAccess {
+                                    object: Box::new(expr),
+                                    field: module,
+                                };
                             }
                             continue;
                         }
                     }
-                    expr = Expr::FieldAccess { object: Box::new(expr), field };
+                    expr = Expr::FieldAccess {
+                        object: Box::new(expr),
+                        field,
+                    };
                 }
                 TokenKind::LBracket => {
                     self.advance();
                     let index = self.parse_expr()?;
                     self.expect(&TokenKind::RBracket)?;
-                    expr = Expr::Index { object: Box::new(expr), index: Box::new(index) };
+                    expr = Expr::Index {
+                        object: Box::new(expr),
+                        index: Box::new(index),
+                    };
                 }
                 TokenKind::LParen => {
                     self.advance();
                     let args = self.parse_args()?;
-                    expr = Expr::Call { callee: Box::new(expr), args };
+                    expr = Expr::Call {
+                        callee: Box::new(expr),
+                        args,
+                    };
                 }
                 _ => break,
             }
@@ -775,7 +1010,9 @@ impl Parser {
         let mut args = Vec::new();
         loop {
             self.skip_newlines();
-            if self.eat(&TokenKind::RParen) { break; }
+            if self.eat(&TokenKind::RParen) {
+                break;
+            }
             args.push(self.parse_expr()?);
             if !self.eat(&TokenKind::Comma) {
                 self.skip_newlines();
@@ -789,10 +1026,22 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr, String> {
         self.skip_newlines();
         match self.peek_kind().clone() {
-            TokenKind::StringLit(s) => { self.advance(); Ok(parse_interpolated(s)) }
-            TokenKind::NumberLit(n) => { self.advance(); Ok(Expr::Num(n)) }
-            TokenKind::BoolLit(b)   => { self.advance(); Ok(Expr::Bool(b)) }
-            TokenKind::Null         => { self.advance(); Ok(Expr::Null) }
+            TokenKind::StringLit(s) => {
+                self.advance();
+                Ok(parse_interpolated(s))
+            }
+            TokenKind::NumberLit(n) => {
+                self.advance();
+                Ok(Expr::Num(n))
+            }
+            TokenKind::BoolLit(b) => {
+                self.advance();
+                Ok(Expr::Bool(b))
+            }
+            TokenKind::Null => {
+                self.advance();
+                Ok(Expr::Null)
+            }
 
             TokenKind::LParen => {
                 self.advance();
@@ -806,7 +1055,9 @@ impl Parser {
                 let mut items = Vec::new();
                 loop {
                     self.skip_newlines();
-                    if self.eat(&TokenKind::RBracket) { break; }
+                    if self.eat(&TokenKind::RBracket) {
+                        break;
+                    }
                     items.push(self.parse_expr()?);
                     self.eat(&TokenKind::Comma);
                 }
@@ -818,7 +1069,9 @@ impl Parser {
                 let mut pairs = Vec::new();
                 loop {
                     self.skip_newlines();
-                    if self.eat(&TokenKind::RBrace) { break; }
+                    if self.eat(&TokenKind::RBrace) {
+                        break;
+                    }
                     let key = self.expect_ident()?;
                     self.expect(&TokenKind::Colon)?;
                     let val = self.parse_expr()?;
@@ -850,13 +1103,19 @@ impl Parser {
                 };
                 // Normalize provider names
                 provider = normalize_provider(&provider);
-                Ok(Expr::AskAI { provider, model, params })
+                Ok(Expr::AskAI {
+                    provider,
+                    model,
+                    params,
+                })
             }
 
             TokenKind::Embed => {
                 self.advance();
                 let text = self.parse_expr()?;
-                Ok(Expr::Embed { text: Box::new(text) })
+                Ok(Expr::Embed {
+                    text: Box::new(text),
+                })
             }
 
             TokenKind::Infer => {
@@ -867,18 +1126,23 @@ impl Parser {
                 let mut classes = Expr::Array(Vec::new());
                 loop {
                     self.skip_newlines();
-                    if self.eat(&TokenKind::RBrace) { break; }
+                    if self.eat(&TokenKind::RBrace) {
+                        break;
+                    }
                     let key = self.expect_ident()?;
                     self.expect(&TokenKind::Colon)?;
                     let val = self.parse_expr()?;
                     match key.as_str() {
-                        "input"   => input = val,
+                        "input" => input = val,
                         "classes" => classes = val,
                         _ => {}
                     }
                     self.eat(&TokenKind::Comma);
                 }
-                Ok(Expr::InferClassifier { input: Box::new(input), classes: Box::new(classes) })
+                Ok(Expr::InferClassifier {
+                    input: Box::new(input),
+                    classes: Box::new(classes),
+                })
             }
 
             _ => {
@@ -892,7 +1156,9 @@ impl Parser {
         let mut pairs = Vec::new();
         loop {
             self.skip_newlines();
-            if self.eat(&TokenKind::RBrace) { break; }
+            if self.eat(&TokenKind::RBrace) {
+                break;
+            }
             let key = self.expect_ident()?;
             self.expect(&TokenKind::Colon)?;
             let val = self.parse_expr()?;
@@ -906,16 +1172,18 @@ impl Parser {
 fn normalize_provider(s: &str) -> String {
     match s.to_lowercase().as_str() {
         "openai" | "gpt" | "chatgpt" => "openai".into(),
-        "anthropic" | "claude"       => "anthropic".into(),
-        "ollama" | "local"           => "ollama".into(),
-        other                        => other.to_string(),
+        "anthropic" | "claude" => "anthropic".into(),
+        "ollama" | "local" => "ollama".into(),
+        other => other.to_string(),
     }
 }
 
 // ── String interpolation ──────────────────────────────────────────────────────
 
 fn parse_interpolated(s: String) -> Expr {
-    if !s.contains('{') { return Expr::Str(s); }
+    if !s.contains('{') {
+        return Expr::Str(s);
+    }
     let mut parts = Vec::new();
     let mut literal = String::new();
     let chars: Vec<char> = s.chars().collect();
@@ -944,9 +1212,13 @@ fn parse_interpolated(s: String) -> Expr {
             i += 1;
         }
     }
-    if !literal.is_empty() { parts.push(InterpolatedPart::Literal(literal)); }
+    if !literal.is_empty() {
+        parts.push(InterpolatedPart::Literal(literal));
+    }
     if parts.len() == 1 {
-        if let InterpolatedPart::Literal(s) = &parts[0] { return Expr::Str(s.clone()); }
+        if let InterpolatedPart::Literal(s) = &parts[0] {
+            return Expr::Str(s.clone());
+        }
     }
     Expr::Interpolated(parts)
 }
@@ -971,16 +1243,19 @@ mod tests {
 
     #[test]
     fn test_parse_memory() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 helper "calc" {
   remember { count = 0  name = "test" }
-}"#);
+}"#,
+        );
         assert_eq!(p.helpers[0].memory.len(), 2);
     }
 
     #[test]
     fn test_parse_brain() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 helper "h" {
   brain {
     plan { plan = { action: "go" } }
@@ -988,7 +1263,8 @@ helper "h" {
     remember { }
     communicate { }
   }
-}"#);
+}"#,
+        );
         assert!(p.helpers[0].brain.is_some());
     }
 
@@ -1001,24 +1277,31 @@ helper "h" {
 
     #[test]
     fn test_parse_agent_when() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 agent "bot" {
   remember greeting = "hello"
   when started {
     say memory.greeting
   }
-}"#);
+}"#,
+        );
         assert_eq!(p.helpers[0].when_blocks.len(), 1);
-        assert!(matches!(p.helpers[0].when_blocks[0].trigger, WhenTrigger::Started));
+        assert!(matches!(
+            p.helpers[0].when_blocks[0].trigger,
+            WhenTrigger::Started
+        ));
     }
 
     #[test]
     fn test_parse_import() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 use js.axios
 use py.requests
 helper "h" { brain { plan {} execute {} remember {} communicate {} } }
-"#);
+"#,
+        );
         assert_eq!(p.imports.len(), 2);
         assert_eq!(p.imports[0].namespace, "js");
         assert_eq!(p.imports[0].package, "axios");
@@ -1026,7 +1309,8 @@ helper "h" { brain { plan {} execute {} remember {} communicate {} } }
 
     #[test]
     fn test_parse_ask_ai() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
 helper "ai" {
   brain {
     plan {}
@@ -1034,7 +1318,8 @@ helper "ai" {
     remember {}
     communicate {}
   }
-}"#);
+}"#,
+        );
         let brain = p.helpers[0].brain.as_ref().unwrap();
         assert_eq!(brain.execute.len(), 1);
     }

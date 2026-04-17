@@ -1,8 +1,8 @@
 //! GX AI Primitives — ask, embed, infer
 //! Connectors: openai, anthropic, ollama (local)
 
-use std::collections::HashMap;
 use crate::value::Value;
+use std::collections::HashMap;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -40,26 +40,48 @@ impl AiResponse {
 
 /// Call an AI model. Returns a Value::Object with text, confidence, tokens_used, model, provider, ok.
 pub fn ask_ai(provider: &str, model: Option<&str>, params: &HashMap<String, Value>) -> Value {
-    let prompt = params.get("prompt")
+    let prompt = params
+        .get("prompt")
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .unwrap_or_default();
 
-    let system = params.get("system")
+    let system = params
+        .get("system")
         .and_then(|v| v.as_str().map(|s| s.to_string()));
 
-    let max_tokens = params.get("max_tokens")
+    let max_tokens = params
+        .get("max_tokens")
         .and_then(|v| v.as_number())
         .unwrap_or(1024.0) as u32;
 
-    let temperature = params.get("temperature")
+    let temperature = params
+        .get("temperature")
         .and_then(|v| v.as_number())
         .unwrap_or(0.7);
 
     match provider {
-        "openai"    => ask_openai(model.unwrap_or("gpt-4o-mini"), &prompt, system.as_deref(), max_tokens, temperature),
-        "anthropic" => ask_anthropic(model.unwrap_or("claude-haiku-4-5-20251001"), &prompt, system.as_deref(), max_tokens, temperature),
-        "ollama"    => ask_ollama(model.unwrap_or("llama3"), &prompt, system.as_deref()),
-        other       => AiResponse::error(other, format!("Unknown AI provider '{}'. Use: openai, anthropic, ollama", other)),
+        "openai" => ask_openai(
+            model.unwrap_or("gpt-4o-mini"),
+            &prompt,
+            system.as_deref(),
+            max_tokens,
+            temperature,
+        ),
+        "anthropic" => ask_anthropic(
+            model.unwrap_or("claude-haiku-4-5-20251001"),
+            &prompt,
+            system.as_deref(),
+            max_tokens,
+            temperature,
+        ),
+        "ollama" => ask_ollama(model.unwrap_or("llama3"), &prompt, system.as_deref()),
+        other => AiResponse::error(
+            other,
+            format!(
+                "Unknown AI provider '{}'. Use: openai, anthropic, ollama",
+                other
+            ),
+        ),
     }
 }
 
@@ -80,21 +102,20 @@ pub fn embed_text(text: &str) -> Value {
         .set("Content-Type", "application/json")
         .send_json(&body)
     {
-        Ok(resp) => {
-            match resp.into_json::<serde_json::Value>() {
-                Ok(json) => {
-                    if let Some(embedding) = json["data"][0]["embedding"].as_array() {
-                        let floats: Vec<Value> = embedding.iter()
-                            .filter_map(|v| v.as_f64().map(Value::Number))
-                            .collect();
-                        Value::Array(floats)
-                    } else {
-                        AiResponse::error("openai", "No embedding in response".into())
-                    }
+        Ok(resp) => match resp.into_json::<serde_json::Value>() {
+            Ok(json) => {
+                if let Some(embedding) = json["data"][0]["embedding"].as_array() {
+                    let floats: Vec<Value> = embedding
+                        .iter()
+                        .filter_map(|v| v.as_f64().map(Value::Number))
+                        .collect();
+                    Value::Array(floats)
+                } else {
+                    AiResponse::error("openai", "No embedding in response".into())
                 }
-                Err(e) => AiResponse::error("openai", format!("Parse error: {}", e)),
             }
-        }
+            Err(e) => AiResponse::error("openai", format!("Parse error: {}", e)),
+        },
         Err(e) => AiResponse::error("openai", format!("Request failed: {}", e)),
     }
 }
@@ -138,7 +159,13 @@ pub fn infer_classifier(input: &str, classes: &[String], provider: &str) -> Valu
 
 // ── OpenAI ────────────────────────────────────────────────────────────────────
 
-fn ask_openai(model: &str, prompt: &str, system: Option<&str>, max_tokens: u32, temperature: f64) -> Value {
+fn ask_openai(
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+    max_tokens: u32,
+    temperature: f64,
+) -> Value {
     let api_key = match std::env::var("OPENAI_API_KEY") {
         Ok(k) => k,
         Err(_) => return AiResponse::error("openai", "OPENAI_API_KEY environment variable not set.\nGet your key at https://platform.openai.com".into()),
@@ -175,7 +202,9 @@ fn parse_openai_response(resp: ureq::Response, model: &str) -> Value {
     match resp.into_json::<serde_json::Value>() {
         Ok(json) => {
             let text = json["choices"][0]["message"]["content"]
-                .as_str().unwrap_or("").to_string();
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             let tokens = json["usage"]["total_tokens"].as_u64().unwrap_or(0);
             // Estimate confidence from finish_reason
             let confidence = match json["choices"][0]["finish_reason"].as_str() {
@@ -185,7 +214,14 @@ fn parse_openai_response(resp: ureq::Response, model: &str) -> Value {
             };
             // Reduce confidence if response contains hedging language
             let confidence = adjust_confidence_for_hedging(confidence, &text);
-            AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "openai".into() }.into_value()
+            AiResponse {
+                text,
+                confidence,
+                tokens_used: tokens,
+                model: model.into(),
+                provider: "openai".into(),
+            }
+            .into_value()
         }
         Err(e) => AiResponse::error("openai", format!("Failed to parse response: {}", e)),
     }
@@ -193,7 +229,13 @@ fn parse_openai_response(resp: ureq::Response, model: &str) -> Value {
 
 // ── Anthropic ─────────────────────────────────────────────────────────────────
 
-fn ask_anthropic(model: &str, prompt: &str, system: Option<&str>, max_tokens: u32, _temperature: f64) -> Value {
+fn ask_anthropic(
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+    max_tokens: u32,
+    _temperature: f64,
+) -> Value {
     let api_key = match std::env::var("ANTHROPIC_API_KEY") {
         Ok(k) => k,
         Err(_) => return AiResponse::error("anthropic", "ANTHROPIC_API_KEY environment variable not set.\nGet your key at https://console.anthropic.com".into()),
@@ -217,7 +259,10 @@ fn ask_anthropic(model: &str, prompt: &str, system: Option<&str>, max_tokens: u3
         Ok(resp) => parse_anthropic_response(resp, model),
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
-            AiResponse::error("anthropic", format!("HTTP {}: {}", code, truncate(&body, 200)))
+            AiResponse::error(
+                "anthropic",
+                format!("HTTP {}: {}", code, truncate(&body, 200)),
+            )
         }
         Err(e) => AiResponse::error("anthropic", format!("Request failed: {}", e)),
     }
@@ -227,11 +272,20 @@ fn parse_anthropic_response(resp: ureq::Response, model: &str) -> Value {
     match resp.into_json::<serde_json::Value>() {
         Ok(json) => {
             let text = json["content"][0]["text"]
-                .as_str().unwrap_or("").to_string();
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             let tokens = json["usage"]["input_tokens"].as_u64().unwrap_or(0)
-                       + json["usage"]["output_tokens"].as_u64().unwrap_or(0);
+                + json["usage"]["output_tokens"].as_u64().unwrap_or(0);
             let confidence = adjust_confidence_for_hedging(0.9, &text);
-            AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "anthropic".into() }.into_value()
+            AiResponse {
+                text,
+                confidence,
+                tokens_used: tokens,
+                model: model.into(),
+                provider: "anthropic".into(),
+            }
+            .into_value()
         }
         Err(e) => AiResponse::error("anthropic", format!("Failed to parse response: {}", e)),
     }
@@ -277,13 +331,26 @@ fn ask_ollama(model: &str, prompt: &str, system: Option<&str>) -> Value {
 
 fn adjust_confidence_for_hedging(base: f64, text: &str) -> f64 {
     let lower = text.to_lowercase();
-    let hedges = ["i'm not sure", "i think", "maybe", "possibly", "i believe",
-                  "not certain", "might be", "could be", "i'm unsure", "unclear"];
+    let hedges = [
+        "i'm not sure",
+        "i think",
+        "maybe",
+        "possibly",
+        "i believe",
+        "not certain",
+        "might be",
+        "could be",
+        "i'm unsure",
+        "unclear",
+    ];
     let hedge_count = hedges.iter().filter(|h| lower.contains(*h)).count();
     (base - hedge_count as f64 * 0.05).clamp(0.1, 1.0)
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() }
-    else { format!("{}...", &s[..max]) }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
 }

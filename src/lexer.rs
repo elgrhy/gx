@@ -69,30 +69,30 @@ pub enum TokenKind {
     Classifier,
 
     // Operators / punctuation
-    LBrace,    // {
-    RBrace,    // }
-    LBracket,  // [
-    RBracket,  // ]
-    LParen,    // (
-    RParen,    // )
-    Colon,     // :
-    Comma,     // ,
-    Dot,       // .
-    Eq,        // =
-    EqEq,      // ==
-    NotEq,     // !=
-    Lt,        // <
-    LtEq,      // <=
-    Gt,        // >
-    GtEq,      // >=
-    Plus,      // +
-    PlusEq,    // +=
-    Minus,     // -
-    Star,      // *
-    Slash,     // /
-    Percent,   // %
-    Arrow,     // ->
-    DotDot,    // ..
+    LBrace,   // {
+    RBrace,   // }
+    LBracket, // [
+    RBracket, // ]
+    LParen,   // (
+    RParen,   // )
+    Colon,    // :
+    Comma,    // ,
+    Dot,      // .
+    Eq,       // =
+    EqEq,     // ==
+    NotEq,    // !=
+    Lt,       // <
+    LtEq,     // <=
+    Gt,       // >
+    GtEq,     // >=
+    Plus,     // +
+    PlusEq,   // +=
+    Minus,    // -
+    Star,     // *
+    Slash,    // /
+    Percent,  // %
+    Arrow,    // ->
+    DotDot,   // ..
 
     // Structure
     Newline,
@@ -154,7 +154,9 @@ impl Lexer {
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             match self.peek() {
-                Some(' ') | Some('\t') | Some('\r') => { self.advance(); }
+                Some(' ') | Some('\t') | Some('\r') => {
+                    self.advance();
+                }
                 Some('/') if self.peek_next() == Some('/') => {
                     // line comment
                     while self.peek().map(|c| c != '\n').unwrap_or(false) {
@@ -175,16 +177,17 @@ impl Lexer {
             match self.advance() {
                 None => return Err(format!("Unterminated string at line {}", line)),
                 Some('"') => break,
-                Some('\\') => {
-                    match self.advance() {
-                        Some('n') => s.push('\n'),
-                        Some('t') => s.push('\t'),
-                        Some('"') => s.push('"'),
-                        Some('\\') => s.push('\\'),
-                        Some(c) => { s.push('\\'); s.push(c); }
-                        None => return Err(format!("Unterminated escape at line {}", line)),
+                Some('\\') => match self.advance() {
+                    Some('n') => s.push('\n'),
+                    Some('t') => s.push('\t'),
+                    Some('"') => s.push('"'),
+                    Some('\\') => s.push('\\'),
+                    Some(c) => {
+                        s.push('\\');
+                        s.push(c);
                     }
-                }
+                    None => return Err(format!("Unterminated escape at line {}", line)),
+                },
                 Some(c) => s.push(c),
             }
         }
@@ -235,65 +238,65 @@ impl Lexer {
 
     fn keyword_or_ident(s: String) -> TokenKind {
         match s.as_str() {
-            "helper"      => TokenKind::Helper,
-            "agent"       => TokenKind::Agent,
-            "brain"       => TokenKind::Brain,
-            "plan"        => TokenKind::Plan,
-            "execute"     => TokenKind::Execute,
-            "remember"    => TokenKind::Remember,
+            "helper" => TokenKind::Helper,
+            "agent" => TokenKind::Agent,
+            "brain" => TokenKind::Brain,
+            "plan" => TokenKind::Plan,
+            "execute" => TokenKind::Execute,
+            "remember" => TokenKind::Remember,
             "communicate" => TokenKind::Communicate,
-            "memory"      => TokenKind::Memory,
-            "receive"     => TokenKind::Receive,
-            "channel"     => TokenKind::Channel,
-            "emit"        => TokenKind::Emit,
-            "broadcast"   => TokenKind::Broadcast,
-            "recipe"      => TokenKind::Recipe,
-            "objective"   => TokenKind::Objective,
-            "needs"       => TokenKind::Needs,
-            "gives"       => TokenKind::Gives,
-            "can_do"      => TokenKind::CanDo,
-            "when"        => TokenKind::When,
-            "then"        => TokenKind::Then,
-            "try"         => TokenKind::Try,
-            "catch"       => TokenKind::Catch,
-            "for"         => TokenKind::For,
-            "each"        => TokenKind::Each,
-            "in"          => TokenKind::In,
-            "if"          => TokenKind::If,
-            "else"        => TokenKind::Else,
-            "return"      => TokenKind::Return,
-            "output"      => TokenKind::Output,
-            "log"         => TokenKind::Log,
-            "say"         => TokenKind::Say,
-            "use"         => TokenKind::Use,
-            "from"        => TokenKind::From,
-            "as"          => TokenKind::As,
-            "on"          => TokenKind::On,
-            "bind"        => TokenKind::Bind,
-            "source"      => TokenKind::Source,
-            "type"        => TokenKind::Type,
-            "do"          => TokenKind::Do,
-            "wait"        => TokenKind::Wait,
-            "assign"      => TokenKind::Assign,
-            "spawn"       => TokenKind::Spawn,
-            "count"       => TokenKind::Count,
-            "push"        => TokenKind::Push,
-            "not"         => TokenKind::Not,
-            "and"         => TokenKind::And,
-            "or"          => TokenKind::Or,
-            "re-run"      => TokenKind::ReRun,
-            "started"     => TokenKind::Started,
-            "escalate"    => TokenKind::Escalate,
-            "human"       => TokenKind::Human,
-            "changes"     => TokenKind::Changes,
-            "ask"         => TokenKind::Ask,
-            "embed"       => TokenKind::Embed,
-            "infer"       => TokenKind::Infer,
-            "classifier"  => TokenKind::Classifier,
-            "true"        => TokenKind::BoolLit(true),
-            "false"       => TokenKind::BoolLit(false),
-            "null"        => TokenKind::Null,
-            _             => TokenKind::Ident(s),
+            "memory" => TokenKind::Memory,
+            "receive" => TokenKind::Receive,
+            "channel" => TokenKind::Channel,
+            "emit" => TokenKind::Emit,
+            "broadcast" => TokenKind::Broadcast,
+            "recipe" => TokenKind::Recipe,
+            "objective" => TokenKind::Objective,
+            "needs" => TokenKind::Needs,
+            "gives" => TokenKind::Gives,
+            "can_do" => TokenKind::CanDo,
+            "when" => TokenKind::When,
+            "then" => TokenKind::Then,
+            "try" => TokenKind::Try,
+            "catch" => TokenKind::Catch,
+            "for" => TokenKind::For,
+            "each" => TokenKind::Each,
+            "in" => TokenKind::In,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "return" => TokenKind::Return,
+            "output" => TokenKind::Output,
+            "log" => TokenKind::Log,
+            "say" => TokenKind::Say,
+            "use" => TokenKind::Use,
+            "from" => TokenKind::From,
+            "as" => TokenKind::As,
+            "on" => TokenKind::On,
+            "bind" => TokenKind::Bind,
+            "source" => TokenKind::Source,
+            "type" => TokenKind::Type,
+            "do" => TokenKind::Do,
+            "wait" => TokenKind::Wait,
+            "assign" => TokenKind::Assign,
+            "spawn" => TokenKind::Spawn,
+            "count" => TokenKind::Count,
+            "push" => TokenKind::Push,
+            "not" => TokenKind::Not,
+            "and" => TokenKind::And,
+            "or" => TokenKind::Or,
+            "re-run" => TokenKind::ReRun,
+            "started" => TokenKind::Started,
+            "escalate" => TokenKind::Escalate,
+            "human" => TokenKind::Human,
+            "changes" => TokenKind::Changes,
+            "ask" => TokenKind::Ask,
+            "embed" => TokenKind::Embed,
+            "infer" => TokenKind::Infer,
+            "classifier" => TokenKind::Classifier,
+            "true" => TokenKind::BoolLit(true),
+            "false" => TokenKind::BoolLit(false),
+            "null" => TokenKind::Null,
+            _ => TokenKind::Ident(s),
         }
     }
 
@@ -327,14 +330,38 @@ impl Lexer {
                     let kind = Self::keyword_or_ident(ident);
                     tokens.push(Token::new(kind, line, col));
                 }
-                Some('{') => { self.advance(); tokens.push(Token::new(TokenKind::LBrace, line, col)); }
-                Some('}') => { self.advance(); tokens.push(Token::new(TokenKind::RBrace, line, col)); }
-                Some('[') => { self.advance(); tokens.push(Token::new(TokenKind::LBracket, line, col)); }
-                Some(']') => { self.advance(); tokens.push(Token::new(TokenKind::RBracket, line, col)); }
-                Some('(') => { self.advance(); tokens.push(Token::new(TokenKind::LParen, line, col)); }
-                Some(')') => { self.advance(); tokens.push(Token::new(TokenKind::RParen, line, col)); }
-                Some(':') => { self.advance(); tokens.push(Token::new(TokenKind::Colon, line, col)); }
-                Some(',') => { self.advance(); tokens.push(Token::new(TokenKind::Comma, line, col)); }
+                Some('{') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::LBrace, line, col));
+                }
+                Some('}') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::RBrace, line, col));
+                }
+                Some('[') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::LBracket, line, col));
+                }
+                Some(']') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::RBracket, line, col));
+                }
+                Some('(') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::LParen, line, col));
+                }
+                Some(')') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::RParen, line, col));
+                }
+                Some(':') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::Colon, line, col));
+                }
+                Some(',') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::Comma, line, col));
+                }
                 Some('.') => {
                     self.advance();
                     if self.peek() == Some('.') {
@@ -362,9 +389,18 @@ impl Lexer {
                         tokens.push(Token::new(TokenKind::Minus, line, col));
                     }
                 }
-                Some('*') => { self.advance(); tokens.push(Token::new(TokenKind::Star, line, col)); }
-                Some('/') => { self.advance(); tokens.push(Token::new(TokenKind::Slash, line, col)); }
-                Some('%') => { self.advance(); tokens.push(Token::new(TokenKind::Percent, line, col)); }
+                Some('*') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::Star, line, col));
+                }
+                Some('/') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::Slash, line, col));
+                }
+                Some('%') => {
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::Percent, line, col));
+                }
                 Some('=') => {
                     self.advance();
                     if self.peek() == Some('=') {
@@ -407,7 +443,10 @@ impl Lexer {
                     tokens.push(Token::new(TokenKind::Newline, line, col));
                 }
                 Some(c) => {
-                    return Err(format!("Unexpected character '{}' at line {}, col {}", c, line, col));
+                    return Err(format!(
+                        "Unexpected character '{}' at line {}, col {}",
+                        c, line, col
+                    ));
                 }
             }
         }
@@ -421,7 +460,9 @@ mod tests {
     use super::*;
 
     fn tok(src: &str) -> Vec<TokenKind> {
-        Lexer::new(src).tokenize().unwrap()
+        Lexer::new(src)
+            .tokenize()
+            .unwrap()
             .into_iter()
             .filter(|t| !matches!(t.kind, TokenKind::Newline | TokenKind::Eof))
             .map(|t| t.kind)

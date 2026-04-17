@@ -11,8 +11,8 @@ pub struct Program {
 
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
-    pub namespace: String,  // "js", "py", "rust"
-    pub package: String,    // "axios", "requests", "serde"
+    pub namespace: String, // "js", "py", "rust"
+    pub package: String,   // "axios", "requests", "serde"
     pub line: usize,
 }
 
@@ -27,7 +27,7 @@ pub struct HelperDef {
     pub brain: Option<BrainBlock>,
     pub recipes: Vec<RecipeDef>,
     pub objectives: Vec<ObjectiveDef>,
-    pub when_blocks: Vec<WhenBlock>,   // Phase 2: simple syntax
+    pub when_blocks: Vec<WhenBlock>, // Phase 2: simple syntax
     pub line: usize,
 }
 
@@ -51,7 +51,7 @@ pub struct WhenBlock {
 pub enum WhenTrigger {
     Started,
     Expr(Expr),
-    Changes(Expr),  // when X changes
+    Changes(Expr), // when X changes
 }
 
 // ── Brain ─────────────────────────────────────────────────────────────────────
@@ -102,22 +102,73 @@ pub struct ChannelDef {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    Assign { target: Expr, value: Expr, line: usize },
-    PlusAssign { target: Expr, value: Expr, line: usize },
-    If { branches: Vec<(Expr, Vec<Stmt>)>, else_body: Option<Vec<Stmt>>, line: usize },
-    ForEach { var: String, iter: Expr, body: Vec<Stmt>, line: usize },
-    TryCatch { try_body: Vec<Stmt>, catch_var: String, catch_body: Vec<Stmt>, line: usize },
-    Emit { event: String, payload: Vec<(String, Expr)>, line: usize },
-    Broadcast { event: String, line: usize },
-    Log { value: Expr, line: usize },
-    Output { value: Expr, line: usize },
-    Say { value: Expr, line: usize },
-    Return { value: Option<Expr>, line: usize },
-    Expr { expr: Expr, line: usize },
-    Wait { ms: Expr, line: usize },
+    Assign {
+        target: Expr,
+        value: Expr,
+        line: usize,
+    },
+    PlusAssign {
+        target: Expr,
+        value: Expr,
+        line: usize,
+    },
+    If {
+        branches: Vec<(Expr, Vec<Stmt>)>,
+        else_body: Option<Vec<Stmt>>,
+        line: usize,
+    },
+    ForEach {
+        var: String,
+        iter: Expr,
+        body: Vec<Stmt>,
+        line: usize,
+    },
+    TryCatch {
+        try_body: Vec<Stmt>,
+        catch_var: String,
+        catch_body: Vec<Stmt>,
+        line: usize,
+    },
+    Emit {
+        event: String,
+        payload: Vec<(String, Expr)>,
+        line: usize,
+    },
+    Broadcast {
+        event: String,
+        line: usize,
+    },
+    Log {
+        value: Expr,
+        line: usize,
+    },
+    Output {
+        value: Expr,
+        line: usize,
+    },
+    Say {
+        value: Expr,
+        line: usize,
+    },
+    Return {
+        value: Option<Expr>,
+        line: usize,
+    },
+    Expr {
+        expr: Expr,
+        line: usize,
+    },
+    Wait {
+        ms: Expr,
+        line: usize,
+    },
     // Phase 2
-    ReRun { line: usize },
-    EscalateToHuman { line: usize },
+    ReRun {
+        line: usize,
+    },
+    EscalateToHuman {
+        line: usize,
+    },
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
@@ -129,27 +180,45 @@ pub enum Expr {
     Bool(bool),
     Null,
     Ident(String),
-    FieldAccess { object: Box<Expr>, field: String },
-    Index { object: Box<Expr>, index: Box<Expr> },
-    Call { callee: Box<Expr>, args: Vec<Expr> },
+    FieldAccess {
+        object: Box<Expr>,
+        field: String,
+    },
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
     Object(Vec<(String, Expr)>),
     Array(Vec<Expr>),
-    BinOp { left: Box<Expr>, op: BinOp, right: Box<Expr> },
+    BinOp {
+        left: Box<Expr>,
+        op: BinOp,
+        right: Box<Expr>,
+    },
     Not(Box<Expr>),
     Interpolated(Vec<InterpolatedPart>),
     // Phase 3: AI primitives
     AskAI {
-        provider: String,             // "openai", "anthropic", "ollama"
-        model: Option<String>,        // optional model override e.g. "gpt-4o"
-        params: Vec<(String, Expr)>,  // { prompt: "...", context: ..., ... }
+        provider: String,            // "openai", "anthropic", "ollama"
+        model: Option<String>,       // optional model override e.g. "gpt-4o"
+        params: Vec<(String, Expr)>, // { prompt: "...", context: ..., ... }
     },
-    Embed { text: Box<Expr> },
-    InferClassifier { input: Box<Expr>, classes: Box<Expr> },
+    Embed {
+        text: Box<Expr>,
+    },
+    InferClassifier {
+        input: Box<Expr>,
+        classes: Box<Expr>,
+    },
     // Phase 4: bridge call  js.axios.get("url")
     BridgeCall {
-        namespace: String,  // "js" or "py"
-        module: String,     // "axios"
-        method: String,     // "get"
+        namespace: String, // "js" or "py"
+        module: String,    // "axios"
+        method: String,    // "get"
         args: Vec<Expr>,
     },
 }
@@ -162,8 +231,18 @@ pub enum InterpolatedPart {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Mod,
-    Eq, NotEq, Lt, LtEq, Gt, GtEq,
-    And, Or,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    And,
+    Or,
     Concat,
 }
