@@ -1,0 +1,73 @@
+// Test: user-defined functions, compound assignments, for without each
+
+function add(a, b) {
+  return a + b
+}
+
+function greet(name) {
+  return "Hello, " + name + "!"
+}
+
+function factorial(n) {
+  if n <= 1 {
+    return 1
+  }
+  return n * factorial(n - 1)
+}
+
+helper "test_functions" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+      // function call: add
+      result = add(3, 4)
+      if result == 7 { memory.passed += 1 } else { log("FAIL: add") memory.failed += 1 }
+
+      // function call: greet
+      msg = greet("World")
+      if msg == "Hello, World!" { memory.passed += 1 } else { log("FAIL: greet") memory.failed += 1 }
+
+      // recursive function: factorial
+      f = factorial(5)
+      if f == 120 { memory.passed += 1 } else { log("FAIL: factorial " + to_string(f)) memory.failed += 1 }
+
+      // -=
+      x = 10
+      x -= 3
+      if x == 7 { memory.passed += 1 } else { log("FAIL: -=") memory.failed += 1 }
+
+      // *=
+      y = 4
+      y *= 3
+      if y == 12 { memory.passed += 1 } else { log("FAIL: *=") memory.failed += 1 }
+
+      // /=
+      z = 20
+      z /= 4
+      if z == 5 { memory.passed += 1 } else { log("FAIL: /=") memory.failed += 1 }
+
+      // for without each
+      total = 0
+      for n in [1, 2, 3, 4, 5] {
+        total += n
+      }
+      if total == 15 { memory.passed += 1 } else { log("FAIL: for without each") memory.failed += 1 }
+
+      // len() builtin
+      s_len = len("hello")
+      if s_len == 5 { memory.passed += 1 } else { log("FAIL: len string") memory.failed += 1 }
+
+      arr_len = len([1, 2, 3])
+      if arr_len == 3 { memory.passed += 1 } else { log("FAIL: len array") memory.failed += 1 }
+
+      log("test_functions: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}

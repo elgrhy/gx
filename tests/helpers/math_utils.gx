@@ -1,0 +1,11 @@
+// Shared math utilities — imported by test_import.gx
+
+function square(n) {
+  return n * n
+}
+
+function clamp(val, lo, hi) {
+  if val < lo { return lo }
+  if val > hi { return hi }
+  return val
+}

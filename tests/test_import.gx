@@ -1,0 +1,33 @@
+// Test: import "file.gx" pulls in functions from another file
+
+import "tests/helpers/math_utils.gx"
+
+helper "test_import" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+      // square() defined in math_utils.gx
+      s = square(7)
+      if s == 49 { memory.passed += 1 } else { log("FAIL: square") memory.failed += 1 }
+
+      // clamp() defined in math_utils.gx
+      c = clamp(15, 0, 10)
+      if c == 10 { memory.passed += 1 } else { log("FAIL: clamp hi") memory.failed += 1 }
+
+      c2 = clamp(-5, 0, 10)
+      if c2 == 0 { memory.passed += 1 } else { log("FAIL: clamp lo") memory.failed += 1 }
+
+      c3 = clamp(5, 0, 10)
+      if c3 == 5 { memory.passed += 1 } else { log("FAIL: clamp mid") memory.failed += 1 }
+
+      log("test_import: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}

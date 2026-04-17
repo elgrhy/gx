@@ -24,6 +24,38 @@ agent "name" {
 }
 ```
 
+### `function` — User-Defined Functions
+
+```gx
+function add(a, b) {
+  return a + b
+}
+
+function greet(name) {
+  return "Hello, " + name + "!"
+}
+
+// Recursive
+function factorial(n) {
+  if n <= 1 { return 1 }
+  return n * factorial(n - 1)
+}
+
+result = add(3, 4)    // 7
+msg    = greet("GX")  // "Hello, GX!"
+```
+
+Functions are defined at the top level (outside agents). They can be called from anywhere — `when` blocks, `brain` phases, other functions.
+
+### `import` — File Import
+
+```gx
+import "agents/utils.gx"
+import "lib/math.gx"
+```
+
+Loads functions and agents from another `.gx` file. All functions defined in the imported file become available in the current file. Paths are relative to the current working directory.
+
 ### `use` — Package Import
 
 ```gx
@@ -133,6 +165,7 @@ memory.user.name = "Ahmed"
 memory.count += 1
 memory.score -= 5
 memory.total *= 2
+memory.price /= 100
 ```
 
 ### `if` / `else if` / `else`
@@ -149,12 +182,19 @@ if memory.count > 10 {
 
 ### `for` / `for each`
 
+The `each` keyword is optional — both forms work:
+
 ```gx
 for each item in memory.items {
   log(item)
 }
 
-for each x in [1, 2, 3] {
+// equivalent — `each` is optional
+for item in memory.items {
+  log(item)
+}
+
+for x in [1, 2, 3] {
   memory.total += x
 }
 ```

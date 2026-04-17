@@ -67,6 +67,9 @@ pub enum TokenKind {
     Embed,
     Infer,
     Classifier,
+    // Phase 5 — user-defined functions and file imports
+    Function,
+    Import,
 
     // Operators / punctuation
     LBrace,   // {
@@ -88,8 +91,11 @@ pub enum TokenKind {
     Plus,     // +
     PlusEq,   // +=
     Minus,    // -
+    MinusEq,  // -=
     Star,     // *
+    StarEq,   // *=
     Slash,    // /
+    SlashEq,  // /=
     Percent,  // %
     Arrow,    // ->
     DotDot,   // ..
@@ -293,6 +299,8 @@ impl Lexer {
             "embed" => TokenKind::Embed,
             "infer" => TokenKind::Infer,
             "classifier" => TokenKind::Classifier,
+            "function" => TokenKind::Function,
+            "import" => TokenKind::Import,
             "true" => TokenKind::BoolLit(true),
             "false" => TokenKind::BoolLit(false),
             "null" => TokenKind::Null,
@@ -385,17 +393,30 @@ impl Lexer {
                     if self.peek() == Some('>') {
                         self.advance();
                         tokens.push(Token::new(TokenKind::Arrow, line, col));
+                    } else if self.peek() == Some('=') {
+                        self.advance();
+                        tokens.push(Token::new(TokenKind::MinusEq, line, col));
                     } else {
                         tokens.push(Token::new(TokenKind::Minus, line, col));
                     }
                 }
                 Some('*') => {
                     self.advance();
-                    tokens.push(Token::new(TokenKind::Star, line, col));
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        tokens.push(Token::new(TokenKind::StarEq, line, col));
+                    } else {
+                        tokens.push(Token::new(TokenKind::Star, line, col));
+                    }
                 }
                 Some('/') => {
                     self.advance();
-                    tokens.push(Token::new(TokenKind::Slash, line, col));
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        tokens.push(Token::new(TokenKind::SlashEq, line, col));
+                    } else {
+                        tokens.push(Token::new(TokenKind::Slash, line, col));
+                    }
                 }
                 Some('%') => {
                     self.advance();

@@ -102,6 +102,8 @@ impl Parser {
             TokenKind::Infer => "infer".into(),
             TokenKind::Classifier => "classifier".into(),
             TokenKind::Broadcast => "broadcast".into(),
+            TokenKind::Function => "function".into(),
+            TokenKind::Import => "import".into(),
             TokenKind::Emit => "emit".into(),
             TokenKind::Recipe => "recipe".into(),
             TokenKind::Objective => "objective".into(),
@@ -175,7 +177,9 @@ impl Parser {
 
 impl Parser {
     pub fn parse(&mut self) -> Result<Program, String> {
+        let mut file_imports = Vec::new();
         let mut imports = Vec::new();
+        let mut functions = Vec::new();
         let mut helpers = Vec::new();
         let mut top_level_brain = None;
 
@@ -183,8 +187,14 @@ impl Parser {
             self.skip_newlines();
             match self.peek_kind().clone() {
                 TokenKind::Eof => break,
+                TokenKind::Import => {
+                    file_imports.push(self.parse_file_import()?);
+                }
                 TokenKind::Use => {
                     imports.push(self.parse_import()?);
+                }
+                TokenKind::Function => {
+                    functions.push(self.parse_function()?);
                 }
                 TokenKind::Helper | TokenKind::Agent => {
                     helpers.push(self.parse_helper()?);
@@ -203,9 +213,46 @@ impl Parser {
         }
 
         Ok(Program {
+            file_imports,
             imports,
+            functions,
             helpers,
             top_level_brain,
+        })
+    }
+
+    fn parse_file_import(&mut self) -> Result<FileImport, String> {
+        let line = self.line();
+        self.advance(); // consume `import`
+        let path = self.expect_string()?;
+        Ok(FileImport { path, line })
+    }
+
+    fn parse_function(&mut self) -> Result<FunctionDef, String> {
+        let line = self.line();
+        self.advance(); // consume `function`
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LParen)?;
+        let mut params = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.eat(&TokenKind::RParen) {
+                break;
+            }
+            params.push(self.expect_ident()?);
+            if !self.eat(&TokenKind::Comma) {
+                self.skip_newlines();
+                self.expect(&TokenKind::RParen)?;
+                break;
+            }
+        }
+        self.expect(&TokenKind::LBrace)?;
+        let body = self.parse_stmts()?;
+        Ok(FunctionDef {
+            name,
+            params,
+            body,
+            line,
         })
     }
 
@@ -721,6 +768,30 @@ impl Parser {
                         line,
                     });
                 }
+                if self.eat(&TokenKind::MinusEq) {
+                    let value = self.parse_expr()?;
+                    return Ok(Stmt::MinusAssign {
+                        target: expr,
+                        value,
+                        line,
+                    });
+                }
+                if self.eat(&TokenKind::StarEq) {
+                    let value = self.parse_expr()?;
+                    return Ok(Stmt::MulAssign {
+                        target: expr,
+                        value,
+                        line,
+                    });
+                }
+                if self.eat(&TokenKind::SlashEq) {
+                    let value = self.parse_expr()?;
+                    return Ok(Stmt::DivAssign {
+                        target: expr,
+                        value,
+                        line,
+                    });
+                }
                 Ok(Stmt::Expr { expr, line })
             }
         }
@@ -763,7 +834,7 @@ impl Parser {
     fn parse_for_each(&mut self) -> Result<Stmt, String> {
         let line = self.line();
         self.expect(&TokenKind::For)?;
-        self.expect(&TokenKind::Each)?;
+        self.eat(&TokenKind::Each); // `each` is optional
         let var = self.expect_ident()?;
         self.expect(&TokenKind::In)?;
         let iter = self.parse_expr()?;
@@ -928,7 +999,16 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Result<Expr, String> {
         if self.eat(&TokenKind::Not) {
-            return Ok(Expr::Not(Box::new(self.parse_primary()?)));
+            return Ok(Expr::Not(Box::new(self.parse_unary()?)));
+        }
+        if self.eat(&TokenKind::Minus) {
+            // Unary minus: -expr  →  0 - expr
+            let inner = self.parse_unary()?;
+            return Ok(Expr::BinOp {
+                left: Box::new(Expr::Num(0.0)),
+                op: BinOp::Sub,
+                right: Box::new(inner),
+            });
         }
         self.parse_postfix()
     }

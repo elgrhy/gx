@@ -2,12 +2,32 @@
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub file_imports: Vec<FileImport>,
     pub imports: Vec<ImportDecl>,
+    pub functions: Vec<FunctionDef>,
     pub helpers: Vec<HelperDef>,
     pub top_level_brain: Option<BrainBlock>,
 }
 
-// ── Import declarations ───────────────────────────────────────────────────────
+// ── File import (`import "path.gx"`) ─────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct FileImport {
+    pub path: String,
+    pub line: usize,
+}
+
+// ── User-defined functions ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct FunctionDef {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<Stmt>,
+    pub line: usize,
+}
+
+// ── Package import declarations (`use js.X`) ─────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
@@ -108,6 +128,21 @@ pub enum Stmt {
         line: usize,
     },
     PlusAssign {
+        target: Expr,
+        value: Expr,
+        line: usize,
+    },
+    MinusAssign {
+        target: Expr,
+        value: Expr,
+        line: usize,
+    },
+    MulAssign {
+        target: Expr,
+        value: Expr,
+        line: usize,
+    },
+    DivAssign {
         target: Expr,
         value: Expr,
         line: usize,

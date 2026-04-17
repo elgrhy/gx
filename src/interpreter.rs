@@ -54,6 +54,7 @@ impl Env {
 
 pub struct Interpreter {
     helpers: HashMap<String, HelperDef>,
+    functions: HashMap<String, FunctionDef>,
     imports: Vec<ImportDecl>,
     pub events: Vec<(String, Vec<(String, Value)>)>,
     #[allow(dead_code)]
@@ -71,6 +72,7 @@ impl Interpreter {
     pub fn new() -> Self {
         Interpreter {
             helpers: HashMap::new(),
+            functions: HashMap::new(),
             imports: Vec::new(),
             events: Vec::new(),
             js_bridge: None,
@@ -80,6 +82,30 @@ impl Interpreter {
 
     pub fn run_program(&mut self, program: &Program) -> Result<(), String> {
         self.imports = program.imports.clone();
+
+        // Load user-defined functions first (available everywhere)
+        for f in &program.functions {
+            self.functions.insert(f.name.clone(), f.clone());
+        }
+
+        // Process file imports (load their functions and helpers)
+        for fi in &program.file_imports {
+            let src = std::fs::read_to_string(&fi.path)
+                .map_err(|e| format!("Line {}: cannot import '{}': {}", fi.line, fi.path, e))?;
+            let tokens = crate::lexer::Lexer::new(&src)
+                .tokenize()
+                .map_err(|e| format!("In '{}': {}", fi.path, e))?;
+            let sub = crate::parser::Parser::new(tokens)
+                .parse()
+                .map_err(|e| format!("In '{}': {}", fi.path, e))?;
+            for f in &sub.functions {
+                self.functions.insert(f.name.clone(), f.clone());
+            }
+            for h in &sub.helpers {
+                self.helpers.insert(h.name.clone(), h.clone());
+            }
+            self.imports.extend(sub.imports.clone());
+        }
 
         for h in &program.helpers {
             self.helpers.insert(h.name.clone(), h.clone());
@@ -217,6 +243,30 @@ impl Interpreter {
                 let cur = self.eval_lvalue(target, env);
                 let rhs = self.eval_expr(value, env)?;
                 let res = self.add_values(&cur, &rhs)?;
+                self.assign(target, res, env)?;
+                Ok(Value::Null)
+            }
+
+            Stmt::MinusAssign { target, value, .. } => {
+                let cur = self.eval_lvalue(target, env);
+                let rhs = self.eval_expr(value, env)?;
+                let res = self.eval_binop(&cur, &BinOp::Sub, &rhs)?;
+                self.assign(target, res, env)?;
+                Ok(Value::Null)
+            }
+
+            Stmt::MulAssign { target, value, .. } => {
+                let cur = self.eval_lvalue(target, env);
+                let rhs = self.eval_expr(value, env)?;
+                let res = self.eval_binop(&cur, &BinOp::Mul, &rhs)?;
+                self.assign(target, res, env)?;
+                Ok(Value::Null)
+            }
+
+            Stmt::DivAssign { target, value, .. } => {
+                let cur = self.eval_lvalue(target, env);
+                let rhs = self.eval_expr(value, env)?;
+                let res = self.eval_binop(&cur, &BinOp::Div, &rhs)?;
                 self.assign(target, res, env)?;
                 Ok(Value::Null)
             }
@@ -604,10 +654,27 @@ impl Interpreter {
         }
 
         if let Expr::Ident(name) = callee {
+            // User-defined functions take priority over builtins
+            if let Some(func) = self.functions.get(name).cloned() {
+                return self.call_user_function(&func, args);
+            }
             return self.eval_builtin(name, args, env);
         }
 
         Err(Signal::Error(format!("Cannot call {:?}", callee)))
+    }
+
+    fn call_user_function(&mut self, func: &FunctionDef, args: Vec<Value>) -> IResult {
+        let mut env = Env::new();
+        for (i, param) in func.params.iter().enumerate() {
+            env.set(param, args.get(i).cloned().unwrap_or(Value::Null));
+        }
+        let body = func.body.clone();
+        match self.run_stmts(&body, &mut env) {
+            Ok(v) => Ok(v),
+            Err(Signal::Return(v)) => Ok(v),
+            Err(e) => Err(e),
+        }
     }
 
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>, _env: &mut Env) -> IResult {
@@ -630,6 +697,12 @@ impl Interpreter {
                 Value::Str(s) => Ok(Value::Number(s.len() as f64)),
                 Value::Null => Ok(Value::Number(0.0)),
                 _ => Ok(Value::Number(1.0)),
+            },
+            "len" => match args.first().cloned().unwrap_or(Value::Null) {
+                Value::Str(s) => Ok(Value::Number(s.len() as f64)),
+                Value::Array(a) => Ok(Value::Number(a.len() as f64)),
+                Value::Object(o) => Ok(Value::Number(o.len() as f64)),
+                _ => Ok(Value::Number(0.0)),
             },
             "to_string" => Ok(Value::Str(
                 args.first().cloned().unwrap_or(Value::Null).to_string(),
