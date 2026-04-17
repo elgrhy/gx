@@ -22,9 +22,80 @@ gx version
 
 ---
 
-## Your First Agent
+## Three Ways to Write GX
 
-Create `hello.gx`:
+GX has **three progressive syntax levels** — all compile to the same runtime. Start simple, add structure when you need it.
+
+### Level 1 — Pure intent
+
+```gx
+Agent greeter
+
+name = "World"
+
+"Hello {name}"
+```
+
+```bash
+gx run hello.gx
+# Hello World
+```
+
+No braces, no ceremony. Variables become memory. Strings auto-print.
+
+---
+
+### Level 2 — Named behaviors
+
+```gx
+Agent assistant
+
+topic = "weather"
+
+Greet:
+  "Hello! I know about {topic}."
+
+Answer:
+  result = ask openai {
+    prompt: "Tell me about {topic} in one sentence."
+  }
+  result.text
+
+On start:
+  Greet
+  Answer
+```
+
+Behaviors (`Greet:`, `Answer:`) are named, reusable blocks. `On start:` runs them in order.
+
+---
+
+### Level 3 — Full brain cycle
+
+```gx
+Agent counter
+
+count = 0
+
+Plan:
+  action = "increment"
+
+Execute:
+  If action == "increment"
+    count += 1
+
+Remember:
+  memory.count = count
+
+Communicate:
+  "Count is now {count}"
+```
+
+Explicit `Plan → Execute → Remember → Communicate` phases. Still no braces.
+
+---
+
+### Classic syntax (still fully supported)
 
 ```gx
 agent "greeter" {
@@ -35,20 +106,7 @@ agent "greeter" {
   when started {
     say "Hello, {memory.name}!"
   }
-
-  brain {
-    plan {}
-    execute {}
-    remember {}
-    communicate {}
-  }
 }
-```
-
-Run it:
-```bash
-gx run hello.gx
-# Hello, World!
 ```
 
 ---
@@ -76,53 +134,41 @@ my-project/
 
 Every agent follows four phases: **Plan → Execute → Remember → Communicate**.
 
-```gx
-helper "counter" {
-  remember {
-    count = 0
-  }
+In Level 1/2 syntax, GX maps your code to these phases automatically. In Level 3 you control them directly.
 
-  brain {
-    plan {
-      plan = { action: "increment" }
-    }
-    execute {
-      if plan.action == "increment" {
-        memory.count += 1
-        log("Count: " + to_string(memory.count))
-      }
-    }
-    remember {
-      memory.last_run = get_timestamp()
-    }
-    communicate {
-      emit "tick" { count: memory.count }
-    }
-  }
-}
+```gx
+Agent smart
+
+name = "Ahmed"
+
+// Level 2: named behavior
+Greet:
+  "Hello {name}, welcome back!"
+
+// Level 3: explicit phase
+Plan:
+  Greet
+
+Communicate:
+  "Session complete"
 ```
 
 ---
 
 ## Memory
 
-Declare variables in `remember {}`. Access them as `memory.key` everywhere.
+Any variable you assign at the agent level becomes persistent memory. Access it anywhere with the bare name or `memory.key`.
 
 ```gx
-agent "memo" {
-  remember {
-    runs = 0
-    items = []
-    config = { debug: false }
-  }
+Agent memo
 
-  when started {
-    memory.runs += 1
-    say "Run {memory.runs}"
-  }
+runs = 0
+items = []
+config = { debug: false }
 
-  brain { plan {} execute {} remember {} communicate {} }
-}
+On start:
+  runs += 1
+  say "Run {runs}"
 ```
 
 ---
@@ -130,26 +176,27 @@ agent "memo" {
 ## Control Flow
 
 ```gx
-// if / else if / else
-if memory.score > 90 {
+// If / else if / else
+If score > 90
   say "excellent"
-} else if memory.score > 60 {
+Else if score > 60
   say "ok"
-} else {
+Else
   say "needs work"
-}
 
-// for loop
-for each item in memory.items {
+// For loop
+For item in items
   log(item)
-}
 
-// try / catch
-try {
+// For (also works with 'each')
+For each item in items
+  log(item)
+
+// Try / catch
+try:
   result = risky()
-} catch e {
+catch e
   log("error: " + e)
-}
 ```
 
 ---
@@ -160,6 +207,36 @@ try {
 name = "Ahmed"
 count = 42
 say "Hello {name}, count is {count}"
+```
+
+---
+
+## Functions
+
+```gx
+function add(a, b) {
+  return a + b
+}
+
+Agent calc
+
+On start:
+  result = add(3, 4)
+  say "3 + 4 = {result}"
+```
+
+---
+
+## Multi-file
+
+```gx
+import "agents/utils.gx"
+
+Agent app
+
+On start:
+  // Uses functions from utils.gx
+  greet("Ahmed")
 ```
 
 ---

@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GX — Brain-First Programming Language</title>
+  <meta name="description" content="GX is a brain-first programming language for building transparent, auditable AI assistants. Built in Rust. Runs anywhere." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0f14;
+      --surface: #161a23;
+      --border: #252a36;
+      --accent: #5b8af0;
+      --accent2: #a78bfa;
+      --text: #e8ecf4;
+      --muted: #7a8499;
+      --code-bg: #1a1f2e;
+      --green: #4ade80;
+      --orange: #fb923c;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Nav ── */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo { font-size: 1.4rem; font-weight: 700; color: var(--text); letter-spacing: -0.5px; }
+    .logo span { color: var(--accent); }
+
+    nav ul { list-style: none; display: flex; gap: 2rem; }
+    nav ul a { color: var(--muted); font-size: 0.9rem; }
+    nav ul a:hover { color: var(--text); text-decoration: none; }
+
+    .nav-cta {
+      background: var(--accent);
+      color: #fff !important;
+      padding: 0.4rem 1rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .nav-cta:hover { background: #4a79df; text-decoration: none !important; }
+
+    /* ── Hero ── */
+    .hero {
+      max-width: 900px;
+      margin: 6rem auto 4rem;
+      padding: 0 2rem;
+      text-align: center;
+    }
+
+    .badge {
+      display: inline-block;
+      background: rgba(91, 138, 240, 0.15);
+      border: 1px solid rgba(91, 138, 240, 0.35);
+      color: var(--accent);
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.25rem 0.75rem;
+      border-radius: 20px;
+      margin-bottom: 1.5rem;
+      letter-spacing: 0.5px;
+    }
+
+    h1 {
+      font-size: clamp(2.2rem, 5vw, 3.5rem);
+      font-weight: 800;
+      line-height: 1.15;
+      letter-spacing: -1px;
+      margin-bottom: 1.25rem;
+    }
+
+    h1 em { font-style: normal; color: var(--accent); }
+
+    .hero-sub {
+      font-size: 1.15rem;
+      color: var(--muted);
+      max-width: 600px;
+      margin: 0 auto 2.5rem;
+    }
+
+    .cta-group {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.7rem 1.4rem;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: #4a79df; text-decoration: none; }
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { border-color: var(--accent); text-decoration: none; }
+
+    /* ── Install strip ── */
+    .install-strip {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      max-width: 600px;
+      margin: 3rem auto;
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.85rem;
+      color: var(--green);
+    }
+
+    .install-strip .prompt { color: var(--muted); user-select: none; }
+
+    /* ── Code demo ── */
+    .demo {
+      max-width: 900px;
+      margin: 0 auto 5rem;
+      padding: 0 2rem;
+    }
+
+    .demo-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 700px) { .demo-grid { grid-template-columns: 1fr; } }
+
+    .code-card {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .code-card-header {
+      padding: 0.6rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot-red { background: #ff5f57; }
+    .dot-yellow { background: #febc2e; }
+    .dot-green { background: #28c840; }
+
+    pre {
+      padding: 1.25rem;
+      font-size: 0.82rem;
+      line-height: 1.65;
+      overflow-x: auto;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+
+    /* simple syntax highlighting */
+    .kw { color: #c792ea; }
+    .str { color: #c3e88d; }
+    .num { color: #f78c6c; }
+    .cm  { color: #546e7a; font-style: italic; }
+    .fn  { color: #82aaff; }
+    .ai  { color: #ffcb6b; }
+    .mem { color: #89ddff; }
+
+    /* ── Features ── */
+    .features {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 4rem 2rem;
+    }
+
+    .features-inner {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .section-label {
+      text-align: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 1rem;
+    }
+
+    .section-title {
+      text-align: center;
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 3rem;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .feature-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+    }
+
+    .feature-icon {
+      font-size: 1.75rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .feature-card h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+
+    .feature-card p {
+      font-size: 0.875rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ── Status ── */
+    .status-section {
+      max-width: 900px;
+      margin: 5rem auto;
+      padding: 0 2rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+
+    th, td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th { color: var(--muted); font-weight: 600; }
+    .done { color: var(--green); }
+    .planned { color: var(--muted); }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <span class="logo">g<span>x</span></span>
+  <ul>
+    <li><a href="https://github.com/elgrhy/gx/blob/main/docs/getting_started.md">Docs</a></li>
+    <li><a href="https://github.com/elgrhy/gx/blob/main/docs/language_reference.md">Reference</a></li>
+    <li><a href="https://github.com/elgrhy/gx/tree/main/docs/examples">Examples</a></li>
+    <li><a href="https://github.com/elgrhy/gx">GitHub</a></li>
+    <li><a href="https://github.com/elgrhy/gx/releases/latest" class="nav-cta">Download v0.1.0</a></li>
+  </ul>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="badge">v0.1.0 — First stable release</div>
+  <h1>The <em>brain-first</em><br/>programming language</h1>
+  <p class="hero-sub">
+    Build transparent, auditable AI assistants. Every decision explicit, every AI call logged,
+    every agent a glass box — not a black box. Built in Rust. Runs anywhere.
+  </p>
+  <div class="cta-group">
+    <a href="https://github.com/elgrhy/gx/blob/main/docs/getting_started.md" class="btn btn-primary">Get started →</a>
+    <a href="https://github.com/elgrhy/gx" class="btn btn-secondary">
+      ★ Star on GitHub
+    </a>
+  </div>
+</section>
+
+<!-- Install -->
+<div class="install-strip">
+  <span class="prompt">$</span>
+  <span>curl -sSf https://raw.githubusercontent.com/elgrhy/gx/main/install.sh | sh</span>
+</div>
+
+<!-- Code demo -->
+<section class="demo">
+  <div class="demo-grid">
+
+    <div class="code-card">
+      <div class="code-card-header">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+        <span style="margin-left:0.5rem">hello.gx</span>
+      </div>
+      <pre><span class="kw">agent</span> <span class="str">"greeter"</span> {
+  <span class="kw">remember</span> {
+    name = <span class="str">"World"</span>
+  }
+
+  <span class="kw">when</span> <span class="kw">started</span> {
+    <span class="fn">say</span> <span class="str">"Hello, {memory.name}!"</span>
+  }
+}</pre>
+    </div>
+
+    <div class="code-card">
+      <div class="code-card-header">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+        <span style="margin-left:0.5rem">ai_agent.gx</span>
+      </div>
+      <pre><span class="kw">agent</span> <span class="str">"assistant"</span> {
+  <span class="kw">when</span> <span class="kw">started</span> {
+    result = <span class="ai">ask openai</span> {
+      prompt: <span class="str">"Summarize: {memory.text}"</span>
+    }
+    <span class="kw">if</span> result.confidence > <span class="num">0.8</span> {
+      <span class="fn">say</span> result.text
+    } <span class="kw">else</span> {
+      <span class="kw">escalate to human</span>
+    }
+  }
+}</pre>
+    </div>
+
+    <div class="code-card">
+      <div class="code-card-header">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+        <span style="margin-left:0.5rem">functions.gx</span>
+      </div>
+      <pre><span class="kw">function</span> <span class="fn">classify</span>(text) {
+  label = <span class="ai">infer classifier</span> {
+    input: text,
+    classes: [<span class="str">"support"</span>, <span class="str">"sales"</span>, <span class="str">"spam"</span>]
+  }
+  <span class="kw">return</span> label
+}
+
+<span class="kw">agent</span> <span class="str">"router"</span> {
+  <span class="kw">when</span> <span class="kw">started</span> {
+    kind = <span class="fn">classify</span>(<span class="mem">memory</span>.message)
+    <span class="fn">say</span> <span class="str">"Routed to: {kind}"</span>
+  }
+}</pre>
+    </div>
+
+    <div class="code-card">
+      <div class="code-card-header">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+        <span style="margin-left:0.5rem">packages.gx</span>
+      </div>
+      <pre><span class="kw">use</span> js.axios
+<span class="kw">use</span> py.requests
+
+<span class="kw">agent</span> <span class="str">"fetcher"</span> {
+  <span class="kw">when</span> <span class="kw">started</span> {
+    <span class="kw">try</span> {
+      data = js.axios.get(<span class="mem">memory</span>.url)
+      <span class="fn">say</span> data.status
+    } <span class="kw">catch</span> err {
+      <span class="fn">log</span>(<span class="str">"Error: "</span> + err)
+    }
+  }
+}</pre>
+    </div>
+
+  </div>
+</section>
+
+<!-- Features -->
+<section class="features">
+  <div class="features-inner">
+    <div class="section-label">Why GX</div>
+    <h2 class="section-title">Built for the AI era</h2>
+    <div class="feature-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon">🔍</div>
+        <h3>Fully auditable</h3>
+        <p>Every AI call is auto-logged to <code>memory.ai_trace</code>. Confidence scores built in. No black boxes.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🧠</div>
+        <h3>Brain cycle architecture</h3>
+        <p>Every agent follows Plan → Execute → Remember → Communicate. Clear, predictable, debuggable.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🤖</div>
+        <h3>AI primitives in the language</h3>
+        <p><code>ask openai</code>, <code>ask anthropic</code>, <code>ask ollama</code>, <code>embed</code>, <code>infer classifier</code> — first-class syntax.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📦</div>
+        <h3>Zero ecosystem lock-in</h3>
+        <p>Use any npm, pip, or cargo package directly. <code>use js.axios</code>, <code>use py.pandas</code> — it just works.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Rust performance</h3>
+        <p>Tree-walking interpreter written in Rust. Fast startup, no GC pauses, runs on any platform.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🛡️</div>
+        <h3>Safe escalation</h3>
+        <p>When confidence is low, <code>escalate to human</code> stops the agent and signals for review — by design.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- Status -->
+<section class="status-section">
+  <div class="section-label">Roadmap</div>
+  <h2 class="section-title">What's built</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Phase</th>
+        <th>What</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Rust interpreter — lexer, parser, AST, tree-walker</td>
+        <td class="done">✓ Done</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>Simple syntax — <code>agent</code>, <code>when started</code>, <code>re-run</code>, <code>escalate to human</code></td>
+        <td class="done">✓ Done</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>AI primitives — <code>ask</code>, <code>embed</code>, <code>infer classifier</code></td>
+        <td class="done">✓ Done</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>Package interop — <code>use js.X</code>, <code>use py.X</code></td>
+        <td class="done">✓ Done</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Toolchain — <code>gx init/build/install/fmt/make/test</code></td>
+        <td class="done">✓ Done</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>Distribution — curl installer, npm, Homebrew, GitHub Releases</td>
+        <td class="done">✓ Done</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td>Self-hosting — rewrite interpreter in GX</td>
+        <td class="planned">Planned</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p>© 2025 <strong>DEVJSX LIMITED</strong> — Company No: 16618207, 128 City Road, London EC1V 2NX</p>
+  <p style="margin-top:0.5rem"><strong>Ahmed Elgarhy</strong> — Founder &amp; AI Software Architect</p>
+  <p style="margin-top:1rem">
+    <a href="https://github.com/elgrhy/gx">GitHub</a> ·
+    <a href="https://github.com/elgrhy/gx/blob/main/docs/getting_started.md">Docs</a> ·
+    <a href="https://github.com/elgrhy/gx/issues">Issues</a>
+  </p>
+</footer>
+
+</body>
+</html>
