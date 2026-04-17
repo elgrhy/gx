@@ -1,622 +1,204 @@
-# 🛠️ GX Language Developer Guide
+# GX Language — Developer Guide
 
-## 📋 Table of Contents
-
-1. [Getting Started](#getting-started)
-2. [Development Environment](#development-environment)
-3. [Language Reference](#language-reference)
-4. [Architecture Overview](#architecture-overview)
-5. [Testing Guide](#testing-guide)
-6. [Contributing Guidelines](#contributing-guidelines)
-7. [Debugging](#debugging)
-8. [Performance Optimization](#performance-optimization)
-9. [Deployment](#deployment)
+How to work on the GX interpreter itself. For user docs, see [API_REFERENCE.md](API_REFERENCE.md).
 
 ---
 
-## 🚀 Getting Started
-
-### Prerequisites
-
-- **GCC** (GNU Compiler Collection) 7.0 or higher
-- **NASM** (Netwide Assembler) for x86 builds
-- **GNU Binutils** for ARM64/RISC-V builds
-- **Git** for version control
-- **Make** for build automation
-
-### Installation
+## Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/gx-language/gx.git
+git clone https://github.com/elgrhy/gx.git
 cd gx
-
-# Build the complete system
-./build.sh
-
-# Verify installation
-./bin/gx --version
+cargo build
+cargo test
 ```
 
-### First Steps
+Requirements: Rust stable (rustup.rs). Nothing else.
 
-1. **Create your first GX program**:
-```gx
-helper "my_first_helper" {
-  can_do: ["greeting"]
-  
-  remember {
-    message = "Hello from GX!"
-  }
+---
 
-  brain {
-    plan {
-      plan = { action: "display_message" }
-    }
-    
-    execute {
-      if plan.action == "display_message" {
-        output(memory.message)
-      }
-    }
-    
-    communicate {
-      broadcast "greeting_sent"
-    }
-  }
-}
+## Source Map
+
 ```
-
-2. **Run your program**:
-```bash
-./bin/gx my_first_helper.gx
+src/
+├── main.rs          CLI entry point — parses argv, dispatches to commands
+├── lexer.rs         Tokenizer — reads .gx source, emits Vec<Token>
+├── ast.rs           AST node types — Program, HelperDef, Stmt, Expr, ...
+├── parser.rs        Parser — turns Vec<Token> into Program AST
+├── interpreter.rs   Executor — tree-walks the AST, maintains Env
+├── value.rs         Runtime value — Null, Bool, Number, Str, Array, Object
+├── ai.rs            AI connectors — ask_ai(), embed_text(), infer_classifier()
+├── bridge.rs        Subprocess bridges — JS (node -e) and Python (IPC)
+├── toolchain.rs     CLI tools — init, build, install, fmt, make, test
+└── lib.rs           Library API — run_source(), check_source()
 ```
 
 ---
 
-## 🔧 Development Environment
+## How Execution Works
 
-### Project Structure
+1. `Lexer::new(source).tokenize()` → `Vec<Token>`
+2. `Parser::new(tokens).parse()` → `Program`
+3. `Interpreter::new().run_program(&program)` → runs all helpers
 
+### Lexer
+
+`TokenKind` enum covers all GX keywords and literals. Key design notes:
+- Semicolons are treated as newlines (`TokenKind::Newline`)
+- `re-run` is a single token — detected in `read_ident()` by checking if `"re"` is followed by `-run`
+- String interpolation (`"Hello, {name}!"`) is handled at the parser/interpreter level, not the lexer
+
+### Parser
+
+`Parser` struct has `namespaces: HashSet<String>` — populated by `use` declarations. This lets `parse_postfix()` decide whether `js.path.join(...)` is a `BridgeCall` or a `FieldAccess`.
+
+`expect_ident()` accepts ~30 keyword tokens as valid identifiers — GX is not strictly keyword-reserved, so `memory.plan = 1` is valid.
+
+`normalize_provider()` maps `"claude"` → `"anthropic"`, `"gpt"` → `"openai"`, etc.
+
+### Interpreter
+
+`Env` is a flat `HashMap<String, Value>` — no parent chain, no lexical scoping. This is intentional for Phase 1: GX agents have a single shared flat scope, which is simple and predictable.
+
+`memory` is stored as `Value::Object(HashMap)` inside `Env` under the key `"memory"`. All `memory.x` accesses resolve through `env.get("memory")` then field lookup.
+
+**Execution order for a helper:**
+1. Initialize `memory` from `remember {}` block
+2. Run all `when started {}` blocks
+3. Run the `brain {}` cycle (plan → execute → remember → communicate)
+4. Handle `re-run` signal (restart from step 3, max 100 cycles)
+5. Run remaining `when expr {}` and `when expr changes {}` blocks
+
+### Values
+
+`Value` enum:
+```rust
+pub enum Value {
+    Null,
+    Bool(bool),
+    Number(f64),
+    Str(String),
+    Array(Vec<Value>),
+    Object(HashMap<String, Value>),
+}
 ```
-gx/
-├── bin/                    # Compiled binaries
-├── build/                  # Build artifacts
-├── docs/                   # Documentation
-│   ├── reports/           # Implementation reports
-│   └── plans/             # Development plans
-├── examples/              # Example programs
-├── tests/                 # Test suite
-├── gx_stdlib/            # Standard library
-├── ide/                   # IDE integration
-├── *.gx                   # Core GX components
-├── build.sh               # Build script
-└── README.md             # Project overview
-```
 
-### Development Workflow
+`Value` implements `Display`, `PartialEq`, and `Clone`.
 
-1. **Make changes** to GX source files
-2. **Build** the system: `./build.sh`
-3. **Test** your changes: `./tests/run_tests.sh`
-4. **Run** examples: `./bin/gx examples/your_example.gx`
-5. **Commit** and **push** your changes
+### AI Module
 
-### IDE Setup
+`ask_ai(provider, model, params)` dispatches to `ask_openai`, `ask_anthropic`, or `ask_ollama`. All use `ureq` (synchronous HTTP — no async needed).
 
-#### VS Code (Recommended)
+Confidence scoring:
+- OpenAI: based on `finish_reason` (`"stop"` → 0.9, `"length"` → 0.7)
+- Anthropic: always starts at 0.9 (no logprobs exposed)
+- Both: adjusted down by `adjust_confidence_for_hedging()` which scans for phrases like "I think", "maybe", "not certain"
 
-1. Install the GX Language extension
-2. Configure syntax highlighting
-3. Enable IntelliSense for brain processes
-4. Set up debugging configuration
+### Bridge Module
 
-#### Vim/Neovim
+**JS bridge:** For each call, spawns `node -e` with the call embedded as JSON, reads JSON from stdout. Overhead: ~50ms per call (one-shot process).
 
-```vim
-" Add to your .vimrc
-autocmd BufRead,BufNewFile *.gx set filetype=gx
-autocmd FileType gx set syntax=gx
-```
-
-#### Emacs
-
-```elisp
-;; Add to your .emacs
-(add-to-list 'auto-mode-alist '("\\.gx\\'" . gx-mode))
-```
+**Python bridge:** `Bridge` struct with a persistent `child: Child` process running an embedded Python shim. Communicates via JSON over stdin/stdout. Overhead: ~5ms per call after startup. `Drop` impl sends `{"type":"exit"}` to clean up.
 
 ---
 
-## 📚 Language Reference
+## Adding a New Keyword
 
-### Core Concepts
+Example: adding `repeat N times { ... }`:
 
-#### Helper Definition
+**1. Lexer** (`src/lexer.rs`):
+```rust
+// In keyword_or_ident():
+"repeat" => TokenKind::Repeat,
+"times" => TokenKind::Times,
+```
 
-```gx
-helper "helper_name" {
-  can_do: ["capability1", "capability2"]
-  
-  remember {
-    variable1 = "value"
-    variable2 = 42
-  }
+**2. AST** (`src/ast.rs`):
+```rust
+// In Stmt enum:
+Repeat { count: Expr, body: Vec<Stmt>, line: usize },
+```
 
-  receive {
-    from "source" as "channel_name" {
-      type: "data_type"
-      bind: memory.variable
-      on_receive: brain.handler_function
-    }
-  }
-
-  brain {
-    plan { plan = analyze_input() }
-    execute { execute_actions(plan) }
-    remember { memory.result = plan.result }
-    communicate { broadcast "signal_name" }
-  }
+**3. Parser** (`src/parser.rs`):
+```rust
+// In parse_stmt():
+TokenKind::Repeat => {
+    let line = self.line();
+    self.advance();
+    let count = self.parse_expr()?;
+    self.expect(&TokenKind::Times)?;
+    let body = self.parse_block()?;
+    Ok(Stmt::Repeat { count, body, line })
 }
 ```
 
-#### Brain Process Cycle
-
-The brain process follows this cycle:
-
-1. **Plan** - Analyze input and create execution plan
-2. **Execute** - Perform actions based on plan
-3. **Remember** - Persist state and results
-4. **Communicate** - Signal completion and share results
-
-#### Memory Management
-
-```gx
-remember {
-  // Local variables
-  local_var = "value"
-  
-  // Arrays
-  data_array = [1, 2, 3, 4]
-  
-  // Objects
-  config = {
-    timeout: 5000,
-    retries: 3,
-    enabled: true
-  }
-  
-  // Nested structures
-  complex_data = {
-    user: {
-      name: "John",
-      preferences: {
-        theme: "dark",
-        language: "en"
-      }
+**4. Interpreter** (`src/interpreter.rs`):
+```rust
+// In run_stmt():
+Stmt::Repeat { count, body, .. } => {
+    let n = self.eval_expr(count, env)?.as_number().unwrap_or(0.0) as usize;
+    for _ in 0..n {
+        self.run_stmts(body, env)?;
     }
-  }
+    Ok(Value::Null)
 }
 ```
 
-#### Message Communication
-
-```gx
-receive {
-  from "input_source" as "channel_name" {
-    type: "data_type"
-    bind: memory.variable
-    on_receive: brain.handler_function
-  }
-}
-
-// Sending messages
-communicate {
-  broadcast "event_name"
-  send_to "target_helper" {
-    data: memory.result,
-    timestamp: get_timestamp()
-  }
-}
-```
-
-### Advanced Features
-
-#### Recipes (Functions)
-
-```gx
-recipe "calculate_sum" {
-  needs: numbers
-  gives: sum
-  
-  brain {
-    plan {
-      plan = { action: "sum_numbers" }
-    }
-    
-    execute {
-      if plan.action == "sum_numbers" {
-        sum = 0
-        for each number in numbers {
-          sum += number
+**5. Test** (`src/interpreter.rs` test module):
+```rust
+#[test]
+fn test_repeat() {
+    let src = r#"
+        helper "t" {
+            brain {
+                plan {}
+                execute {
+                    memory.n = 0
+                    repeat 3 times { memory.n += 1 }
+                }
+                remember {}
+                communicate {}
+            }
         }
-      }
-    }
-  }
-}
-```
-
-#### Objectives (Conditional Logic)
-
-```gx
-objective "check_threshold" {
-  when memory.value > 100
-  then {
-    action: "alert_high_value",
-    value: memory.value
-  }
-}
-```
-
-#### Messages (Event Handlers)
-
-```gx
-message "data_received" {
-  do {
-    log("Data received: " + memory.data)
-    process_data(memory.data)
-  }
+    "#;
+    assert!(run_source(src).is_ok());
 }
 ```
 
 ---
 
-## 🏗️ Architecture Overview
+## CI / Release
 
-### System Components
+**CI** (`.github/workflows/ci.yml`): runs on every push to `main` and on PRs.
+- `cargo test` on ubuntu, macos, windows
+- `cargo clippy -- -D warnings`
+- `cargo fmt --check`
+- Example file checks
 
-1. **GX Kernel** (`gx.kernel.gx`) - Self-hosting kernel
-2. **GX Parser** (`gx_parser_production.gx`) - Syntax parsing
-3. **GX Runtime** (`gx_runtime_production.gx`) - Execution engine
-4. **GX Compiler** (`gx_compiler.gx`) - Self-hosting compiler
-5. **GX Optimizer** (`gx_optimizer.gx`) - Code optimization
-6. **GX Render Engine** (`gx_render_engine.gx`) - UI rendering
-7. **DNKN Connector** (`gx_dnkn_connector.gx`) - Distributed mesh
-8. **GXOS Kernel** (`gxos_kernel.gx`) - Native OS capabilities
+**Release** (`.github/workflows/release.yml`): triggered by `v*` tags.
+- Cross-compiles for: `x86_64-linux`, `aarch64-linux`, `x86_64-macos`, `aarch64-macos`, `x86_64-windows`
+- Creates GitHub Release with all binaries attached
 
-### Data Flow
-
-```
-Source Code → Parser → AST → Compiler → Bytecode → Optimizer → Runtime
-     ↓
-Brain Process → Plan → Execute → Remember → Communicate
-     ↓
-Distributed Mesh → Knowledge Sharing → Pattern Discovery
-```
-
-### Memory Architecture
-
-- **Helper Memory**: Local state for each helper
-- **Global Memory**: Shared state across helpers
-- **Message Queue**: Inter-helper communication
-- **AST Storage**: Parsed program structure
-
----
-
-## 🧪 Testing Guide
-
-### Running Tests
-
+To cut a release:
 ```bash
-# Run all tests
-./tests/run_tests.sh
-
-# Run specific test categories
-./tests/test_brain_processes.sh
-./tests/test_compilation.sh
-./tests/test_distributed.sh
-./tests/test_optimization.sh
-```
-
-### Writing Tests
-
-Create test files in the `tests/` directory:
-
-```gx
-// tests/test_basic_helpers.gx
-helper "test_helper" {
-  can_do: ["testing"]
-  
-  remember {
-    test_results = []
-  }
-
-  brain {
-    plan {
-      plan = { action: "run_tests" }
-    }
-    
-    execute {
-      if plan.action == "run_tests" {
-        // Test brain process cycle
-        test_brain_cycle()
-        
-        // Test memory management
-        test_memory_operations()
-        
-        // Test message communication
-        test_message_passing()
-      }
-    }
-    
-    remember {
-      memory.test_results.push("all_tests_passed")
-    }
-    
-    communicate {
-      broadcast "tests_complete"
-    }
-  }
-}
-```
-
-### Test Categories
-
-1. **Unit Tests** - Individual helper testing
-2. **Integration Tests** - Helper interaction testing
-3. **Brain Process Tests** - Cognitive cycle validation
-4. **Compilation Tests** - Parser and compiler testing
-5. **Optimization Tests** - Code optimization validation
-6. **Distributed Tests** - Mesh networking testing
-
----
-
-## 🤝 Contributing Guidelines
-
-### Code Style
-
-1. **Helper Naming**: Use descriptive names in snake_case
-2. **Brain Process**: Always include all four phases
-3. **Memory Variables**: Use clear, descriptive names
-4. **Comments**: Add comments for complex logic
-5. **Error Handling**: Include proper error handling
-
-### Pull Request Process
-
-1. **Fork** the repository
-2. **Create** a feature branch
-3. **Make** your changes
-4. **Test** thoroughly
-5. **Document** your changes
-6. **Submit** a pull request
-
-### Commit Message Format
-
-```
-type(scope): description
-
-[optional body]
-
-[optional footer]
-```
-
-Examples:
-```
-feat(compiler): add constant folding optimization
-fix(runtime): resolve memory leak in helper cleanup
-docs(readme): update installation instructions
-test(parser): add tests for new syntax features
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 ---
 
-## 🐛 Debugging
+## Roadmap
 
-### Debug Mode
-
-```bash
-# Run with debug output
-./bin/gx --debug program.gx
-
-# Parse only (no execution)
-./bin/gx --parse program.gx
-
-# Verbose logging
-./bin/gx --verbose program.gx
-```
-
-### Common Issues
-
-#### Brain Process Errors
-
-```gx
-// ❌ Missing brain process
-helper "broken_helper" {
-  can_do: ["test"]
-  // Missing brain block
-}
-
-// ✅ Correct brain process
-helper "working_helper" {
-  can_do: ["test"]
-  
-  brain {
-    plan { plan = { action: "test" } }
-    execute { if plan.action == "test" { /* action */ } }
-    remember { memory.result = "success" }
-    communicate { broadcast "test_complete" }
-  }
-}
-```
-
-#### Memory Access Errors
-
-```gx
-// ❌ Accessing undefined memory
-brain {
-  execute {
-    result = memory.undefined_variable // Error!
-  }
-}
-
-// ✅ Proper memory initialization
-remember {
-  undefined_variable = null
-}
-
-brain {
-  execute {
-    if memory.undefined_variable {
-      result = memory.undefined_variable
-    }
-  }
-}
-```
-
-#### Message Communication Errors
-
-```gx
-// ❌ Sending to non-existent helper
-communicate {
-  send_to "non_existent_helper" { data: "test" } // Error!
-}
-
-// ✅ Check helper existence
-communicate {
-  if helper_exists("target_helper") {
-    send_to "target_helper" { data: "test" }
-  }
-}
-```
-
-### Debugging Tools
-
-1. **Brain Visualizer**: Real-time brain cycle visualization
-2. **Memory Inspector**: Live memory state monitoring
-3. **Message Tracer**: Inter-helper communication tracking
-4. **Performance Profiler**: Execution time analysis
+| Phase | Status |
+|-------|--------|
+| 1 — Rust interpreter | Done |
+| 2 — Simple syntax (`agent`, `when`, `re-run`) | Done |
+| 3 — AI primitives (`ask`, `embed`, `infer`) | Done |
+| 4 — Package interop (`use js.X`, `use py.X`) | Done |
+| 5 — Toolchain (`init`, `build`, `install`, `fmt`, `make`, `test`) | Done |
+| 6 — Distribution (curl, npm, Homebrew formula, CI/release) | Done |
+| 7 — Self-hosting (rewrite interpreter in GX itself) | Planned |
 
 ---
 
-## ⚡ Performance Optimization
-
-### Compilation Optimizations
-
-```bash
-# Enable aggressive optimization
-./bin/gx_compiler --optimize-level=aggressive source.gx
-
-# Profile compilation performance
-./bin/gx_compiler --profile source.gx
-
-# Generate optimization report
-./bin/gx_optimizer --report bytecode.bin
-```
-
-### Runtime Optimizations
-
-1. **Memory Pooling**: Reuse memory allocations
-2. **Helper Caching**: Cache frequently used helpers
-3. **Message Batching**: Batch multiple messages
-4. **Brain Cycle Optimization**: Optimize brain execution
-
-### Performance Best Practices
-
-```gx
-// ❌ Inefficient: Creating helpers in loops
-brain {
-  execute {
-    for each item in memory.items {
-      spawn_helper("processor") // Expensive!
-    }
-  }
-}
-
-// ✅ Efficient: Reuse existing helpers
-brain {
-  execute {
-    for each item in memory.items {
-      send_to "processor_pool" { data: item }
-    }
-  }
-}
-```
-
----
-
-## 🚀 Deployment
-
-### Development Deployment
-
-```bash
-# Build for development
-./build.sh --dev
-
-# Run with development settings
-./bin/gx --dev-mode program.gx
-```
-
-### Production Deployment
-
-```bash
-# Build for production
-./build.sh --production
-
-# Run with production settings
-./bin/gx --production-mode program.gx
-```
-
-### Container Deployment
-
-```dockerfile
-# Dockerfile
-FROM ubuntu:20.04
-
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    nasm \
-    make \
-    git
-
-# Copy GX source
-COPY . /gx
-WORKDIR /gx
-
-# Build GX
-RUN ./build.sh
-
-# Set entry point
-ENTRYPOINT ["./bin/gx"]
-```
-
-### Distributed Deployment
-
-```bash
-# Start mesh network
-./bin/gx_dnkn --mesh-mode --discovery-enabled
-
-# Join existing mesh
-./bin/gx_dnkn --connect-to node1:8080
-
-# Monitor mesh health
-./bin/gx_dnkn --health-check
-```
-
----
-
-## 📚 Additional Resources
-
-- **[API Reference](API_REFERENCE.md)** - Complete language reference
-- **[Examples](../examples/)** - Sample programs and use cases
-- **[Tests](../tests/)** - Test suite and examples
-- **[Reports](reports/)** - Implementation and completion reports
-- **[Plans](plans/)** - Development and integration plans
-
----
-
-*This guide is maintained by the GX Development Team. For questions or contributions, please see our [Contributing Guide](../CONTRIBUTING.md).*
-
-**© 2025 DEVJSX LIMITED, a company registered in England and Wales. Company Number: 16618207 Registered Office: 128 City Road, London, United Kingdom, EC1V 2NX website: [www.devjsx.com](http://www.devjsx.com/)**
-
-**Ahmed Elgarhy** - Founder of DEVJSX, AI Software Architect and cognitive programming pioneer.
+**© 2025 DEVJSX LIMITED** — Ahmed Elgarhy

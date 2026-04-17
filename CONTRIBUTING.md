@@ -1,483 +1,200 @@
-# 🤝 Contributing to GX Language
+# Contributing to GX Language
 
-Thank you for your interest in contributing to GX Language! This document provides guidelines and information for contributors.
-
-## 📋 Table of Contents
-
-1. [Getting Started](#getting-started)
-2. [Development Setup](#development-setup)
-3. [Code Style Guidelines](#code-style-guidelines)
-4. [Testing Guidelines](#testing-guidelines)
-5. [Pull Request Process](#pull-request-process)
-6. [Issue Reporting](#issue-reporting)
-7. [Community Guidelines](#community-guidelines)
+Thank you for contributing to GX. This document covers everything you need to get started.
 
 ---
 
-## 🚀 Getting Started
+## Prerequisites
 
-### Prerequisites
+- **Rust** (stable) — [rustup.rs](https://rustup.rs)
+- **Node.js** (optional, for JS bridge tests)
+- **Python 3** (optional, for Python bridge tests)
+- **Git**
 
-Before contributing, ensure you have:
+---
 
-- **GCC** (GNU Compiler Collection) 7.0 or higher
-- **NASM** (Netwide Assembler) for x86 builds
-- **GNU Binutils** for ARM64/RISC-V builds
-- **Git** for version control
-- **Make** for build automation
-
-### Quick Setup
+## Setup
 
 ```bash
-# Fork and clone the repository
-git clone https://github.com/your-username/gx.git
+git clone https://github.com/elgrhy/gx.git
 cd gx
+cargo build
+cargo test
+```
 
-# Build the system
-./build.sh
+That's it. No external build scripts, no GCC, no NASM.
 
-# Run tests to ensure everything works
-./tests/run_tests.sh
+---
+
+## Project Structure
+
+```
+src/
+├── main.rs          CLI — gx run, gx check, gx init, etc.
+├── lexer.rs         Tokenizer
+├── parser.rs        AST builder
+├── ast.rs           AST node definitions
+├── interpreter.rs   Tree-walking executor
+├── value.rs         Runtime value types (Null, Bool, Number, Str, Array, Object)
+├── ai.rs            AI provider connectors (OpenAI, Anthropic, Ollama)
+├── bridge.rs        JS and Python subprocess bridges
+├── toolchain.rs     gx init/build/install/fmt/make/test
+└── lib.rs           Public embedding API
+
+docs/examples/       Working .gx example files
+tests/               Rust unit tests (in src/) + .gx integration tests
+Formula/             Homebrew formula
+npm/                 npm wrapper package (gxlang)
+.github/workflows/   CI (ci.yml) and release (release.yml)
 ```
 
 ---
 
-## 🔧 Development Setup
-
-### Environment Setup
-
-1. **Install Dependencies**:
-   ```bash
-   # macOS
-   brew install gcc nasm make
-   
-   # Ubuntu/Debian
-   sudo apt-get install build-essential nasm
-   
-   # CentOS/RHEL
-   sudo yum groupinstall "Development Tools"
-   sudo yum install nasm
-   ```
-
-2. **Build Development Environment**:
-   ```bash
-   ./build.sh --dev
-   ```
-
-3. **Verify Installation**:
-   ```bash
-   ./bin/gx --version
-   ./bin/gx_compiler --help
-   ```
-
-### IDE Setup
-
-#### VS Code (Recommended)
-
-1. Install the GX Language extension
-2. Configure syntax highlighting
-3. Set up debugging configuration
-
-#### Vim/Neovim
-
-```vim
-" Add to your .vimrc
-autocmd BufRead,BufNewFile *.gx set filetype=gx
-autocmd FileType gx set syntax=gx
-```
-
-#### Emacs
-
-```elisp
-;; Add to your .emacs
-(add-to-list 'auto-mode-alist '("\\.gx\\'" . gx-mode))
-```
-
----
-
-## 📝 Code Style Guidelines
-
-### GX Language Style
-
-#### Helper Naming
-```gx
-// ✅ Good: Descriptive names in snake_case
-helper "data_processor" {
-  can_do: ["data_analysis", "pattern_recognition"]
-}
-
-// ❌ Bad: Unclear names
-helper "dp" {
-  can_do: ["da", "pr"]
-}
-```
-
-#### Brain Process Structure
-```gx
-// ✅ Good: Complete brain cycle
-brain {
-  plan {
-    plan = { action: "process_data" }
-  }
-  
-  execute {
-    if plan.action == "process_data" {
-      result = process(memory.data)
-    }
-  }
-  
-  remember {
-    memory.result = result
-  }
-  
-  communicate {
-    broadcast "processing_complete"
-  }
-}
-
-// ❌ Bad: Missing brain phases
-brain {
-  execute {
-    result = process(memory.data)
-  }
-}
-```
-
-#### Memory Management
-```gx
-// ✅ Good: Clear variable names
-remember {
-  data_points = []
-  analysis_results = {}
-  last_processed_time = null
-}
-
-// ❌ Bad: Unclear variable names
-remember {
-  dp = []
-  ar = {}
-  lpt = null
-}
-```
-
-#### Comments and Documentation
-```gx
-// ✅ Good: Clear comments
-helper "complex_processor" {
-  can_do: ["complex_analysis"]
-  
-  remember {
-    // Cache for optimization results
-    optimization_cache = {}
-    
-    // Configuration for analysis
-    analysis_config = {
-      timeout: 5000,
-      max_iterations: 100
-    }
-  }
-
-  brain {
-    plan {
-      // Analyze input and create execution plan
-      plan = { action: "perform_complex_analysis" }
-    }
-    
-    execute {
-      if plan.action == "perform_complex_analysis" {
-        // Process data with optimization
-        result = process_with_optimization(memory.data)
-      }
-    }
-  }
-}
-```
-
-### C/C++ Style (for runtime components)
-
-#### Naming Conventions
-```c
-// ✅ Good: Clear function and variable names
-void process_gx_helper(const char* helper_name) {
-    int helper_count = 0;
-    struct helper_data* current_helper = NULL;
-}
-
-// ❌ Bad: Unclear names
-void pgh(const char* hn) {
-    int hc = 0;
-    struct hd* ch = NULL;
-}
-```
-
-#### Error Handling
-```c
-// ✅ Good: Proper error handling
-int compile_gx_file(const char* filename) {
-    FILE* file = fopen(filename, "r");
-    if (!file) {
-        fprintf(stderr, "Error: Cannot open file %s\n", filename);
-        return -1;
-    }
-    
-    // Process file...
-    
-    fclose(file);
-    return 0;
-}
-```
-
----
-
-## 🧪 Testing Guidelines
-
-### Writing Tests
-
-Create test files in the `tests/` directory:
-
-```gx
-// tests/test_your_feature.gx
-helper "feature_tester" {
-  can_do: ["testing", "feature_validation"]
-  
-  remember {
-    test_results = []
-    test_count = 0
-  }
-
-  brain {
-    plan {
-      plan = { action: "run_feature_tests" }
-    }
-    
-    execute {
-      if plan.action == "run_feature_tests" {
-        // Test your feature
-        result = test_your_feature()
-        memory.test_results.push(result)
-        memory.test_count += 1
-      }
-    }
-    
-    remember {
-      memory.last_test_time = get_timestamp()
-    }
-    
-    communicate {
-      broadcast "feature_test_complete" {
-        test_count: memory.test_count,
-        results: memory.test_results
-      }
-    }
-  }
-}
-```
-
-### Running Tests
+## Running Tests
 
 ```bash
-# Run all tests
-./tests/run_tests.sh
+# Rust unit tests (24 tests covering lexer, parser, interpreter)
+cargo test
 
-# Run specific test category
-./tests/test_brain_processes.sh
+# Lint (must pass — CI enforces -D warnings)
+cargo clippy -- -D warnings
 
-# Run with verbose output
-./bin/gx --debug tests/test_your_feature.gx
-```
+# Format (must pass — CI enforces)
+cargo fmt --check
 
-### Test Categories
-
-1. **Unit Tests**: Test individual helpers and functions
-2. **Integration Tests**: Test helper interactions
-3. **Brain Process Tests**: Validate cognitive cycles
-4. **Compilation Tests**: Test parser and compiler
-5. **Performance Tests**: Test optimization and performance
-6. **Distributed Tests**: Test mesh networking
-
----
-
-## 🔄 Pull Request Process
-
-### Before Submitting
-
-1. **Fork the repository**
-2. **Create a feature branch**:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3. **Make your changes**
-4. **Test thoroughly**:
-   ```bash
-   ./build.sh
-   ./tests/run_tests.sh
-   ```
-5. **Update documentation** if needed
-
-### Commit Message Format
-
-Use conventional commit format:
-
-```
-type(scope): description
-
-[optional body]
-
-[optional footer]
-```
-
-**Types:**
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation changes
-- `style`: Code style changes
-- `refactor`: Code refactoring
-- `test`: Test additions/changes
-- `chore`: Build/tooling changes
-
-**Examples:**
-```
-feat(compiler): add constant folding optimization
-fix(runtime): resolve memory leak in helper cleanup
-docs(readme): update installation instructions
-test(parser): add tests for new syntax features
-```
-
-### Pull Request Template
-
-```markdown
-## Description
-Brief description of changes
-
-## Type of Change
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Documentation update
-- [ ] Test addition
-- [ ] Performance improvement
-- [ ] Refactoring
-
-## Testing
-- [ ] All tests pass
-- [ ] New tests added
-- [ ] Manual testing completed
-
-## Checklist
-- [ ] Code follows style guidelines
-- [ ] Self-review completed
-- [ ] Documentation updated
-- [ ] Tests added/updated
-- [ ] No breaking changes
+# Run a GX example
+cargo run -- run docs/examples/hello_world.gx
+cargo run -- run docs/examples/simple_agent.gx
+cargo run -- run docs/examples/calculator.gx
 ```
 
 ---
 
-## 🐛 Issue Reporting
+## Adding a Feature
 
-### Before Reporting
+### 1. New keyword
 
-1. **Search existing issues** to avoid duplicates
-2. **Check documentation** for solutions
-3. **Test with latest version**
+1. Add a `TokenKind` variant in `lexer.rs`
+2. Map the keyword string in `Lexer::keyword_or_ident()`
+3. Add `expect_ident()` handling in `parser.rs` if the keyword can appear as an identifier
+4. Add the AST node in `ast.rs`
+5. Parse it in `parser.rs`
+6. Execute it in `interpreter.rs`
+7. Write a Rust test and a `.gx` test file
 
-### Issue Template
+### 2. New built-in function
 
-```markdown
-## Bug Description
-Clear description of the issue
+Add a match arm in `Interpreter::call_builtin()` in `interpreter.rs`.
 
-## Steps to Reproduce
-1. Step 1
-2. Step 2
-3. Step 3
+### 3. New AI provider
 
-## Expected Behavior
-What should happen
+Add a dispatch arm in `ai.rs::ask_ai()` and implement `ask_<provider>()`.
 
-## Actual Behavior
-What actually happens
+### 4. New toolchain command
 
-## Environment
-- OS: [e.g., macOS 12.0]
-- GX Version: [e.g., 1.0.0]
-- Architecture: [e.g., x86_64]
+Add a function in `toolchain.rs` and a CLI arm in `main.rs`.
 
-## Additional Information
-Screenshots, logs, etc.
+---
+
+## Code Style
+
+- Run `cargo fmt` before every commit
+- Run `cargo clippy -- -D warnings` and fix all warnings
+- No `unsafe` code
+- No `unwrap()` in production paths — use `?` or explicit error handling
+- Write a test for every new language feature
+
+---
+
+## Writing Tests
+
+### Rust unit tests
+
+Add to the relevant `mod tests {}` block in each source file:
+
+```rust
+#[test]
+fn test_my_feature() {
+    let result = run_source(r#"
+        agent "test" {
+            when started { say "ok" }
+            brain { plan {} execute {} remember {} communicate {} }
+        }
+    "#);
+    assert!(result.is_ok());
+}
 ```
 
-### Feature Request Template
+### GX integration tests
 
-```markdown
-## Feature Description
-Clear description of the requested feature
+Create `tests/test_my_feature.gx`:
 
-## Use Case
-Why this feature is needed
+```gx
+helper "test_my_feature" {
+  brain {
+    plan { plan = { action: "test" } }
+    execute {
+      if plan.action == "test" {
+        result = 1 + 1
+        if result == 2 {
+          log("PASS: arithmetic works")
+        } else {
+          log("FAIL: arithmetic broken")
+        }
+      }
+    }
+    remember {}
+    communicate {}
+  }
+}
+```
 
-## Proposed Implementation
-How you think it should work
+Run with: `gx test tests/`
 
-## Alternatives Considered
-Other approaches you considered
+---
+
+## Commit Messages
+
+Use conventional commits:
+
+```
+feat(lexer): add TokenKind::When variant
+fix(interpreter): memory not persisted across when blocks
+docs: update API reference with embed examples
+test(parser): add test for nested field access
 ```
 
 ---
 
-## 👥 Community Guidelines
+## Pull Request Checklist
 
-### Code of Conduct
-
-We are committed to providing a welcoming and inclusive environment for all contributors.
-
-#### Our Standards
-
-**Examples of behavior that contributes to a positive environment:**
-- Using welcoming and inclusive language
-- Being respectful of differing viewpoints
-- Gracefully accepting constructive criticism
-- Focusing on what is best for the community
-- Showing empathy towards other community members
-
-**Examples of unacceptable behavior:**
-- The use of sexualized language or imagery
-- Trolling, insulting/derogatory comments
-- Personal or political attacks
-- Publishing others' private information
-- Other conduct which could reasonably be considered inappropriate
-
-### Communication
-
-- **GitHub Issues**: For bug reports and feature requests
-- **GitHub Discussions**: For questions and general discussion
-- **Discord**: For real-time community chat
-
-### Recognition
-
-Contributors will be recognized in:
-- **README.md** contributors section
-- **Release notes** for significant contributions
-- **GitHub contributors** page
+- [ ] `cargo fmt` — no changes
+- [ ] `cargo clippy -- -D warnings` — no errors
+- [ ] `cargo test` — all pass
+- [ ] New feature has a test (Rust unit test + .gx test file)
+- [ ] Example in `docs/examples/` if it's a user-facing feature
+- [ ] Docs updated if syntax changed
 
 ---
 
-## 📚 Additional Resources
+## Reporting Issues
 
-- **[Developer Guide](docs/DEVELOPER_GUIDE.md)** - Detailed development guide
-- **[API Reference](docs/API_REFERENCE.md)** - Complete language reference
-- **[Examples](examples/)** - Sample programs and use cases
-- **[Tests](tests/)** - Test suite and examples
+Use [GitHub Issues](https://github.com/elgrhy/gx/issues). Include:
 
----
-
-## 🙏 Thank You
-
-Thank you for contributing to GX Language! Your contributions help make brain-first programming accessible to everyone.
+- GX version (`gx version`)
+- OS and architecture
+- Minimal `.gx` file that reproduces the issue
+- Expected vs actual output
 
 ---
 
-*This contributing guide is maintained by the GX Development Team. For questions or suggestions, please open an issue or join our discussions.*
+## Community
 
-**© 2025 DEVJSX LIMITED, a company registered in England and Wales. Company Number: 16618207 Registered Office: 128 City Road, London, United Kingdom, EC1V 2NX website: [www.devjsx.com](http://www.devjsx.com/)**
+- GitHub Issues — bug reports and feature requests
+- GitHub Discussions — questions and ideas
 
-**Ahmed Elgarhy** - Founder of DEVJSX, AI Software Architect and cognitive programming pioneer.
+---
+
+**© 2025 DEVJSX LIMITED** — Company No: 16618207
+
+**Ahmed Elgarhy** — Founder, DEVJSX | AI Software Architect

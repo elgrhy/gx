@@ -1,635 +1,448 @@
-# 📚 GX Language API Reference
+# GX Language — API Reference
 
-## 📋 Table of Contents
-
-1. [Language Constructs](#language-constructs)
-2. [Built-in Functions](#built-in-functions)
-3. [System Calls](#system-calls)
-4. [Standard Library](#standard-library)
-5. [Error Handling](#error-handling)
-6. [Performance APIs](#performance-apis)
-7. [Distributed APIs](#distributed-apis)
+Complete reference for GX syntax, built-in functions, and AI primitives.
 
 ---
 
-## 🏗️ Language Constructs
+## Top-Level Structure
 
-### Helper Definition
+### `helper` / `agent`
+
+Both keywords define the same thing — a cognitive agent. `agent` is the simple-syntax alias.
 
 ```gx
-helper "helper_name" {
-  can_do: ["capability1", "capability2"]
-  
-  remember {
-    variable1 = "value"
-    variable2 = 42
-  }
+helper "name" {
+  remember { ... }
+  receive { ... }
+  brain { ... }
+  when trigger { ... }
+}
 
-  receive {
-    from "source" as "channel_name" {
-      type: "data_type"
-      bind: memory.variable
-      on_receive: brain.handler_function
-    }
-  }
-
-  brain {
-    plan { plan = analyze_input() }
-    execute { execute_actions(plan) }
-    remember { memory.result = plan.result }
-    communicate { broadcast "signal_name" }
-  }
+agent "name" {
+  remember { ... }
+  when trigger { ... }
 }
 ```
 
-**Parameters:**
-- `helper_name` (string): Unique identifier for the helper
-- `can_do` (array): List of capabilities the helper provides
-- `remember` (block): Memory initialization and state management
-- `receive` (block): Input channel definitions
-- `brain` (block): Cognitive process implementation
+### `use` — Package Import
 
-### Brain Process
+```gx
+use js.axios        // npm package
+use py.requests     // Python package
+use js.lodash
+use py.pandas
+```
+
+After import, the package is callable as `namespace.module.method(args)`:
+```gx
+use js.path
+result = js.path.join("/home", "user")
+```
+
+---
+
+## Blocks
+
+### `remember` — Memory Initialization
+
+```gx
+remember {
+  count = 0
+  name = "default"
+  items = []
+  config = { timeout: 5000 }
+}
+```
+
+Values declared here are accessible as `memory.key` everywhere in the helper.
+
+### `brain` — Cognitive Cycle
 
 ```gx
 brain {
   plan {
-    plan = { action: "process_data", priority: "high" }
+    // Decide what to do
+    plan = { action: "process" }
   }
-  
   execute {
-    if plan.action == "process_data" {
-      result = process(memory.data)
+    // Do it
+    if plan.action == "process" {
+      result = 42
     }
   }
-  
   remember {
-    memory.result = result
-    memory.last_execution = get_timestamp()
+    // Store results
+    memory.last_result = result
   }
-  
   communicate {
-    broadcast "processing_complete"
-    send_to "logger" { data: result }
+    // Emit events
+    emit "done" { value: memory.last_result }
   }
 }
 ```
 
-**Phases:**
-- `plan`: Analyze input and create execution plan
-- `execute`: Perform actions based on plan
-- `remember`: Persist state and results
-- `communicate`: Signal completion and share results
+The brain cycle runs until it finishes or a `re-run` is encountered (which restarts the cycle, max 100 iterations).
 
-### Memory Management
+### `when` — Trigger Blocks
 
 ```gx
-remember {
-  // Primitive types
-  string_var = "hello"
-  number_var = 42
-  boolean_var = true
-  null_var = null
-  
-  // Arrays
-  array_var = [1, 2, 3, 4]
-  mixed_array = ["string", 42, true]
-  
-  // Objects
-  object_var = {
-    key1: "value1",
-    key2: 42,
-    nested: {
-      subkey: "subvalue"
-    }
-  }
-  
-  // Functions
-  function_var = function(x) { return x * 2 }
+// Runs once on startup, before the brain cycle
+when started {
+  say "Agent is ready"
+}
+
+// Runs if the condition is true after the brain cycle
+when memory.count > 10 {
+  log("Threshold reached")
+}
+
+// Runs when the value changes
+when memory.status changes {
+  re-run
 }
 ```
 
-### Message Communication
+### `receive` — Channel Bindings
 
 ```gx
 receive {
-  from "source" as "channel_name" {
-    type: "data_type"
-    bind: memory.variable
-    on_receive: brain.handler_function
-  }
-}
-
-communicate {
-  broadcast "event_name"
-  send_to "target_helper" {
-    data: memory.result,
-    timestamp: get_timestamp()
-  }
-}
-```
-
-### Recipe (Function) Definition
-
-```gx
-recipe "function_name" {
-  needs: parameter1, parameter2
-  gives: return_value
-  
-  brain {
-    plan {
-      plan = { action: "process_parameters" }
-    }
-    
-    execute {
-      if plan.action == "process_parameters" {
-        return_value = process(parameter1, parameter2)
-      }
-    }
-  }
-}
-```
-
-### Objective (Conditional Logic)
-
-```gx
-objective "objective_name" {
-  when condition_expression
-  then {
-    action: "action_name",
-    parameters: action_parameters
-  }
-}
-```
-
-### Message Handler
-
-```gx
-message "message_name" {
-  do {
-    // Handler implementation
-    process_message(memory.message_data)
+  channel "input" {
+    source: "other_helper"
+    type: "message"
+    bind: memory.incoming
+    on_receive: brain.handler
   }
 }
 ```
 
 ---
 
-## 🔧 Built-in Functions
+## Statements
 
-### System Functions
+### Assignment
 
 ```gx
-// Time and timing
-get_timestamp()           // Returns current timestamp
-sleep(milliseconds)       // Sleep for specified milliseconds
-delay(milliseconds)       // Non-blocking delay
-
-// Memory management
-allocate_memory(size)     // Allocate memory block
-free_memory(pointer)      // Free allocated memory
-get_memory_usage()        // Get current memory usage
-
-// Process management
-get_current_process_id()  // Get current process ID
-spawn_process(command)    // Spawn new process
-kill_process(pid)         // Terminate process
-
-// File system
-read_file(filename)       // Read file contents
-write_file(filename, data) // Write data to file
-file_exists(filename)     // Check if file exists
-delete_file(filename)     // Delete file
+x = 42
+memory.count = 0
+memory.user.name = "Ahmed"
 ```
 
-### String Functions
+### Augmented Assignment
 
 ```gx
-// String manipulation
-string_length(str)        // Get string length
-string_concat(str1, str2) // Concatenate strings
-string_substring(str, start, end) // Extract substring
-string_split(str, delimiter) // Split string
-string_replace(str, old, new) // Replace substring
-string_to_upper(str)     // Convert to uppercase
-string_to_lower(str)     // Convert to lowercase
-string_trim(str)         // Remove whitespace
+memory.count += 1
+memory.score -= 5
+memory.total *= 2
 ```
 
-### Array Functions
+### `if` / `else if` / `else`
 
 ```gx
-// Array operations
-array_length(arr)         // Get array length
-array_push(arr, item)     // Add item to end
-array_pop(arr)           // Remove and return last item
-array_shift(arr)         // Remove and return first item
-array_unshift(arr, item) // Add item to beginning
-array_slice(arr, start, end) // Extract subarray
-array_join(arr, separator) // Join array elements
-array_sort(arr)          // Sort array
-array_reverse(arr)       // Reverse array
-```
-
-### Object Functions
-
-```gx
-// Object operations
-object_keys(obj)         // Get object keys
-object_values(obj)       // Get object values
-object_has_key(obj, key) // Check if key exists
-object_get(obj, key)     // Get object value
-object_set(obj, key, value) // Set object value
-object_delete(obj, key)  // Delete object property
-object_merge(obj1, obj2) // Merge objects
-object_clone(obj)        // Clone object
-```
-
-### Mathematical Functions
-
-```gx
-// Basic math
-add(a, b)                // Addition
-subtract(a, b)           // Subtraction
-multiply(a, b)           // Multiplication
-divide(a, b)             // Division
-modulo(a, b)             // Modulo
-power(base, exponent)    // Exponentiation
-
-// Advanced math
-sqrt(number)             // Square root
-abs(number)              // Absolute value
-floor(number)            // Floor function
-ceil(number)             // Ceiling function
-round(number)            // Round to nearest integer
-random(min, max)         // Random number generation
-```
-
-### Network Functions
-
-```gx
-// Network operations
-http_get(url)            // HTTP GET request
-http_post(url, data)     // HTTP POST request
-http_put(url, data)      // HTTP PUT request
-http_delete(url)         // HTTP DELETE request
-websocket_connect(url)   // WebSocket connection
-websocket_send(data)     // Send WebSocket message
-websocket_close()        // Close WebSocket connection
-```
-
----
-
-## 💻 System Calls
-
-### Process Management
-
-```gx
-// Process creation and control
-sys_fork()               // Create child process
-sys_exec(filename, args) // Execute program
-sys_exit(exit_code)      // Terminate process
-sys_wait(pid)           // Wait for process
-sys_kill(pid, signal)   // Send signal to process
-sys_getpid()            // Get process ID
-sys_getppid()           // Get parent process ID
-```
-
-### Memory Management
-
-```gx
-// Memory allocation and management
-sys_brk(new_break)      // Set heap break point
-sys_mmap(address, length, prot, flags) // Memory mapping
-sys_munmap(address, length) // Unmap memory
-sys_mprotect(address, length, prot) // Change protection
-```
-
-### File System
-
-```gx
-// File operations
-sys_open(filename, flags) // Open file
-sys_read(fd, buffer, size) // Read from file
-sys_write(fd, buffer, size) // Write to file
-sys_close(fd)           // Close file
-sys_lseek(fd, offset, whence) // Seek in file
-sys_unlink(filename)    // Delete file
-sys_mkdir(pathname, mode) // Create directory
-sys_rmdir(pathname)     // Remove directory
-```
-
-### Device Management
-
-```gx
-// Device operations
-sys_ioctl(fd, request, arg) // Device control
-sys_device_open(device, mode) // Open device
-sys_device_close(fd)    // Close device
-sys_device_read(fd, buffer, size) // Read from device
-sys_device_write(fd, buffer, size) // Write to device
-```
-
-### Network Operations
-
-```gx
-// Network socket operations
-sys_socket(domain, type, protocol) // Create socket
-sys_bind(sockfd, addr, addrlen) // Bind socket
-sys_connect(sockfd, addr, addrlen) // Connect socket
-sys_listen(sockfd, backlog) // Listen for connections
-sys_accept(sockfd, addr, addrlen) // Accept connection
-sys_send(sockfd, buffer, size, flags) // Send data
-sys_recv(sockfd, buffer, size, flags) // Receive data
-sys_close(sockfd)       // Close socket
-```
-
----
-
-## 📚 Standard Library
-
-### Configuration Management
-
-```gx
-helper "config_manager" {
-  can_do: ["configuration", "settings_management"]
-  
-  remember {
-    config = {}
-    config_file = "config.json"
-  }
-
-  brain {
-    plan {
-      plan = { action: "load_configuration" }
-    }
-    
-    execute {
-      if plan.action == "load_configuration" {
-        memory.config = load_config_file(memory.config_file)
-      }
-    }
-    
-    communicate {
-      broadcast "configuration_loaded"
-    }
-  }
+if memory.count > 10 {
+  log("big")
+} else if memory.count > 5 {
+  log("medium")
+} else {
+  log("small")
 }
 ```
 
-### Logging System
+### `for` / `for each`
 
 ```gx
-helper "logger" {
-  can_do: ["logging", "debug_output"]
-  
-  remember {
-    log_level = "info"
-    log_file = "app.log"
-  }
+for item in memory.items {
+  log(item)
+}
 
-  brain {
-    plan {
-      plan = { action: "log_message" }
-    }
-    
-    execute {
-      if plan.action == "log_message" {
-        write_log(memory.log_level, memory.message)
-      }
-    }
-  }
+for each x in [1, 2, 3] {
+  memory.total += x
 }
 ```
 
-### Database Interface
-
-```gx
-helper "database_manager" {
-  can_do: ["database_operations", "query_execution"]
-  
-  remember {
-    connection = null
-    database_url = "sqlite://data.db"
-  }
-
-  brain {
-    plan {
-      plan = { action: "execute_query" }
-    }
-    
-    execute {
-      if plan.action == "execute_query" {
-        memory.result = execute_sql_query(memory.query)
-      }
-    }
-  }
-}
-```
-
----
-
-## ⚠️ Error Handling
-
-### Try-Catch Blocks
+### `try` / `catch`
 
 ```gx
 try {
-  // Risky operation
-  result = divide(a, b)
-} catch (error) {
-  // Handle error
-  log("Division error: " + error.message)
-  result = 0
+  result = js.axios.get("https://api.example.com")
+} catch e {
+  log("Request failed: " + e)
 }
 ```
 
-### Error Types
+### `log` / `say` / `output`
+
+All three print to stdout. `say` and `log` are equivalent; `output` is the same.
 
 ```gx
-// Common error types
-RuntimeError              // Runtime execution error
-SyntaxError              // Syntax parsing error
-TypeError                // Type mismatch error
-ReferenceError           // Undefined variable error
-NetworkError             // Network communication error
-FileError                // File system error
-MemoryError              // Memory allocation error
+log("message")
+say "message"
+output("message")
+say "Hello, {memory.name}!"      // string interpolation
 ```
 
-### Error Handling Functions
+### `emit` — Emit an Event
 
 ```gx
-// Error handling utilities
-throw_error(message)     // Throw custom error
-catch_error(operation)   // Catch operation errors
-is_error(value)         // Check if value is error
-get_error_message(error) // Get error message
-get_error_stack(error)  // Get error stack trace
+emit "event_name" { key: value, other: memory.x }
 ```
 
----
-
-## ⚡ Performance APIs
-
-### Profiling
+### `broadcast`
 
 ```gx
-// Performance profiling
-start_profiler()         // Start performance profiling
-stop_profiler()          // Stop profiling
-get_profiler_data()      // Get profiling results
-get_execution_time()     // Get current execution time
-get_memory_usage()       // Get memory usage statistics
-get_cpu_usage()          // Get CPU usage statistics
+broadcast "event_name"
 ```
 
-### Optimization
+### `re-run`
+
+Restarts the brain cycle from the `plan` block. Maximum 100 iterations before error.
 
 ```gx
-// Code optimization
-optimize_code(source)    // Optimize source code
-compile_to_bytecode(source) // Compile to bytecode
-optimize_bytecode(bytecode) // Optimize bytecode
-generate_native_code(bytecode) // Generate native code
+when memory.retries < 3 {
+  memory.retries += 1
+  re-run
+}
 ```
 
-### Caching
+### `escalate to human`
+
+Stops the brain cycle and emits an escalation signal.
 
 ```gx
-// Caching mechanisms
-cache_set(key, value, ttl) // Set cache value
-cache_get(key)           // Get cache value
-cache_delete(key)        // Delete cache value
-cache_clear()            // Clear all cache
-cache_stats()            // Get cache statistics
+if result.confidence < 0.6 {
+  escalate to human
+}
+```
+
+### `wait`
+
+```gx
+wait 1000    // wait 1000ms
 ```
 
 ---
 
-## 🌐 Distributed APIs
+## Expressions
 
-### Mesh Networking
+### Literals
 
 ```gx
-// Distributed mesh operations
-mesh_connect(node_address) // Connect to mesh node
-mesh_disconnect(node_id)  // Disconnect from node
-mesh_broadcast(message)   // Broadcast to all nodes
-mesh_send(node_id, message) // Send to specific node
-mesh_receive()           // Receive mesh messages
-mesh_get_nodes()         // Get connected nodes
-mesh_get_topology()      // Get network topology
+42          // integer
+3.14        // float
+"hello"     // string
+true        // bool
+false       // bool
+null        // null
+[1, 2, 3]  // array
+{ a: 1 }   // object
 ```
 
-### Knowledge Sharing
+### String Interpolation
 
 ```gx
-// Knowledge sharing operations
-share_knowledge(data)    // Share knowledge with mesh
-receive_knowledge()      // Receive shared knowledge
-get_shared_patterns()    // Get discovered patterns
-get_optimization_tips()  // Get optimization tips
-get_best_practices()     // Get best practices
+"Hello, {name}!"
+"Count is {memory.count}, timestamp {get_timestamp()}"
 ```
 
-### Pattern Discovery
+### Field Access
 
 ```gx
-// Pattern discovery and learning
-discover_patterns(data)  // Discover patterns in data
-learn_from_pattern(pattern) // Learn from discovered pattern
-apply_pattern(pattern, data) // Apply pattern to data
-get_learning_stats()     // Get learning statistics
-get_pattern_effectiveness(pattern) // Get pattern effectiveness
+memory.name
+result.confidence
+config.database.host
 ```
 
----
-
-## 🔍 Debugging APIs
-
-### Debugging Functions
+### Index Access
 
 ```gx
-// Debugging utilities
-debug_log(message)       // Log debug message
-debug_break()           // Set debug breakpoint
-debug_inspect(variable) // Inspect variable value
-debug_trace()           // Enable execution tracing
-debug_profile()         // Enable performance profiling
-debug_memory()          // Inspect memory usage
+items[0]
+memory.matrix[1][2]
 ```
 
-### Brain Process Debugging
+### Method Calls
 
 ```gx
-// Brain process debugging
-debug_brain_cycle()     // Debug brain cycle execution
-debug_memory_state()    // Debug memory state
-debug_message_flow()    // Debug message communication
-debug_helper_lifecycle() // Debug helper lifecycle
-debug_optimization()    // Debug optimization process
+"hello".length()
+"hello world".split(" ")
+" hello ".trim()
+"hello".upper()
+"HELLO".lower()
+"hello world".contains("world")
+"hello".replace("l", "r")
+[1, 2, 3].length()
+```
+
+### Function Calls
+
+```gx
+log("message")
+get_timestamp()
+to_string(42)
+len("hello")
 ```
 
 ---
 
-## 📊 Monitoring APIs
+## Built-in Functions
 
-### System Monitoring
+| Function | Description | Example |
+|----------|-------------|---------|
+| `log(v)` | Print value to stdout | `log("hello")` |
+| `say x` | Print value (statement) | `say "hello"` |
+| `get_timestamp()` | Unix timestamp in milliseconds | `t = get_timestamp()` |
+| `to_string(v)` | Convert to string | `s = to_string(42)` |
+| `len(v)` | Length of string or array | `n = len("hello")` |
 
-```gx
-// System monitoring
-get_system_stats()      // Get system statistics
-get_process_stats()     // Get process statistics
-get_memory_stats()      // Get memory statistics
-get_network_stats()     // Get network statistics
-get_disk_stats()        // Get disk statistics
-get_cpu_stats()         // Get CPU statistics
-```
+### String Methods
 
-### Application Monitoring
+| Method | Description |
+|--------|-------------|
+| `.length()` | Character count |
+| `.upper()` | Uppercase |
+| `.lower()` | Lowercase |
+| `.trim()` | Strip whitespace |
+| `.split(sep)` | Split into array |
+| `.contains(sub)` | Substring check |
+| `.starts_with(s)` | Prefix check |
+| `.ends_with(s)` | Suffix check |
+| `.replace(from, to)` | Replace substring |
 
-```gx
-// Application monitoring
-get_app_metrics()       // Get application metrics
-get_performance_metrics() // Get performance metrics
-get_error_rates()       // Get error rates
-get_throughput_stats()  // Get throughput statistics
-get_latency_stats()     // Get latency statistics
-```
+### Array Methods
 
----
+| Method | Description |
+|--------|-------------|
+| `.length()` | Element count |
+| `.push(v)` | Append (returns new array) |
+| `.pop()` | Remove last |
+| `.first()` | First element |
+| `.last()` | Last element |
+| `.contains(v)` | Membership check |
+| `.join(sep)` | Join to string |
+| `.reverse()` | Reversed copy |
 
-## 🚀 Deployment APIs
+### Object Methods
 
-### Container Management
-
-```gx
-// Container operations
-container_create(image) // Create container
-container_start(id)     // Start container
-container_stop(id)      // Stop container
-container_restart(id)   // Restart container
-container_delete(id)    // Delete container
-container_logs(id)      // Get container logs
-```
-
-### Kubernetes Integration
-
-```gx
-// Kubernetes operations
-k8s_deploy(manifest)   // Deploy to Kubernetes
-k8s_scale(deployment, replicas) // Scale deployment
-k8s_update(deployment, image) // Update deployment
-k8s_delete(resource)   // Delete Kubernetes resource
-k8s_get_pods()         // Get pod information
-k8s_get_services()     // Get service information
-```
+| Method | Description |
+|--------|-------------|
+| `.has(key)` / `.has_key(key)` | Key existence check |
+| `.keys()` | Array of keys |
+| `.values()` | Array of values |
 
 ---
 
-*This API reference is maintained by the GX Development Team. For questions or contributions, please see our [Contributing Guide](../CONTRIBUTING.md).*
+## AI Primitives
 
-**© 2025 DEVJSX LIMITED, a company registered in England and Wales. Company Number: 16618207 Registered Office: 128 City Road, London, United Kingdom, EC1V 2NX website: [www.devjsx.com](http://www.devjsx.com/)**
+### `ask` — Call an AI Model
 
-**Ahmed Elgarhy** - Founder of DEVJSX, AI Software Architect and cognitive programming pioneer.
+```gx
+result = ask openai {
+  prompt: "Summarize this: {memory.text}",
+  max_tokens: 200,
+  temperature: 0.7
+}
+
+result = ask anthropic {
+  prompt: "What is 2 + 2?",
+  system: "You are a math tutor."
+}
+
+result = ask ollama {
+  prompt: "Explain recursion."
+}
+
+result = ask ollama:mistral {
+  prompt: "Translate to French: {memory.text}"
+}
+```
+
+**Response object:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `result.text` | String | The model's response |
+| `result.confidence` | Number | 0.0–1.0, adjusted for hedging |
+| `result.tokens_used` | Number | Total tokens consumed |
+| `result.model` | String | Model name used |
+| `result.provider` | String | `openai`, `anthropic`, or `ollama` |
+| `result.ok` | Bool | `true` if request succeeded |
+
+**Provider model defaults:**
+- `openai` → `gpt-4o-mini`
+- `anthropic` → `claude-haiku-4-5-20251001`
+- `ollama` → `llama3`
+
+**Environment variables required:**
+```bash
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+# ollama: no key needed, run: ollama serve
+```
+
+### `embed` — Text Embeddings
+
+```gx
+vector = embed "text to convert to a vector"
+```
+
+Returns `Value::Array` of floats. Uses OpenAI `text-embedding-3-small`. Requires `OPENAI_API_KEY`.
+
+### `infer classifier` — Classification
+
+```gx
+label = infer classifier {
+  input: memory.user_message,
+  classes: ["support", "sales", "spam", "other"]
+}
+```
+
+Returns the matched class as a string. Uses the model to pick the best matching class.
+
+---
+
+## Package Interop
+
+### Import
+
+```gx
+use js.axios
+use py.pandas
+use js.path
+use py.os
+```
+
+### Call
+
+After declaring `use js.path`, any call matching `js.path.*` is routed to Node.js:
+
+```gx
+result = js.path.join("/home", "user", "docs")
+platform = js.os.platform()
+```
+
+After `use py.os`:
+
+```gx
+cwd = py.os.getcwd()
+env_val = py.os.environ.get("HOME")
+```
+
+**How it works:**
+- JS calls: spawns `node -e` subprocess with the call encoded as JSON, reads JSON result
+- Python calls: persistent child process with embedded shim, communicates via JSON over stdin/stdout (avoids 200ms startup per call)
+
+All results are automatically converted to GX native types (string, number, bool, array, object, null).
+
+---
+
+## Provider Aliases
+
+These provider name aliases are accepted in `ask`:
+
+| Alias | Resolves to |
+|-------|-------------|
+| `gpt` | `openai` |
+| `claude` | `anthropic` |
+| `local` | `ollama` |
+
+---
+
+**© 2025 DEVJSX LIMITED** — Ahmed Elgarhy

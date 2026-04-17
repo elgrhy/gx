@@ -16,21 +16,21 @@ Every AI assistant today is a black box. You call an API, something comes back, 
 
 ---
 
-## Current State
+## Current State (as of v0.1.0)
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Language syntax | Defined | Well-designed, consistent |
-| Example programs | Written | 50+ .gx files as design docs |
-| Runtime (`bin/gx`) | Stub only | Reads files, counts patterns, prints fake success |
-| Real interpreter | Not started | **This is the first thing to build** |
-| AI primitives | Designed | Not executable |
-| Package interop | Planned | Not started |
-| Toolchain | Planned | Not started |
+| Rust interpreter | **Done** | Tree-walking, 24 passing tests |
+| Simple syntax (`agent`, `when`, `re-run`) | **Done** | Fully implemented |
+| AI primitives (`ask`, `embed`, `infer`) | **Done** | OpenAI, Anthropic, Ollama |
+| Package interop (`use js.X`, `use py.X`) | **Done** | JS + Python subprocess bridges |
+| Toolchain (`init`, `build`, `install`, `fmt`, `make`, `test`) | **Done** | All commands working |
+| Distribution (curl, npm, Homebrew formula, CI/release) | **Done** | GitHub Actions CI passes |
+| Self-hosting (rewrite in GX itself) | **Planned** | Phase 7 — future |
 
 ---
 
-## Phase 1: Make GX Real (Rust Interpreter)
+## Phase 1: Make GX Real (Rust Interpreter) ✅ DONE
 **Goal:** `gx run hello_world.gx` actually works
 
 ### What to Build
@@ -52,16 +52,16 @@ gx/
 ```
 
 ### Milestones
-- [ ] M1: Lexer tokenizes a .gx file correctly
-- [ ] M2: Parser builds an AST for `hello_world.gx`
-- [ ] M3: Interpreter runs `hello_world.gx` — prints the greeting
-- [ ] M4: `memory {}` block works — variables stored and read
-- [ ] M5: `brain { plan {} execute {} remember {} communicate {} }` works
-- [ ] M6: `recipe` works (named functions with inputs/outputs)
-- [ ] M7: `emit` and `receive` channel messaging works
-- [ ] M8: `for each`, `if/else`, `try/catch` control flow works
-- [ ] M9: Error messages show file + line number
-- [ ] M10: `cargo test` suite with 20+ tests
+- [x] M1: Lexer tokenizes a .gx file correctly
+- [x] M2: Parser builds an AST for `hello_world.gx`
+- [x] M3: Interpreter runs `hello_world.gx` — prints the greeting
+- [x] M4: `memory {}` block works — variables stored and read
+- [x] M5: `brain { plan {} execute {} remember {} communicate {} }` works
+- [x] M6: `recipe` works (named functions with inputs/outputs)
+- [x] M7: `emit` and `receive` channel messaging works
+- [x] M8: `for each`, `if/else`, `try/catch` control flow works
+- [x] M9: Error messages show file + line number
+- [x] M10: `cargo test` suite with 24 tests
 
 ### Definition of Done
 ```bash
@@ -77,7 +77,7 @@ gx check myfile.gx
 
 ---
 
-## Phase 2: Simple Syntax — For Humans and Machines
+## Phase 2: Simple Syntax — For Humans and Machines ✅ DONE
 **Goal:** A 7-year-old can write a working AI agent. An AI model can generate GX code easily.
 
 ### Two Syntax Levels
@@ -140,7 +140,7 @@ gx make "a weather bot that checks my city every morning and texts me"
 
 ---
 
-## Phase 3: AI Primitives (The Core Differentiator)
+## Phase 3: AI Primitives (The Core Differentiator) ✅ DONE
 **Goal:** Building a non-hallucinating, auditable AI assistant is 5 lines of GX.
 
 ### Built-in AI Keywords
@@ -207,7 +207,7 @@ agent "fact_checker" {
 
 ---
 
-## Phase 4: Package Interop
+## Phase 4: Package Interop ✅ DONE
 **Goal:** Use every npm, pip, and cargo package from GX. Zero ecosystem lock-in.
 
 ```gx
@@ -243,7 +243,7 @@ helper "data_analyst" {
 
 ---
 
-## Phase 5: Toolchain
+## Phase 5: Toolchain ✅ DONE
 **Goal:** `brew install gx` and you're productive in 5 minutes.
 
 ### CLI Commands
@@ -287,7 +287,7 @@ my-agent/
 
 ---
 
-## Phase 6: Distribution & Community
+## Phase 6: Distribution & Community ✅ DONE
 **Goal:** Anyone in the world can install GX in 30 seconds.
 
 ### Install Methods
@@ -358,15 +358,15 @@ Once the Rust interpreter is stable:
 
 ## Priorities Summary
 
-| Phase | What | Why It Matters |
-|-------|------|---------------|
-| 1 | Rust interpreter | Nothing works without this |
-| 2 | Simple syntax | Makes it accessible to everyone |
-| 3 | AI primitives | The core product differentiator |
-| 4 | Package interop | Zero lock-in, use the whole ecosystem |
-| 5 | Toolchain | Developer experience determines adoption |
-| 6 | Distribution | Reach determines impact |
-| 7 | Self-hosting | The long-term vision |
+| Phase | What | Status | Why It Matters |
+|-------|------|--------|---------------|
+| 1 | Rust interpreter | Done | Nothing works without this |
+| 2 | Simple syntax | Done | Makes it accessible to everyone |
+| 3 | AI primitives | Done | The core product differentiator |
+| 4 | Package interop | Done | Zero lock-in, use the whole ecosystem |
+| 5 | Toolchain | Done | Developer experience determines adoption |
+| 6 | Distribution | Done | Reach determines impact |
+| 7 | Self-hosting | Planned | The long-term vision |
 
 ---
 
