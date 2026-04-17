@@ -56,6 +56,17 @@ pub enum TokenKind {
     Not,
     And,
     Or,
+    // Phase 2 — simple syntax
+    Started,
+    ReRun,
+    Escalate,
+    Human,
+    Changes,
+    // Phase 3 — AI primitives
+    Ask,
+    Embed,
+    Infer,
+    Classifier,
 
     // Operators / punctuation
     LBrace,    // {
@@ -203,6 +214,22 @@ impl Lexer {
                 break;
             }
         }
+        // Handle `re-run` as a single token
+        if s == "re" && self.peek() == Some('-') {
+            // Peek ahead to check if it's "re-run"
+            let saved_pos = self.pos;
+            let saved_line = self.line;
+            let saved_col = self.col;
+            self.advance(); // consume '-'
+            let rest = self.read_ident();
+            if rest == "run" {
+                return "re-run".to_string();
+            }
+            // Not "re-run", restore position
+            self.pos = saved_pos;
+            self.line = saved_line;
+            self.col = saved_col;
+        }
         s
     }
 
@@ -254,6 +281,15 @@ impl Lexer {
             "not"         => TokenKind::Not,
             "and"         => TokenKind::And,
             "or"          => TokenKind::Or,
+            "re-run"      => TokenKind::ReRun,
+            "started"     => TokenKind::Started,
+            "escalate"    => TokenKind::Escalate,
+            "human"       => TokenKind::Human,
+            "changes"     => TokenKind::Changes,
+            "ask"         => TokenKind::Ask,
+            "embed"       => TokenKind::Embed,
+            "infer"       => TokenKind::Infer,
+            "classifier"  => TokenKind::Classifier,
             "true"        => TokenKind::BoolLit(true),
             "false"       => TokenKind::BoolLit(false),
             "null"        => TokenKind::Null,
@@ -364,6 +400,11 @@ impl Lexer {
                     } else {
                         tokens.push(Token::new(TokenKind::Gt, line, col));
                     }
+                }
+                Some(';') => {
+                    // semicolons are optional statement separators — treat like newline
+                    self.advance();
+                    tokens.push(Token::new(TokenKind::Newline, line, col));
                 }
                 Some(c) => {
                     return Err(format!("Unexpected character '{}' at line {}, col {}", c, line, col));

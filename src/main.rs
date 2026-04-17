@@ -3,6 +3,9 @@ mod ast;
 mod parser;
 mod value;
 mod interpreter;
+mod ai;
+mod bridge;
+mod toolchain;
 
 use std::fs;
 use std::path::Path;
@@ -12,159 +15,181 @@ use lexer::Lexer;
 use parser::Parser;
 use interpreter::Interpreter;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
-        print_usage(&args[0]);
+        print_usage();
         process::exit(1);
     }
 
-    match args[1].as_str() {
-        "--version" | "-v" | "version" => {
-            println!("gx {}", VERSION);
-        }
-        "--help" | "-h" | "help" => {
-            print_help(&args[0]);
-        }
+    let result = match args[1].as_str() {
         "run" => {
-            let file = args.get(2).unwrap_or_else(|| {
-                eprintln!("Error: gx run requires a file path");
-                eprintln!("Usage: gx run <file.gx>");
-                process::exit(1);
-            });
+            let file = require_arg(&args, 2, "gx run <file.gx>");
             let debug = args.contains(&"--debug".to_string());
-            run_file(file, debug);
+            cmd_run(file, debug)
         }
         "check" => {
-            let file = args.get(2).unwrap_or_else(|| {
-                eprintln!("Error: gx check requires a file path");
-                process::exit(1);
-            });
-            check_file(file);
+            let file = require_arg(&args, 2, "gx check <file.gx>");
+            cmd_check(file)
         }
+        "init" => {
+            let name = require_arg(&args, 2, "gx init <project-name>");
+            toolchain::init(name)
+        }
+        "build" => {
+            let file = require_arg(&args, 2, "gx build <file.gx>");
+            let output = args.iter().position(|a| a == "--output" || a == "-o")
+                .and_then(|i| args.get(i + 1))
+                .map(|s| s.as_str());
+            toolchain::build(file, output)
+        }
+        "install" => {
+            let pkg = require_arg(&args, 2, "gx install <js.package|py.package>");
+            toolchain::install(pkg)
+        }
+        "fmt" => {
+            let file = require_arg(&args, 2, "gx fmt <file.gx>");
+            toolchain::fmt(file)
+        }
+        "make" => {
+            let desc = require_arg(&args, 2, "gx make \"description of what to build\"");
+            let output = args.iter().position(|a| a == "--output" || a == "-o")
+                .and_then(|i| args.get(i + 1))
+                .map(|s| s.as_str());
+            toolchain::make(desc, output)
+        }
+        "test" => {
+            let path = args.get(2).map(|s| s.as_str());
+            toolchain::test(path)
+        }
+        "version" | "--version" | "-v" => {
+            println!("gx {}", VERSION);
+            Ok(())
+        }
+        "help" | "--help" | "-h" => {
+            print_help();
+            Ok(())
+        }
+        // Shorthand: gx file.gx
         file if file.ends_with(".gx") => {
             let debug = args.contains(&"--debug".to_string());
-            run_file(file, debug);
+            cmd_run(file, debug)
         }
         cmd => {
             eprintln!("gx: unknown command '{}'\n", cmd);
-            print_usage(&args[0]);
-            process::exit(1);
-        }
-    }
-}
-
-fn run_file(path: &str, debug: bool) {
-    let source = read_source(path);
-
-    if debug {
-        eprintln!("[gx] Reading: {}", path);
-    }
-
-    let mut lexer = Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("GX Syntax Error in {}\n  {}", path, e);
+            print_usage();
             process::exit(1);
         }
     };
 
-    if debug {
-        eprintln!("[gx] Tokens: {}", tokens.len());
-    }
-
-    let program = match Parser::new(tokens).parse() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("GX Parse Error in {}\n  {}", path, e);
-            process::exit(1);
-        }
-    };
-
-    if debug {
-        eprintln!("[gx] Helpers: {}", program.helpers.len());
-        for h in &program.helpers {
-            eprintln!("[gx]   - {}", h.name);
-        }
-    }
-
-    let mut interp = Interpreter::new();
-    if let Err(e) = interp.run_program(&program) {
-        eprintln!("GX Runtime Error in {}\n  {}", path, e);
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
         process::exit(1);
     }
 }
 
-fn check_file(path: &str) {
-    let source = read_source(path);
+// ── Commands ──────────────────────────────────────────────────────────────────
+
+fn cmd_run(path: &str, debug: bool) -> Result<(), String> {
+    let source = read_file(path)?;
+    if debug { eprintln!("[gx] file: {}", path); }
 
     let mut lexer = Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("{}: {}", path, e);
-            process::exit(1);
-        }
-    };
+    let tokens = lexer.tokenize().map_err(|e| format!("{}: {}", path, e))?;
+    if debug { eprintln!("[gx] tokens: {}", tokens.len()); }
 
-    match Parser::new(tokens).parse() {
-        Ok(program) => {
-            println!("{}: OK ({} helper{})",
-                path,
-                program.helpers.len(),
-                if program.helpers.len() == 1 { "" } else { "s" }
-            );
-        }
-        Err(e) => {
-            eprintln!("{}: {}", path, e);
-            process::exit(1);
+    let program = Parser::new(tokens).parse().map_err(|e| format!("{}: {}", path, e))?;
+    if debug {
+        eprintln!("[gx] helpers: {}", program.helpers.len());
+        for h in &program.helpers { eprintln!("[gx]   - {}", h.name); }
+        if !program.imports.is_empty() {
+            for i in &program.imports { eprintln!("[gx]   use {}.{}", i.namespace, i.package); }
         }
     }
+
+    Interpreter::new().run_program(&program).map_err(|e| format!("{}: {}", path, e))
 }
 
-fn read_source(path: &str) -> String {
+fn cmd_check(path: &str) -> Result<(), String> {
+    let source = read_file(path)?;
+
+    let tokens = Lexer::new(&source).tokenize().map_err(|e| format!("{}: {}", path, e))?;
+    let program = Parser::new(tokens).parse().map_err(|e| format!("{}: {}", path, e))?;
+
+    println!("{}: OK ({} helper{}, {} import{})",
+        path,
+        program.helpers.len(),
+        if program.helpers.len() == 1 { "" } else { "s" },
+        program.imports.len(),
+        if program.imports.len() == 1 { "" } else { "s" },
+    );
+    Ok(())
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+fn read_file(path: &str) -> Result<String, String> {
     if !Path::new(path).exists() {
-        eprintln!("gx: file not found: {}", path);
+        return Err(format!("file not found: {}", path));
+    }
+    fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path, e))
+}
+
+fn require_arg<'a>(args: &'a [String], idx: usize, usage: &str) -> &'a str {
+    args.get(idx).map(|s| s.as_str()).unwrap_or_else(|| {
+        eprintln!("Error: missing argument\nUsage: {}", usage);
         process::exit(1);
-    }
-    match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("gx: cannot read {}: {}", path, e);
-            process::exit(1);
-        }
-    }
+    })
 }
 
-fn print_usage(prog: &str) {
-    eprintln!("Usage: {} <command> [options]", prog);
-    eprintln!("       {} <file.gx>", prog);
+fn print_usage() {
+    eprintln!("Usage: gx <command> [options]");
+    eprintln!("       gx <file.gx>");
     eprintln!();
-    eprintln!("Run '{} help' for more information.", prog);
+    eprintln!("Run 'gx help' for all commands.");
 }
 
-fn print_help(prog: &str) {
+fn print_help() {
     println!("GX Language v{}", VERSION);
     println!("Brain-first programming language for building transparent AI assistants");
     println!();
     println!("USAGE:");
-    println!("    {} run <file.gx> [--debug]   Run a GX program", prog);
-    println!("    {} check <file.gx>            Check syntax without running", prog);
-    println!("    {} <file.gx>                  Shorthand for 'run'", prog);
-    println!("    {} version                    Show version", prog);
-    println!("    {} help                       Show this help", prog);
+    println!("  gx run <file.gx> [--debug]        Run a GX program");
+    println!("  gx check <file.gx>                 Check syntax without running");
+    println!("  gx init <name>                     Create a new GX project");
+    println!("  gx build <file.gx> [-o name]       Build standalone executable");
+    println!("  gx install <js.pkg|py.pkg>         Install a package");
+    println!("  gx fmt <file.gx>                   Format GX source code");
+    println!("  gx make \"description\" [-o file]    AI-generate GX code from description");
+    println!("  gx test [dir]                      Run test files in tests/ directory");
+    println!("  gx version                         Show version");
+    println!("  gx help                            Show this help");
     println!();
     println!("EXAMPLES:");
-    println!("    {} run docs/examples/hello_world.gx", prog);
-    println!("    {} check main.gx", prog);
-    println!("    {} run main.gx --debug", prog);
+    println!("  gx run main.gx");
+    println!("  gx init my-agent && cd my-agent && gx run main.gx");
+    println!("  gx make \"a weather bot that checks London daily\" -o weather.gx");
+    println!("  gx install js.axios");
+    println!("  gx build main.gx && ./dist/main");
     println!();
-    println!("LEARN MORE:");
-    println!("    MASTER_PLAN.md   Full language roadmap");
-    println!("    CLAUDE.md        Developer context");
-    println!("    docs/examples/   Example GX programs");
+    println!("AI PROVIDERS (set env vars):");
+    println!("  OPENAI_API_KEY=sk-...      OpenAI (gpt-4o-mini default)");
+    println!("  ANTHROPIC_API_KEY=sk-...   Anthropic Claude");
+    println!("  OLLAMA_URL=http://...      Ollama local (default: localhost:11434)");
+    println!();
+    println!("LANGUAGE QUICK REFERENCE:");
+    println!("  agent \"name\" {{ ... }}      Define an AI agent");
+    println!("  when started {{ ... }}      Run on startup");
+    println!("  remember {{ key = val }}    Agent memory");
+    println!("  brain {{ plan execute      Full cognitive cycle");
+    println!("         remember communicate }}");
+    println!("  result = ask openai {{ prompt: \"...\" }}");
+    println!("  say result.text            Print AI response");
+    println!("  use js.axios               Import npm package");
+    println!("  use py.requests            Import Python package");
+    println!();
+    println!("  Docs: MASTER_PLAN.md  |  Examples: docs/examples/");
 }

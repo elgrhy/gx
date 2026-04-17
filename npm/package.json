@@ -1,0 +1,26 @@
+{
+  "name": "gxlang",
+  "version": "0.1.0",
+  "description": "GX — brain-first programming language for building transparent AI assistants",
+  "keywords": ["gx", "language", "ai", "agent", "brain-first", "interpreter"],
+  "author": "Ahmed Elgarhy <ahmed@devjsx.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/elgrhy/gx",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elgrhy/gx.git"
+  },
+  "bin": {
+    "gx": "./bin/gx.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}

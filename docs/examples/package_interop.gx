@@ -1,0 +1,65 @@
+// Phase 4: Package interop demo
+// Requires: Node.js for js.* calls, Python 3 for py.* calls
+// Run with: gx run docs/examples/package_interop.gx
+
+use js.path
+use py.os
+
+agent "file_agent" {
+  remember {
+    results = []
+  }
+
+  when started {
+    say "Package interop demo starting..."
+  }
+
+  brain {
+    plan {
+      plan = { action: "demo_interop" }
+    }
+
+    execute {
+      if plan.action == "demo_interop" {
+
+        // JS: use Node.js built-in 'path' module
+        log("--- JS interop: path.join ---")
+        try {
+          joined = js.path.join("/home", "user", "docs")
+          say "js.path.join result: {joined}"
+        } catch err {
+          say "JS not available: {err}"
+        }
+
+        // JS: use Node.js built-in 'os' module
+        log("--- JS interop: os.platform ---")
+        try {
+          platform = js.os.platform()
+          say "Platform (via Node.js): {platform}"
+        } catch err {
+          say "JS os not available: {err}"
+        }
+
+        // Python: use os.getcwd()
+        log("--- Python interop: os.getcwd ---")
+        try {
+          cwd = py.os.getcwd()
+          say "CWD (via Python): {cwd}"
+        } catch err {
+          say "Python not available: {err}"
+        }
+
+        log("--- Interop demo complete ---")
+        say "All available interop methods ran successfully."
+      }
+    }
+
+    remember {
+      memory.last_run = get_timestamp()
+    }
+
+    communicate {
+      emit "interop_done" { results: memory.results }
+    }
+  }
+}

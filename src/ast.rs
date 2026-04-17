@@ -2,8 +2,18 @@
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub imports: Vec<ImportDecl>,
     pub helpers: Vec<HelperDef>,
     pub top_level_brain: Option<BrainBlock>,
+}
+
+// ── Import declarations ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ImportDecl {
+    pub namespace: String,  // "js", "py", "rust"
+    pub package: String,    // "axios", "requests", "serde"
+    pub line: usize,
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -17,6 +27,7 @@ pub struct HelperDef {
     pub brain: Option<BrainBlock>,
     pub recipes: Vec<RecipeDef>,
     pub objectives: Vec<ObjectiveDef>,
+    pub when_blocks: Vec<WhenBlock>,   // Phase 2: simple syntax
     pub line: usize,
 }
 
@@ -25,6 +36,22 @@ pub struct MemoryEntry {
     pub key: String,
     pub value: Expr,
     pub line: usize,
+}
+
+// ── Phase 2: When blocks ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct WhenBlock {
+    pub trigger: WhenTrigger,
+    pub body: Vec<Stmt>,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum WhenTrigger {
+    Started,
+    Expr(Expr),
+    Changes(Expr),  // when X changes
 }
 
 // ── Brain ─────────────────────────────────────────────────────────────────────
@@ -43,8 +70,8 @@ pub struct BrainBlock {
 #[derive(Debug, Clone)]
 pub struct RecipeDef {
     pub name: String,
-    pub needs: Vec<String>,   // input parameter names
-    pub gives: Option<String>, // output variable name
+    pub needs: Vec<String>,
+    pub gives: Option<String>,
     pub brain: BrainBlock,
     pub line: usize,
 }
@@ -75,64 +102,56 @@ pub struct ChannelDef {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    /// variable = expr  OR  memory.key = expr
     Assign { target: Expr, value: Expr, line: usize },
-    /// variable += expr
     PlusAssign { target: Expr, value: Expr, line: usize },
-    /// if expr { ... } else if expr { ... } else { ... }
     If { branches: Vec<(Expr, Vec<Stmt>)>, else_body: Option<Vec<Stmt>>, line: usize },
-    /// for each name in expr { ... }
     ForEach { var: String, iter: Expr, body: Vec<Stmt>, line: usize },
-    /// try { ... } catch name { ... }
     TryCatch { try_body: Vec<Stmt>, catch_var: String, catch_body: Vec<Stmt>, line: usize },
-    /// emit "event" { key: value, ... }
     Emit { event: String, payload: Vec<(String, Expr)>, line: usize },
-    /// broadcast "event"
     Broadcast { event: String, line: usize },
-    /// log(expr)
     Log { value: Expr, line: usize },
-    /// output(expr)
     Output { value: Expr, line: usize },
-    /// say expr  (simple-syntax alias for output)
     Say { value: Expr, line: usize },
-    /// return expr
     Return { value: Option<Expr>, line: usize },
-    /// bare expression statement (function calls)
     Expr { expr: Expr, line: usize },
-    /// wait(ms)
     Wait { ms: Expr, line: usize },
+    // Phase 2
+    ReRun { line: usize },
+    EscalateToHuman { line: usize },
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    /// "hello"
     Str(String),
-    /// 42.0
     Num(f64),
-    /// true / false
     Bool(bool),
-    /// null
     Null,
-    /// identifier
     Ident(String),
-    /// memory.key or obj.field
     FieldAccess { object: Box<Expr>, field: String },
-    /// obj[index]
     Index { object: Box<Expr>, index: Box<Expr> },
-    /// func(arg1, arg2)
     Call { callee: Box<Expr>, args: Vec<Expr> },
-    /// { key: value, ... }
     Object(Vec<(String, Expr)>),
-    /// [a, b, c]
     Array(Vec<Expr>),
-    /// left OP right
     BinOp { left: Box<Expr>, op: BinOp, right: Box<Expr> },
-    /// !expr
     Not(Box<Expr>),
-    /// string interpolation: "hello {name}"  → parts
     Interpolated(Vec<InterpolatedPart>),
+    // Phase 3: AI primitives
+    AskAI {
+        provider: String,             // "openai", "anthropic", "ollama"
+        model: Option<String>,        // optional model override e.g. "gpt-4o"
+        params: Vec<(String, Expr)>,  // { prompt: "...", context: ..., ... }
+    },
+    Embed { text: Box<Expr> },
+    InferClassifier { input: Box<Expr>, classes: Box<Expr> },
+    // Phase 4: bridge call  js.axios.get("url")
+    BridgeCall {
+        namespace: String,  // "js" or "py"
+        module: String,     // "axios"
+        method: String,     // "get"
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -146,5 +165,5 @@ pub enum BinOp {
     Add, Sub, Mul, Div, Mod,
     Eq, NotEq, Lt, LtEq, Gt, GtEq,
     And, Or,
-    Concat, // + on strings
+    Concat,
 }

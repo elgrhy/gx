@@ -1,0 +1,61 @@
+// Phase 2: Simple/agent syntax demo
+// Run with: gx run docs/examples/simple_agent.gx
+
+agent "greeter" {
+  remember {
+    name = "World"
+    greet_count = 0
+  }
+
+  when started {
+    say "Agent started! Ready to greet."
+    memory.greet_count = memory.greet_count + 1
+  }
+
+  brain {
+    plan {
+      if memory.greet_count > 0 {
+        plan = { action: "greet" }
+      } else {
+        plan = { action: "idle" }
+      }
+    }
+
+    execute {
+      if plan.action == "greet" {
+        greeting = "Hello, {memory.name}! (greeting #{memory.greet_count})"
+        say greeting
+      } else {
+        log("Agent is idle.")
+      }
+    }
+
+    remember {
+      memory.last_run = get_timestamp()
+    }
+
+    communicate {
+      emit "greeted" { name: memory.name, count: memory.greet_count }
+    }
+  }
+}
+
+agent "counter" {
+  remember count = 0
+
+  when started {
+    say "Counter initialized at {memory.count}"
+  }
+
+  brain {
+    plan { plan = { action: "count" } }
+
+    execute {
+      memory.count = memory.count + 1
+      say "Count is now: {memory.count}"
+    }
+
+    remember { }
+    communicate { }
+  }
+}

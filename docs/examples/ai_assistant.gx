@@ -1,0 +1,83 @@
+// Phase 3: AI primitives demo
+// Requires: OPENAI_API_KEY or ANTHROPIC_API_KEY
+// Run with: gx run docs/examples/ai_assistant.gx
+
+agent "support_bot" {
+  remember {
+    confidence_threshold = 0.75
+    escalation_count = 0
+    conversation_history = []
+  }
+
+  when started {
+    say "Support bot ready. (set OPENAI_API_KEY to use real AI)"
+  }
+
+  brain {
+    plan {
+      plan = { action: "demo_ai_features" }
+    }
+
+    execute {
+      if plan.action == "demo_ai_features" {
+
+        // Demo 1: Basic AI call
+        log("--- Demo 1: ask AI ---")
+        result = ask openai {
+          prompt: "In one sentence, what is 2+2 and why does it matter?",
+          max_tokens: 60
+        }
+
+        if result.ok {
+          say "AI says: {result.text}"
+          say "Confidence: {result.confidence}"
+        } else {
+          say "AI not available: {result.error}"
+          say "(Set OPENAI_API_KEY to enable real AI calls)"
+        }
+
+        // Demo 2: Confidence check + escalation pattern
+        log("--- Demo 2: confidence check ---")
+        answer = ask openai {
+          prompt: "What will the stock market do tomorrow?",
+          max_tokens: 50
+        }
+
+        if answer.ok {
+          if answer.confidence < memory.confidence_threshold {
+            say "Low confidence ({answer.confidence}) — would escalate to human"
+            memory.escalation_count = memory.escalation_count + 1
+          } else {
+            say "Answer (confident): {answer.text}"
+          }
+        } else {
+          say "Skipping confidence demo (no API key)"
+        }
+
+        // Demo 3: Classify intent
+        log("--- Demo 3: classify ---")
+        intent = infer classifier {
+          input: "My order hasn't arrived and I need a refund",
+          classes: ["billing", "shipping", "technical", "general"]
+        }
+
+        if intent.ok {
+          say "Intent classified as: {intent.label} (confidence: {intent.confidence})"
+        } else {
+          say "Classification not available without API key"
+        }
+
+      }
+    }
+
+    remember {
+      memory.last_run = get_timestamp()
+    }
+
+    communicate {
+      emit "demo_complete" {
+        escalations: memory.escalation_count
+      }
+    }
+  }
+}
