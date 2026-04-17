@@ -1,0 +1,31 @@
+// Level 3 — explicit brain cycle, no braces
+// Shows Plan → Execute → Remember → Communicate
+
+Agent task_runner
+
+tasks = ["write tests", "review code", "deploy"]
+current = 0
+done = []
+
+Plan:
+  If current < len(tasks)
+    action = "process"
+  Else
+    action = "done"
+
+Execute:
+  If action == "process"
+    task = tasks[current]
+    log("Processing: {task}")
+    current += 1
+    done = done.push(task)
+
+Remember:
+  memory.current = current
+  memory.done = done
+
+Communicate:
+  If action == "done"
+    say "All {len(done)} tasks complete!"
+  Else
+    say "Processed: {task}"

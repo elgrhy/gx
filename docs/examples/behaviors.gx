@@ -1,0 +1,24 @@
+// Level 2 — named behaviors
+// Reusable blocks called by name
+
+Agent personal_assistant
+
+user = "Ahmed"
+mood = "curious"
+
+Greet:
+  say "Hello {user}!"
+
+CheckMood:
+  If mood == "curious"
+    say "You seem curious today. Let me help you explore."
+  Else
+    say "How can I help you, {user}?"
+
+SayGoodbye:
+  say "Goodbye, {user}! Have a great day."
+
+On start:
+  Greet
+  CheckMood
+  SayGoodbye
