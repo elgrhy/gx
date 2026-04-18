@@ -246,24 +246,32 @@ agent "OpenClaw" {
 
       memory.history = push(memory.history, { role: "user", content: user_input })
 
-      response = ""
+      ai_result = ""
       if memory.provider == "openai" {
-        response = ask openai {
+        ai_result = ask openai {
           prompt: full_prompt,
           model: memory.model
         }
       }
       if memory.provider == "anthropic" {
-        response = ask anthropic {
+        ai_result = ask anthropic {
           prompt: full_prompt,
           model: memory.model
         }
       }
       if memory.provider == "ollama" {
-        response = ask ollama {
+        ai_result = ask ollama {
           prompt: full_prompt,
           model: memory.model
         }
+      }
+
+      // Extract text from the response object, or show error
+      ok = ai_result["ok"]
+      if ok == true {
+        response = ai_result["text"]
+      } else {
+        response = "Sorry, I ran into an error: " + ai_result["error"]
       }
 
       memory.history = push(memory.history, { role: "assistant", content: response })

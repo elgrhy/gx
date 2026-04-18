@@ -783,7 +783,13 @@ impl Interpreter {
                 for (k, v) in params {
                     resolved.insert(k.clone(), self.eval_expr(v, env)?);
                 }
-                let result = ai::ask_ai(provider, model.as_deref(), &resolved);
+                // model can be set in the ask syntax (ask ollama:llama3) OR
+                // as a param (model: memory.model) — params take precedence
+                let param_model = resolved
+                    .get("model")
+                    .and_then(|v| v.as_str().map(String::from));
+                let effective_model = param_model.or_else(|| model.clone());
+                let result = ai::ask_ai(provider, effective_model.as_deref(), &resolved);
                 self.append_ai_trace(env, &result);
                 Ok(result)
             }
