@@ -1328,6 +1328,65 @@ impl Interpreter {
                 Value::Null => Ok(Value::Bool(true)),
                 _ => Ok(Value::Bool(false)),
             },
+            // substr(s, start) or substr(s, start, len)
+            "substr" | "substring" => {
+                let s: Vec<char> = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default()
+                    .chars()
+                    .collect();
+                let start = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+                let result: String = if let Some(length) = args.get(2).and_then(|v| v.as_number()) {
+                    s.iter().skip(start).take(length as usize).collect()
+                } else {
+                    s.iter().skip(start).collect()
+                };
+                Ok(Value::Str(result))
+            }
+            // strip_prefix(s, prefix) — remove prefix only from start
+            "strip_prefix" | "remove_prefix" => {
+                let s = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                let prefix = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                Ok(Value::Str(
+                    s.strip_prefix(prefix.as_str()).unwrap_or(&s).to_string(),
+                ))
+            }
+            // strip_suffix(s, suffix) — remove suffix only from end
+            "strip_suffix" | "remove_suffix" => {
+                let s = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                let suffix = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                Ok(Value::Str(
+                    s.strip_suffix(suffix.as_str()).unwrap_or(&s).to_string(),
+                ))
+            }
+            // index_of(s, needle) — first position of needle, or -1
+            "index_of" | "find" => {
+                let s = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                let needle = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                match s.find(needle.as_str()) {
+                    Some(i) => Ok(Value::Number(i as f64)),
+                    None => Ok(Value::Number(-1.0)),
+                }
+            }
 
             // ── Math ──────────────────────────────────────────────────────────
             "floor" => Ok(Value::Number(

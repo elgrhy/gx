@@ -119,7 +119,7 @@ agent "OpenClaw" {
       // ── Direct action prefixes (no AI needed) ─────────────────
 
       if starts_with(user_input, "run:") or starts_with(user_input, "run ") {
-        cmd = trim(replace(replace(user_input, "run:", ""), "run", ""))
+        cmd = trim(strip_prefix(strip_prefix(user_input, "run:"), "run "))
         print("OpenClaw: Running → " + cmd)
         result = shell(cmd)
         ran_ok = result["ok"]
@@ -138,7 +138,7 @@ agent "OpenClaw" {
       }
 
       if starts_with(user_input, "read:") or starts_with(user_input, "read ") {
-        path = trim(replace(replace(user_input, "read:", ""), "read", ""))
+        path = trim(strip_prefix(strip_prefix(user_input, "read:"), "read "))
         if file_exists(path) {
           content = read_file(path)
           print("── " + path + " ──────────────────────────────────")
@@ -153,10 +153,10 @@ agent "OpenClaw" {
 
       if starts_with(user_input, "write:") {
         // Format: write: path.txt some content here
-        rest   = trim(replace(user_input, "write:", ""))
+        rest   = trim(strip_prefix(user_input, "write:"))
         parts  = split(rest, " ")
         path   = parts[0]
-        text   = trim(replace(rest, path, ""))
+        text   = trim(strip_prefix(rest, path))
         write_file(path, text + "\n")
         print("OpenClaw: Written to " + path)
         print("")
@@ -164,7 +164,7 @@ agent "OpenClaw" {
       }
 
       if starts_with(user_input, "remember:") {
-        fact_text = trim(replace(user_input, "remember:", ""))
+        fact_text = trim(strip_prefix(user_input, "remember:"))
         // Try to parse "key = value" style
         if contains(fact_text, "=") {
           kv  = split(fact_text, "=")
@@ -181,7 +181,7 @@ agent "OpenClaw" {
       }
 
       if starts_with(user_input, "forget:") {
-        key = trim(replace(user_input, "forget:", ""))
+        key = trim(strip_prefix(user_input, "forget:"))
         if has(memory.facts, key) {
           memory.facts = delete_key(memory.facts, key)
           print("OpenClaw: Forgot: " + key)
