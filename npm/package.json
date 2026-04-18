@@ -1,6 +1,6 @@
 {
   "name": "gxlang",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "GX — brain-first programming language for building transparent, auditable AI assistants",
   "keywords": ["gx", "language", "ai", "agent", "brain-first", "interpreter", "llm", "openai", "anthropic", "ollama"],
   "author": "Ahmed Elgarhy <ahmed@devjsx.com>",
