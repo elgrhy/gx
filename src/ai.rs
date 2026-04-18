@@ -311,20 +311,48 @@ fn ask_ollama(model: &str, prompt: &str, system: Option<&str>) -> Value {
         .set("Content-Type", "application/json")
         .send_json(&body)
     {
-        Ok(resp) => {
-            match resp.into_json::<serde_json::Value>() {
-                Ok(json) => {
-                    let text = json["response"].as_str().unwrap_or("").to_string();
-                    let tokens = json["eval_count"].as_u64().unwrap_or(0);
-                    let confidence = adjust_confidence_for_hedging(0.85, &text);
-                    AiResponse { text, confidence, tokens_used: tokens, model: model.into(), provider: "ollama".into() }.into_value()
+        Ok(resp) => match resp.into_json::<serde_json::Value>() {
+            Ok(json) => {
+                let text = json["response"].as_str().unwrap_or("").to_string();
+                let tokens = json["eval_count"].as_u64().unwrap_or(0);
+                let confidence = adjust_confidence_for_hedging(0.85, &text);
+                AiResponse {
+                    text,
+                    confidence,
+                    tokens_used: tokens,
+                    model: model.into(),
+                    provider: "ollama".into(),
                 }
-                Err(e) => AiResponse::error("ollama", format!("Parse error: {}", e)),
+                .into_value()
             }
+            Err(e) => AiResponse::error("ollama", format!("Parse error: {}", e)),
+        },
+        Err(ureq::Error::Status(404, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            // 404 almost always means the model name is wrong
+            AiResponse::error(
+                "ollama",
+                format!(
+                    "Model '{}' not found in Ollama.\nRun `ollama list` to see available models.\nOllama said: {}",
+                    model,
+                    truncate(&body, 300)
+                ),
+            )
         }
-        Err(e) => AiResponse::error("ollama", format!(
-            "Cannot connect to Ollama at {}. Is it running? Start with: ollama serve\nError: {}", base_url, e
-        )),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            AiResponse::error(
+                "ollama",
+                format!("Ollama returned HTTP {}: {}", code, truncate(&body, 300)),
+            )
+        }
+        Err(e) => AiResponse::error(
+            "ollama",
+            format!(
+                "Cannot connect to Ollama at {}. Is it running? Start with: ollama serve\nError: {}",
+                base_url, e
+            ),
+        ),
     }
 }
 
