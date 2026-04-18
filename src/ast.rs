@@ -47,7 +47,7 @@ pub struct HelperDef {
     pub brain: Option<BrainBlock>,
     pub recipes: Vec<RecipeDef>,
     pub objectives: Vec<ObjectiveDef>,
-    pub when_blocks: Vec<WhenBlock>, // Phase 2: simple syntax
+    pub when_blocks: Vec<WhenBlock>,
     pub line: usize,
 }
 
@@ -71,7 +71,7 @@ pub struct WhenBlock {
 pub enum WhenTrigger {
     Started,
     Expr(Expr),
-    Changes(Expr), // when X changes
+    Changes(Expr),
 }
 
 // ── Brain ─────────────────────────────────────────────────────────────────────
@@ -158,10 +158,26 @@ pub enum Stmt {
         body: Vec<Stmt>,
         line: usize,
     },
+    While {
+        condition: Expr,
+        body: Vec<Stmt>,
+        line: usize,
+    },
+    Break {
+        line: usize,
+    },
+    Continue {
+        line: usize,
+    },
     TryCatch {
         try_body: Vec<Stmt>,
         catch_var: String,
         catch_body: Vec<Stmt>,
+        line: usize,
+    },
+    Assert {
+        condition: Expr,
+        message: Option<Expr>,
         line: usize,
     },
     Emit {
@@ -197,7 +213,6 @@ pub enum Stmt {
         ms: Expr,
         line: usize,
     },
-    // Phase 2
     ReRun {
         line: usize,
     },
@@ -236,11 +251,11 @@ pub enum Expr {
     },
     Not(Box<Expr>),
     Interpolated(Vec<InterpolatedPart>),
-    // Phase 3: AI primitives
+    // AI primitives
     AskAI {
-        provider: String,            // "openai", "anthropic", "ollama"
-        model: Option<String>,       // optional model override e.g. "gpt-4o"
-        params: Vec<(String, Expr)>, // { prompt: "...", context: ..., ... }
+        provider: String,
+        model: Option<String>,
+        params: Vec<(String, Expr)>,
     },
     Embed {
         text: Box<Expr>,
@@ -249,11 +264,11 @@ pub enum Expr {
         input: Box<Expr>,
         classes: Box<Expr>,
     },
-    // Phase 4: bridge call  js.axios.get("url")
+    // Bridge call: js.axios.get("url")
     BridgeCall {
-        namespace: String, // "js" or "py"
-        module: String,    // "axios"
-        method: String,    // "get"
+        namespace: String,
+        module: String,
+        method: String,
         args: Vec<Expr>,
     },
 }
@@ -280,4 +295,5 @@ pub enum BinOp {
     And,
     Or,
     Concat,
+    NullCoalesce, // ??
 }

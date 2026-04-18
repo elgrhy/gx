@@ -1,0 +1,256 @@
+// OpenClaw — Personal AI Assistant built in GX
+//
+// A self-hosted AI assistant that:
+//   • Chats with you using any AI provider (OpenAI / Anthropic / Ollama)
+//   • Remembers your conversation history across the session
+//   • Runs shell commands when you ask ("run: ls -la")
+//   • Reads and writes files ("read: README.md", "write: notes.txt")
+//   • Saves and recalls named facts ("remember: my name is Ahmed")
+//   • Works with no API key via Ollama (local models)
+//
+// Setup:
+//   Option A — OpenAI:    export OPENAI_API_KEY=sk-...
+//   Option B — Anthropic: export ANTHROPIC_API_KEY=sk-ant-...
+//   Option C — Ollama:    ollama serve   (no key needed)
+//
+// Run:
+//   gx run docs/examples/openclaw.gx
+//   gx run docs/examples/openclaw.gx --provider anthropic
+//   gx run docs/examples/openclaw.gx --provider ollama
+
+agent "OpenClaw" {
+  memory {
+    history       = []
+    facts         = {}
+    provider      = "openai"
+    model         = "gpt-4o-mini"
+    session_count = 0
+  }
+
+  when started {
+    // Detect provider from env (user can override via env var GX_PROVIDER)
+    detected = env("GX_PROVIDER", "openai")
+    if detected == "anthropic" {
+      memory.provider = "anthropic"
+      memory.model    = "claude-haiku-4-5"
+    }
+    if detected == "ollama" {
+      memory.provider = "ollama"
+      memory.model    = "llama3"
+    }
+
+    print("┌─────────────────────────────────────────────┐")
+    print("│         OpenClaw — Personal AI Assistant    │")
+    print("│         Built with GX Language              │")
+    print("└─────────────────────────────────────────────┘")
+    print("")
+    print("Provider : " + memory.provider + "  (" + memory.model + ")")
+    print("Commands : help | history | clear | facts | exit")
+    print("")
+
+    while true {
+      user_input = input("You: ")
+      user_input = trim(user_input)
+
+      if user_input == "" {
+        continue
+      }
+
+      // ── Built-in commands ──────────────────────────────────────
+      if user_input == "exit" or user_input == "quit" or user_input == "bye" {
+        print("OpenClaw: Goodbye! Session ended with " + memory.session_count + " message(s).")
+        break
+      }
+
+      if user_input == "help" {
+        print("OpenClaw: I can:")
+        print("  • Chat naturally about anything")
+        print("  • run: <command>       — execute a shell command")
+        print("  • read: <path>         — read a file")
+        print("  • write: <path> <text> — write text to a file")
+        print("  • remember: <fact>     — save a fact for this session")
+        print("  • forget: <key>        — remove a saved fact")
+        print("  • facts                — list saved facts")
+        print("  • history              — show conversation history")
+        print("  • clear                — reset conversation memory")
+        print("  • exit                 — quit")
+        print("")
+        continue
+      }
+
+      if user_input == "history" {
+        if len(memory.history) == 0 {
+          print("OpenClaw: No history yet.")
+        } else {
+          print("── Conversation History ──────────────────────────")
+          for each msg in memory.history {
+            role = msg["role"]
+            content = msg["content"]
+            print(role + ": " + content)
+          }
+          print("─────────────────────────────────────────────────")
+        }
+        print("")
+        continue
+      }
+
+      if user_input == "clear" {
+        memory.history = []
+        print("OpenClaw: Memory cleared. Fresh start!")
+        print("")
+        continue
+      }
+
+      if user_input == "facts" {
+        fact_keys = keys(memory.facts)
+        if len(fact_keys) == 0 {
+          print("OpenClaw: No facts saved yet. Try: remember: my name is Ahmed")
+        } else {
+          print("── Saved Facts ──────────────────────────────────")
+          for each k in fact_keys {
+            print("  " + k + " = " + memory.facts[k])
+          }
+          print("────────────────────────────────────────────────")
+        }
+        print("")
+        continue
+      }
+
+      // ── Direct action prefixes (no AI needed) ─────────────────
+
+      if starts_with(user_input, "run:") or starts_with(user_input, "run ") {
+        cmd = trim(replace(replace(user_input, "run:", ""), "run", ""))
+        print("OpenClaw: Running → " + cmd)
+        result = shell(cmd)
+        ran_ok = result["ok"]
+        if ran_ok == true {
+          stdout = trim(result["stdout"])
+          if stdout == "" {
+            print("OpenClaw: (command finished, no output)")
+          } else {
+            print(stdout)
+          }
+        } else {
+          print("OpenClaw: Error (exit " + result["exit_code"] + "): " + trim(result["stderr"]))
+        }
+        print("")
+        continue
+      }
+
+      if starts_with(user_input, "read:") or starts_with(user_input, "read ") {
+        path = trim(replace(replace(user_input, "read:", ""), "read", ""))
+        if file_exists(path) {
+          content = read_file(path)
+          print("── " + path + " ──────────────────────────────────")
+          print(content)
+          print("────────────────────────────────────────────────")
+        } else {
+          print("OpenClaw: File not found: " + path)
+        }
+        print("")
+        continue
+      }
+
+      if starts_with(user_input, "write:") {
+        // Format: write: path.txt some content here
+        rest   = trim(replace(user_input, "write:", ""))
+        parts  = split(rest, " ")
+        path   = parts[0]
+        text   = trim(replace(rest, path, ""))
+        write_file(path, text + "\n")
+        print("OpenClaw: Written to " + path)
+        print("")
+        continue
+      }
+
+      if starts_with(user_input, "remember:") {
+        fact_text = trim(replace(user_input, "remember:", ""))
+        // Try to parse "key = value" style
+        if contains(fact_text, "=") {
+          kv  = split(fact_text, "=")
+          k   = trim(kv[0])
+          v   = trim(kv[1])
+          memory.facts = set_key(memory.facts, k, v)
+          print("OpenClaw: Got it — I'll remember that " + k + " = " + v)
+        } else {
+          memory.facts = set_key(memory.facts, fact_text, "true")
+          print("OpenClaw: Remembered: " + fact_text)
+        }
+        print("")
+        continue
+      }
+
+      if starts_with(user_input, "forget:") {
+        key = trim(replace(user_input, "forget:", ""))
+        if has(memory.facts, key) {
+          memory.facts = delete_key(memory.facts, key)
+          print("OpenClaw: Forgot: " + key)
+        } else {
+          print("OpenClaw: I don't have a fact called '" + key + "'")
+        }
+        print("")
+        continue
+      }
+
+      // ── AI conversation ───────────────────────────────────────
+
+      memory.session_count += 1
+
+      // Build context: inject saved facts + last 12 exchanges
+      facts_text = ""
+      fact_keys = keys(memory.facts)
+      if len(fact_keys) > 0 {
+        facts_text = "\n[Facts I know about you]\n"
+        for each k in fact_keys {
+          facts_text = facts_text + k + ": " + memory.facts[k] + "\n"
+        }
+      }
+
+      history_text = ""
+      start = len(memory.history) - 12
+      if start < 0 {
+        start = 0
+      }
+      i = start
+      while i < len(memory.history) {
+        msg = memory.history[i]
+        history_text = history_text + msg["role"] + ": " + msg["content"] + "\n"
+        i += 1
+      }
+
+      system_prompt = "You are OpenClaw, a helpful personal AI assistant built with GX Language. You run locally on the user's machine. Be concise, friendly, and helpful." + facts_text
+
+      full_prompt = system_prompt + "\n\n[Conversation so far]\n" + history_text + "user: " + user_input
+
+      // Add user turn to history
+      memory.history = push(memory.history, { role: "user", content: user_input })
+
+      // Call the selected AI provider
+      response = ""
+      if memory.provider == "anthropic" {
+        response = ask anthropic {
+          prompt: full_prompt,
+          model: memory.model
+        }
+      }
+      if memory.provider == "ollama" {
+        response = ask ollama {
+          prompt: full_prompt,
+          model: memory.model
+        }
+      }
+      if memory.provider == "openai" {
+        response = ask openai {
+          prompt: full_prompt,
+          model: memory.model
+        }
+      }
+
+      // Add assistant turn to history
+      memory.history = push(memory.history, { role: "assistant", content: response })
+
+      print("OpenClaw: " + response)
+      print("")
+    }
+  }
+}

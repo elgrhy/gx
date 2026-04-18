@@ -68,7 +68,7 @@ pub fn ask_ai(provider: &str, model: Option<&str>, params: &HashMap<String, Valu
             temperature,
         ),
         "anthropic" => ask_anthropic(
-            model.unwrap_or("claude-haiku-4-5-20251001"),
+            model.unwrap_or("claude-haiku-4-5"),
             &prompt,
             system.as_deref(),
             max_tokens,
@@ -234,7 +234,7 @@ fn ask_anthropic(
     prompt: &str,
     system: Option<&str>,
     max_tokens: u32,
-    _temperature: f64,
+    temperature: f64,
 ) -> Value {
     let api_key = match std::env::var("ANTHROPIC_API_KEY") {
         Ok(k) => k,
@@ -244,6 +244,7 @@ fn ask_anthropic(
     let mut body = serde_json::json!({
         "model": model,
         "max_tokens": max_tokens,
+        "temperature": temperature,
         "messages": [{"role": "user", "content": prompt}]
     });
     if let Some(sys) = system {

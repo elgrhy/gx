@@ -33,7 +33,8 @@ pub fn parse_source(source: &str) -> Result<crate::ast::Program, String> {
 /// Returns Ok(()) or an error message.
 pub fn run_source(source: &str) -> Result<(), String> {
     let program = parse_source(source)?;
-    Interpreter::new().run_program(&program)
+    let mut interp = Interpreter::new();
+    interp.run_program(&program)
 }
 
 /// Check GX source syntax without executing.

@@ -41,7 +41,7 @@
     },
     "keyword": {
       "name": "keyword.control.gx",
-      "match": "\\b(agent|helper|brain|plan|execute|remember|communicate|receive|channel|when|started|changes|if|else|for|each|in|try|catch|return|re-run|escalate|to|human|wait|emit|broadcast|use|import|function)\\b"
+      "match": "\\b(agent|helper|brain|plan|execute|remember|communicate|receive|channel|when|started|changes|if|else|for|each|in|while|break|continue|assert|try|catch|return|re-run|escalate|to|human|wait|emit|broadcast|use|import|function|memory)\\b"
     },
     "type-keyword": {
       "name": "keyword.declaration.gx",
@@ -53,7 +53,7 @@
     },
     "builtin-function": {
       "name": "support.function.builtin.gx",
-      "match": "\\b(log|say|output|get_timestamp|to_string|to_number|len|count|type_of|is_null|keys|values|range|floor|ceil|round|abs|max|min)\\b"
+      "match": "\\b(log|say|print|output|get_timestamp|to_string|to_number|str|num|len|count|type_of|is_null|is_empty|is_array|is_object|is_bool|keys|values|entries|range|zip|flatten|push|pop|first|last|join|split|trim|trim_start|trim_end|replace|contains|starts_with|ends_with|upper|lower|to_upper|to_lower|has|set_key|delete_key|merge|floor|ceil|round|abs|sqrt|pow|max|min|clamp|random|pi|e|json_parse|json_stringify|http_get|http_post|http_put|http_delete|read_file|write_file|append_file|file_exists|list_dir|env|shell|exec|input|exit|base64_encode|base64_decode|html_escape|url_encode|get_timestamp|sleep|now)\\b"
     },
     "boolean-null": {
       "name": "constant.language.gx",
@@ -61,11 +61,7 @@
     },
     "operator": {
       "name": "keyword.operator.gx",
-      "match": "(==|!=|<=|>=|<|>|\\+=|-=|\\*=|/=|\\+|-|\\*|/|%|=|and|or|not)"
-    },
-    "memory-access": {
-      "name": "variable.language.memory.gx",
-      "match": "\\bmemory\\b"
+      "match": "(==|!=|<=|>=|<|>|\\?\\?|\\+=|-=|\\*=|/=|\\+|-|\\*|/|%|=|\\band\\b|\\bor\\b|\\bnot\\b)"
     },
     "identifier": {
       "name": "variable.other.gx",

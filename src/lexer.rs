@@ -70,35 +70,41 @@ pub enum TokenKind {
     // Phase 5 — user-defined functions and file imports
     Function,
     Import,
+    // Control flow additions
+    While,
+    Break,
+    Continue,
+    Assert,
 
     // Operators / punctuation
-    LBrace,   // {
-    RBrace,   // }
-    LBracket, // [
-    RBracket, // ]
-    LParen,   // (
-    RParen,   // )
-    Colon,    // :
-    Comma,    // ,
-    Dot,      // .
-    Eq,       // =
-    EqEq,     // ==
-    NotEq,    // !=
-    Lt,       // <
-    LtEq,     // <=
-    Gt,       // >
-    GtEq,     // >=
-    Plus,     // +
-    PlusEq,   // +=
-    Minus,    // -
-    MinusEq,  // -=
-    Star,     // *
-    StarEq,   // *=
-    Slash,    // /
-    SlashEq,  // /=
-    Percent,  // %
-    Arrow,    // ->
-    DotDot,   // ..
+    LBrace,           // {
+    RBrace,           // }
+    LBracket,         // [
+    RBracket,         // ]
+    LParen,           // (
+    RParen,           // )
+    Colon,            // :
+    Comma,            // ,
+    Dot,              // .
+    Eq,               // =
+    EqEq,             // ==
+    NotEq,            // !=
+    Lt,               // <
+    LtEq,             // <=
+    Gt,               // >
+    GtEq,             // >=
+    Plus,             // +
+    PlusEq,           // +=
+    Minus,            // -
+    MinusEq,          // -=
+    Star,             // *
+    StarEq,           // *=
+    Slash,            // /
+    SlashEq,          // /=
+    Percent,          // %
+    Arrow,            // ->
+    DotDot,           // ..
+    QuestionQuestion, // ??
 
     // Structure
     Newline,
@@ -301,6 +307,10 @@ impl Lexer {
             "classifier" => TokenKind::Classifier,
             "function" => TokenKind::Function,
             "import" => TokenKind::Import,
+            "while" => TokenKind::While,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
+            "assert" => TokenKind::Assert,
             "true" => TokenKind::BoolLit(true),
             "false" => TokenKind::BoolLit(false),
             "null" => TokenKind::Null,
@@ -459,9 +469,20 @@ impl Lexer {
                     }
                 }
                 Some(';') => {
-                    // semicolons are optional statement separators — treat like newline
                     self.advance();
                     tokens.push(Token::new(TokenKind::Newline, line, col));
+                }
+                Some('?') => {
+                    self.advance();
+                    if self.peek() == Some('?') {
+                        self.advance();
+                        tokens.push(Token::new(TokenKind::QuestionQuestion, line, col));
+                    } else {
+                        return Err(format!(
+                            "Unexpected '?' at line {}, col {} (did you mean '??'?)",
+                            line, col
+                        ));
+                    }
                 }
                 Some(c) => {
                     return Err(format!(

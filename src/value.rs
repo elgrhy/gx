@@ -40,11 +40,11 @@ impl Value {
         match self {
             Value::Object(map) => map.get(field).cloned().unwrap_or(Value::Null),
             Value::Array(arr) => match field {
-                "length" => Value::Number(arr.len() as f64),
+                "length" | "len" => Value::Number(arr.len() as f64),
                 _ => Value::Null,
             },
             Value::Str(s) => match field {
-                "length" => Value::Number(s.len() as f64),
+                "length" | "len" => Value::Number(s.len() as f64),
                 _ => Value::Null,
             },
             _ => Value::Null,
@@ -68,8 +68,27 @@ impl Value {
     pub fn get_index(&self, idx: &Value) -> Value {
         match (self, idx) {
             (Value::Array(arr), Value::Number(n)) => {
-                let i = *n as usize;
+                let i = if *n < 0.0 {
+                    let len = arr.len() as i64;
+                    let neg = *n as i64;
+                    (len + neg).max(0) as usize
+                } else {
+                    *n as usize
+                };
                 arr.get(i).cloned().unwrap_or(Value::Null)
+            }
+            (Value::Str(s), Value::Number(n)) => {
+                let chars: Vec<char> = s.chars().collect();
+                let i = if *n < 0.0 {
+                    let len = chars.len() as i64;
+                    (len + *n as i64).max(0) as usize
+                } else {
+                    *n as usize
+                };
+                chars
+                    .get(i)
+                    .map(|c| Value::Str(c.to_string()))
+                    .unwrap_or(Value::Null)
             }
             (Value::Object(map), Value::Str(key)) => map.get(key).cloned().unwrap_or(Value::Null),
             _ => Value::Null,
@@ -79,6 +98,7 @@ impl Value {
     pub fn as_number(&self) -> Option<f64> {
         match self {
             Value::Number(n) => Some(*n),
+            Value::Str(s) => s.parse::<f64>().ok(),
             _ => None,
         }
     }
@@ -96,6 +116,21 @@ impl Value {
             Value::Object(map) => Ok(map.keys().map(|k| Value::Str(k.clone())).collect()),
             Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
             other => Err(format!("Cannot iterate over {}", other.type_name())),
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, Value::Null)
+    }
+
+    /// Push an element onto an array, mutating in place. Returns error if not array.
+    pub fn push_mut(&mut self, val: Value) -> Result<(), String> {
+        match self {
+            Value::Array(arr) => {
+                arr.push(val);
+                Ok(())
+            }
+            other => Err(format!("Cannot push onto {}", other.type_name())),
         }
     }
 }
@@ -126,11 +161,13 @@ impl fmt::Display for Value {
             Value::Object(map) => {
                 write!(f, "{{")?;
                 let mut first = true;
-                for (k, v) in map {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                for k in keys {
                     if !first {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}: {}", k, v)?;
+                    write!(f, "{}: {}", k, map[k])?;
                     first = false;
                 }
                 write!(f, "}}")

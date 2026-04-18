@@ -255,9 +255,18 @@ pub fn install(package: &str) -> Result<(), String> {
 // ── gx fmt ────────────────────────────────────────────────────────────────────
 
 pub fn fmt(file: &str) -> Result<(), String> {
+    use crate::indent_parser::is_indent_syntax;
     use crate::lexer::{Lexer, TokenKind};
 
     let source = fs::read_to_string(file).map_err(|e| format!("Cannot read {}: {}", file, e))?;
+
+    // Progressive syntax: normalize indentation instead of token-based reformatting
+    if is_indent_syntax(&source) {
+        let formatted = fmt_indent_syntax(&source);
+        fs::write(file, &formatted).map_err(|e| format!("Cannot write {}: {}", file, e))?;
+        println!("Formatted: {}", file);
+        return Ok(());
+    }
 
     let mut lexer = Lexer::new(&source);
     let tokens = lexer
@@ -485,6 +494,7 @@ Generate ONLY valid GX code. No markdown fences. No explanation."#;
 // ── gx test ───────────────────────────────────────────────────────────────────
 
 pub fn test(path: Option<&str>) -> Result<(), String> {
+    use crate::indent_parser::is_indent_syntax;
     use crate::interpreter::Interpreter;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
@@ -497,6 +507,7 @@ pub fn test(path: Option<&str>) -> Result<(), String> {
 
     let mut test_files = Vec::new();
     collect_gx_files(Path::new(test_dir), &mut test_files);
+    test_files.sort();
 
     if test_files.is_empty() {
         println!("No .gx test files found in '{}'", test_dir);
@@ -508,52 +519,85 @@ pub fn test(path: Option<&str>) -> Result<(), String> {
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut errors = 0usize;
+    let mut total_asserts = 0usize;
+    let mut failed_asserts: Vec<String> = Vec::new();
 
     for file in &test_files {
         let source = match fs::read_to_string(file) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("  ERROR {}: {}", file, e);
+                eprintln!("  ERROR  {}: {}", file, e);
                 errors += 1;
                 continue;
             }
         };
 
-        let tokens = match Lexer::new(&source).tokenize() {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("  ERROR {}: {}", file, e);
-                errors += 1;
-                continue;
+        let program = if is_indent_syntax(&source) {
+            match crate::indent_parser::parse(&source) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("  ERROR  {}: {}", file, e);
+                    errors += 1;
+                    continue;
+                }
+            }
+        } else {
+            let tokens = match Lexer::new(&source).tokenize() {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("  ERROR  {}: {}", file, e);
+                    errors += 1;
+                    continue;
+                }
+            };
+            match Parser::new(tokens).parse() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("  ERROR  {}: {}", file, e);
+                    errors += 1;
+                    continue;
+                }
             }
         };
 
-        let program = match Parser::new(tokens).parse() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("  ERROR {}: {}", file, e);
-                errors += 1;
-                continue;
-            }
-        };
+        let mut interp = Interpreter::new();
+        interp.base_path = Some(file.to_string());
 
-        // Capture output to check for PASS/FAIL
-        match Interpreter::new().run_program(&program) {
+        match interp.run_program(&program) {
             Ok(_) => {
-                println!("  PASS {}", file);
-                passed += 1;
+                total_asserts += interp.assert_count;
+                if !interp.assert_failures.is_empty() {
+                    for af in &interp.assert_failures {
+                        eprintln!("  FAIL   {} — {}", file, af);
+                        failed_asserts.push(format!("{}: {}", file, af));
+                    }
+                    failed += 1;
+                } else {
+                    let assert_note = if interp.assert_count > 0 {
+                        format!(" ({} assertions)", interp.assert_count)
+                    } else {
+                        String::new()
+                    };
+                    println!("  PASS   {}{}", file, assert_note);
+                    passed += 1;
+                }
             }
             Err(e) => {
-                eprintln!("  FAIL {}: {}", file, e);
+                total_asserts += interp.assert_count;
+                eprintln!("  FAIL   {}: {}", file, e);
                 failed += 1;
             }
         }
     }
 
-    println!("\n{} passed, {} failed, {} errors", passed, failed, errors);
+    println!();
+    println!(
+        "Results: {} passed, {} failed, {} errors | {} total assertions",
+        passed, failed, errors, total_asserts
+    );
 
     if failed > 0 || errors > 0 {
-        Err("Tests failed".into())
+        Err(format!("{} test(s) failed", failed + errors))
     } else {
         Ok(())
     }
@@ -575,6 +619,36 @@ fn collect_gx_files(dir: &Path, files: &mut Vec<String>) {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+fn fmt_indent_syntax(source: &str) -> String {
+    // Normalize progressive syntax: standardize indentation to 2 spaces
+    let mut result = String::new();
+    let mut prev_blank = false;
+    for line in source.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            if !prev_blank {
+                result.push('\n');
+                prev_blank = true;
+            }
+            continue;
+        }
+        prev_blank = false;
+        // Count existing indentation
+        let indent_count = line.len() - line.trim_start().len();
+        // Normalize: each 4-space or 1-tab indent level becomes 2 spaces
+        let level = if indent_count > 0 {
+            indent_count.div_ceil(2)
+        } else {
+            0
+        };
+        let indent = "  ".repeat(level);
+        result.push_str(&indent);
+        result.push_str(trimmed);
+        result.push('\n');
+    }
+    result
+}
 
 fn find_python() -> Option<String> {
     for candidate in &["python3", "python"] {

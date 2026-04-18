@@ -107,6 +107,10 @@ impl Parser {
             TokenKind::Emit => "emit".into(),
             TokenKind::Recipe => "recipe".into(),
             TokenKind::Objective => "objective".into(),
+            TokenKind::While => "while".into(),
+            TokenKind::Break => "break".into(),
+            TokenKind::Continue => "continue".into(),
+            TokenKind::Assert => "assert".into(),
             other => {
                 return Err(format!(
                     "Line {}: expected identifier, got {:?}",
@@ -668,6 +672,16 @@ impl Parser {
         match self.peek_kind().clone() {
             TokenKind::If => self.parse_if(),
             TokenKind::For => self.parse_for_each(),
+            TokenKind::While => self.parse_while(),
+            TokenKind::Break => {
+                self.advance();
+                Ok(Stmt::Break { line })
+            }
+            TokenKind::Continue => {
+                self.advance();
+                Ok(Stmt::Continue { line })
+            }
+            TokenKind::Assert => self.parse_assert(),
             TokenKind::Try => self.parse_try_catch(),
             TokenKind::Emit => self.parse_emit(),
             TokenKind::ReRun => {
@@ -797,6 +811,39 @@ impl Parser {
         }
     }
 
+    fn parse_while(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.expect(&TokenKind::While)?;
+        let condition = self.parse_expr()?;
+        self.expect(&TokenKind::LBrace)?;
+        let body = self.parse_stmts()?;
+        Ok(Stmt::While {
+            condition,
+            body,
+            line,
+        })
+    }
+
+    fn parse_assert(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.advance(); // consume `assert`
+        let condition = self.parse_expr()?;
+        self.skip_newlines();
+        let message = if matches!(self.peek_kind(), TokenKind::StringLit(_)) {
+            Some(self.parse_expr()?)
+        } else if matches!(self.peek_kind(), TokenKind::Comma) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        Ok(Stmt::Assert {
+            condition,
+            message,
+            line,
+        })
+    }
+
     fn parse_if(&mut self) -> Result<Stmt, String> {
         let line = self.line();
         let mut branches = Vec::new();
@@ -893,7 +940,25 @@ impl Parser {
     // ── Expressions ───────────────────────────────────────────────────────────
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
-        self.parse_or()
+        self.parse_null_coalesce()
+    }
+
+    fn parse_null_coalesce(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_or()?;
+        loop {
+            self.skip_newlines();
+            if self.eat(&TokenKind::QuestionQuestion) {
+                let right = self.parse_or()?;
+                left = Expr::BinOp {
+                    left: Box::new(left),
+                    op: BinOp::NullCoalesce,
+                    right: Box::new(right),
+                };
+            } else {
+                break;
+            }
+        }
+        Ok(left)
     }
 
     fn parse_or(&mut self) -> Result<Expr, String> {

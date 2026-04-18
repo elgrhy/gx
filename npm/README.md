@@ -8,6 +8,21 @@
 
 Every AI assistant today is a black box. GX makes it a glass box — every decision explicit, every AI call logged, every agent fully auditable. Built in Rust. No cloud lock-in.
 
+## What's New in v0.1.2
+
+- **`while` / `break` / `continue`** — full loop control
+- **`assert`** — built-in test assertions (`gx test` counts them)
+- **`??` null coalescing** — `value ?? default`
+- **`input(prompt)`** — read from stdin for interactive programs
+- **`shell(cmd)`** — run shell commands, get stdout/stderr/exit_code
+- **HTTP client** — `http_get`, `http_post`, `http_put`, `http_delete`
+- **File I/O** — `read_file`, `write_file`, `append_file`, `file_exists`, `list_dir`
+- **50+ new built-in functions** — `trim`, `replace`, `split`, `join`, `contains`, `starts_with`, `ends_with`, `push`, `pop`, `set_key`, `has`, `merge`, `json_parse`, `json_stringify`, `base64_encode`, and more
+- **OpenClaw example** — full personal AI assistant (`gx run docs/examples/openclaw.gx`)
+- **REPL** — `gx repl` for interactive exploration
+- **`gx fmt`** — correctly formats both brace and progressive syntax
+- **Import path fix** — `import` now resolves paths relative to the importing file
+
 ---
 
 ## Install
@@ -221,6 +236,7 @@ agent "calc" {
 | `gx fmt file.gx` | Format GX source |
 | `gx test` | Run all files in `tests/` |
 | `gx make "a weather bot"` | AI-generate GX code |
+| `gx repl` | Interactive REPL |
 | `gx version` | Print version |
 | `gx help` | Print help |
 
@@ -266,7 +282,7 @@ agent "tracker" {
 
   when started {
     memory.count += 1
-    memory.history = memory.history.push("run #{memory.count}")
+    memory.history = push(memory.history, "run " + memory.count)
     log(memory.ai_trace)    // see every AI call ever made
   }
 }

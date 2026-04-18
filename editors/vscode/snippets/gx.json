@@ -147,5 +147,127 @@
       "emit \"${1:event_name}\" { ${2:key}: ${3:value} }"
     ],
     "description": "Emit an event"
+  },
+  "While loop": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition} {",
+      "  ${2:// loop body}",
+      "}"
+    ],
+    "description": "While loop"
+  },
+  "Assert": {
+    "prefix": "assert",
+    "body": [
+      "assert ${1:condition} \"${2:message}\""
+    ],
+    "description": "Assert a condition (for tests)"
+  },
+  "Null coalescing": {
+    "prefix": "??",
+    "body": [
+      "${1:value} ?? ${2:default}"
+    ],
+    "description": "Return default if value is null"
+  },
+  "Interactive loop": {
+    "prefix": "repl",
+    "body": [
+      "while true {",
+      "  user_input = input(\"${1:> }\")",
+      "  if user_input == \"exit\" {",
+      "    break",
+      "  }",
+      "  ${2:// handle input}",
+      "}"
+    ],
+    "description": "Interactive input loop"
+  },
+  "OpenClaw AI assistant": {
+    "prefix": "openclaw",
+    "body": [
+      "agent \"${1:MyAssistant}\" {",
+      "  memory {",
+      "    history = []",
+      "    provider = \"${2|openai,anthropic,ollama|}\"",
+      "  }",
+      "",
+      "  when started {",
+      "    print(\"${1:MyAssistant} ready. Type 'exit' to quit.\")",
+      "",
+      "    while true {",
+      "      user_input = input(\"You: \")",
+      "      user_input = trim(user_input)",
+      "",
+      "      if user_input == \"exit\" { break }",
+      "      if user_input == \"\" { continue }",
+      "",
+      "      memory.history = push(memory.history, { role: \"user\", content: user_input })",
+      "",
+      "      response = ask ${2|openai,anthropic,ollama|} {",
+      "        prompt: \"${3:You are a helpful assistant.}\\n\\nUser: \" + user_input",
+      "      }",
+      "",
+      "      memory.history = push(memory.history, { role: \"assistant\", content: response })",
+      "      print(\"${1:MyAssistant}: \" + response)",
+      "      print(\"\")",
+      "    }",
+      "  }",
+      "}"
+    ],
+    "description": "OpenClaw-style personal AI assistant agent"
+  },
+  "HTTP GET": {
+    "prefix": "http_get",
+    "body": [
+      "response = http_get(\"${1:https://api.example.com/endpoint}\")",
+      "if response[\"ok\"] == true {",
+      "  data = json_parse(response[\"body\"])",
+      "  ${2:log(data)}",
+      "} else {",
+      "  log(\"Error: \" + response[\"status\"])",
+      "}"
+    ],
+    "description": "HTTP GET request"
+  },
+  "HTTP POST": {
+    "prefix": "http_post",
+    "body": [
+      "response = http_post(\"${1:https://api.example.com/endpoint}\", {",
+      "  ${2:key}: \"${3:value}\"",
+      "})",
+      "data = json_parse(response[\"body\"])"
+    ],
+    "description": "HTTP POST request"
+  },
+  "Read file": {
+    "prefix": "read_file",
+    "body": [
+      "if file_exists(\"${1:path/to/file.txt}\") {",
+      "  content = read_file(\"${1:path/to/file.txt}\")",
+      "  ${2:log(content)}",
+      "}"
+    ],
+    "description": "Read a file safely"
+  },
+  "Write file": {
+    "prefix": "write_file",
+    "body": [
+      "write_file(\"${1:output.txt}\", ${2:content})"
+    ],
+    "description": "Write content to a file"
+  },
+  "Shell command": {
+    "prefix": "shell",
+    "body": [
+      "result = shell(\"${1:ls -la}\")",
+      "if result[\"ok\"] == true {",
+      "  log(result[\"stdout\"])",
+      "} else {",
+      "  log(\"Error: \" + result[\"stderr\"])",
+      "}"
+    ],
+    "description": "Run a shell command and capture output"
   }
 }

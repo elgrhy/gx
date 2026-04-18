@@ -39,7 +39,7 @@ fn main() {
             let file = require_arg(&args, 2, "gx check <file.gx>");
             cmd_check(file)
         }
-        "init" => {
+        "init" | "new" => {
             let name = require_arg(&args, 2, "gx init <project-name>");
             toolchain::init(name)
         }
@@ -73,6 +73,7 @@ fn main() {
             let path = args.get(2).map(|s| s.as_str());
             toolchain::test(path)
         }
+        "repl" => cmd_repl(),
         "version" | "--version" | "-v" => {
             println!("gx {}", VERSION);
             Ok(())
@@ -134,14 +135,11 @@ fn cmd_run(path: &str, debug: bool) -> Result<(), String> {
         for h in &program.helpers {
             eprintln!("[gx]   - {}", h.name);
         }
-        if !program.imports.is_empty() {
-            for i in &program.imports {
-                eprintln!("[gx]   use {}.{}", i.namespace, i.package);
-            }
-        }
     }
 
-    Interpreter::new()
+    let mut interp = Interpreter::new();
+    interp.base_path = Some(path.to_string());
+    interp
         .run_program(&program)
         .map_err(|e| format!("{}: {}", path, e))
 }
@@ -158,6 +156,69 @@ fn cmd_check(path: &str) -> Result<(), String> {
         program.imports.len(),
         if program.imports.len() == 1 { "" } else { "s" },
     );
+    Ok(())
+}
+
+fn cmd_repl() -> Result<(), String> {
+    use std::io::{self, BufRead, Write};
+
+    println!("GX {} — Interactive REPL", VERSION);
+    println!("Type GX code and press Enter. Type 'exit' or Ctrl+C to quit.");
+    println!();
+
+    let stdin = io::stdin();
+    let mut interp = Interpreter::new();
+
+    loop {
+        print!("gx> ");
+        io::stdout().flush().ok();
+
+        let mut line = String::new();
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Err(_) => break,
+            Ok(_) => {}
+        }
+
+        let line = line.trim();
+        if line == "exit" || line == "quit" {
+            break;
+        }
+        if line.is_empty() {
+            continue;
+        }
+
+        // Wrap bare statements in a helper for execution
+        let wrapped = if line.starts_with("helper")
+            || line.starts_with("agent")
+            || line.starts_with("function")
+        {
+            line.to_string()
+        } else {
+            format!(
+                r#"helper "__repl__" {{
+  brain {{
+    plan {{ }}
+    execute {{ {} }}
+    remember {{ }}
+    communicate {{ }}
+  }}
+}}"#,
+                line
+            )
+        };
+
+        match parse_file(&wrapped, "<repl>") {
+            Ok(program) => {
+                if let Err(e) = interp.run_program(&program) {
+                    eprintln!("Error: {}", e);
+                }
+            }
+            Err(e) => eprintln!("Parse error: {}", e),
+        }
+    }
+
+    println!("Goodbye!");
     Ok(())
 }
 
@@ -189,39 +250,54 @@ fn print_help() {
     println!("Brain-first programming language for building transparent AI assistants");
     println!();
     println!("USAGE:");
-    println!("  gx run <file.gx> [--debug]        Run a GX program");
-    println!("  gx check <file.gx>                 Check syntax without running");
-    println!("  gx init <name>                     Create a new GX project");
-    println!("  gx build <file.gx> [-o name]       Build standalone executable");
-    println!("  gx install <js.pkg|py.pkg>         Install a package");
-    println!("  gx fmt <file.gx>                   Format GX source code");
-    println!("  gx make \"description\" [-o file]    AI-generate GX code from description");
-    println!("  gx test [dir]                      Run test files in tests/ directory");
-    println!("  gx version                         Show version");
-    println!("  gx help                            Show this help");
+    println!("  gx run <file.gx> [--debug]            Run a GX program");
+    println!("  gx check <file.gx>                     Check syntax without running");
+    println!("  gx init <name>                         Create a new GX project");
+    println!("  gx build <file.gx> [-o name]           Build standalone launcher");
+    println!("  gx install <js.pkg|py.pkg>             Install a package");
+    println!("  gx fmt <file.gx>                       Format GX source code");
+    println!("  gx make \"description\" [-o file]        AI-generate GX code");
+    println!("  gx test [dir]                          Run test files");
+    println!("  gx repl                                Interactive REPL");
+    println!("  gx version                             Show version");
+    println!("  gx help                                Show this help");
     println!();
     println!("EXAMPLES:");
     println!("  gx run main.gx");
     println!("  gx init my-agent && cd my-agent && gx run main.gx");
     println!("  gx make \"a weather bot that checks London daily\" -o weather.gx");
     println!("  gx install js.axios");
-    println!("  gx build main.gx && ./dist/main");
+    println!("  gx repl");
     println!();
     println!("AI PROVIDERS (set env vars):");
     println!("  OPENAI_API_KEY=sk-...      OpenAI (gpt-4o-mini default)");
     println!("  ANTHROPIC_API_KEY=sk-...   Anthropic Claude");
     println!("  OLLAMA_URL=http://...      Ollama local (default: localhost:11434)");
     println!();
-    println!("LANGUAGE QUICK REFERENCE:");
-    println!("  agent \"name\" {{ ... }}      Define an AI agent");
-    println!("  when started {{ ... }}      Run on startup");
-    println!("  remember {{ key = val }}    Agent memory");
-    println!("  brain {{ plan execute      Full cognitive cycle");
+    println!("BUILT-IN FUNCTIONS:");
+    println!("  Math:    sqrt, pow, abs, floor, ceil, round, clamp, min, max, random, pi, e");
+    println!("  String:  len, trim, split, contains, replace, pad_left, pad_right, repeat");
+    println!("  Array:   push, pop, sort, reverse, slice, join, unique, sum, min, max");
+    println!("  Object:  keys, values, entries, merge, has");
+    println!("  JSON:    json_parse, json_stringify");
+    println!("  HTTP:    http_get, http_post, http_put, http_delete");
+    println!("  File:    read_file, write_file, append_file, file_exists, list_dir");
+    println!("  Env:     env(\"NAME\"), env(\"NAME\", \"default\")");
+    println!("  Util:    base64_encode, base64_decode, html_escape, url_encode");
+    println!();
+    println!("LANGUAGE:");
+    println!("  agent \"name\" {{ ... }}        Define an AI agent");
+    println!("  when started {{ ... }}        Run on startup");
+    println!("  remember {{ key = val }}      Agent memory");
+    println!("  brain {{ plan execute");
     println!("         remember communicate }}");
     println!("  result = ask openai {{ prompt: \"...\" }}");
-    println!("  say result.text            Print AI response");
-    println!("  use js.axios               Import npm package");
-    println!("  use py.requests            Import Python package");
+    println!("  while cond {{ ... }}           While loop");
+    println!("  break / continue              Loop control");
+    println!("  assert cond \"message\"         Assertions");
+    println!("  value ?? default              Null coalescing");
+    println!("  use js.axios                  Import npm package");
+    println!("  use py.requests               Import Python package");
     println!();
-    println!("  Docs: MASTER_PLAN.md  |  Examples: docs/examples/");
+    println!("  Docs: docs/  |  Examples: docs/examples/");
 }
