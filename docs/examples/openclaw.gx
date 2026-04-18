@@ -62,9 +62,9 @@ agent "OpenClaw" {
         print(trim(result["stdout"]))
       }
       print("")
-      model_input = trim(input("Model name (press Enter for llama3): "))
+      model_input = trim(input("Model name (press Enter for llama3.2:latest): "))
       if model_input == "" {
-        memory.model = "llama3"
+        memory.model = "llama3.2:latest"
       } else {
         memory.model = model_input
       }
