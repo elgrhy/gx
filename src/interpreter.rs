@@ -17,6 +17,7 @@ pub enum Signal {
     EscalateToHuman,
     AssertFail(String),
     Error(String),
+    Respond(String, String, u16), // (content_type, body, status_code)
 }
 
 type IResult = Result<Value, Signal>;
@@ -147,6 +148,7 @@ impl Interpreter {
                 Signal::Break => "Unexpected break at top level".into(),
                 Signal::Continue => "Unexpected continue at top level".into(),
                 Signal::EscalateToHuman => "Escalated to human".into(),
+                Signal::Respond(_, _, _) => "Unexpected respond outside of route handler".into(),
             })?;
         }
 
@@ -513,6 +515,27 @@ impl Interpreter {
                 self.events.push(("escalate_to_human".into(), Vec::new()));
                 Err(Signal::EscalateToHuman)
             }
+
+            Stmt::Respond {
+                format,
+                value,
+                status,
+                ..
+            } => {
+                let v = self.eval_expr(value, env)?;
+                let body = match format.as_str() {
+                    "json" => value_to_json(&v),
+                    _ => v.to_string(),
+                };
+                let content_type = match format.as_str() {
+                    "json" => "application/json; charset=utf-8".to_string(),
+                    "html" => "text/html; charset=utf-8".to_string(),
+                    _ => "text/plain; charset=utf-8".to_string(),
+                };
+                Err(Signal::Respond(content_type, body, *status))
+            }
+
+            Stmt::Serve { port, routes, .. } => self.run_serve(port, routes, env),
 
             Stmt::Expr { expr, .. } => {
                 // Auto-mutate: arr.push(x), arr.pop(), arr.sort(), arr.reverse() as statements
@@ -2568,6 +2591,74 @@ impl Interpreter {
             ))),
         }
     }
+
+    fn run_serve(&mut self, port_expr: &Expr, routes: &[RouteDecl], env: &mut Env) -> IResult {
+        let port = self
+            .eval_expr(port_expr, env)?
+            .as_number()
+            .unwrap_or(3000.0) as u16;
+        let addr = format!("0.0.0.0:{}", port);
+        let server = tiny_http::Server::http(&addr)
+            .map_err(|e| Signal::Error(format!("Cannot start server on port {}: {}", port, e)))?;
+        println!("GX server listening on http://localhost:{}", port);
+        println!("Press Ctrl+C to stop.");
+        for mut request in server.incoming_requests() {
+            let method = request.method().to_string().to_uppercase();
+            let url = request.url().to_string();
+            let (path, query) = if let Some(q) = url.find('?') {
+                (url[..q].to_string(), url[q + 1..].to_string())
+            } else {
+                (url.clone(), String::new())
+            };
+            let mut body_str = String::new();
+            let _ = std::io::Read::read_to_string(request.as_reader(), &mut body_str);
+            // Build request object available inside handler
+            let mut req_map = HashMap::new();
+            req_map.insert("method".to_string(), Value::Str(method.clone()));
+            req_map.insert("path".to_string(), Value::Str(path.clone()));
+            req_map.insert("body".to_string(), Value::Str(body_str.clone()));
+            req_map.insert("query".to_string(), Value::Str(query.clone()));
+            // Parse body as JSON if possible
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                req_map.insert("json".to_string(), json_to_gx_value(&json));
+            }
+            // Match route
+            let matched = routes
+                .iter()
+                .find(|r| (r.method == method || r.method == "ANY") && r.path == path);
+            let (ct, body, status) = if let Some(route) = matched {
+                let mut route_env = env.clone();
+                route_env.set("request", Value::Object(req_map));
+                match self.run_stmts(&route.body.clone(), &mut route_env) {
+                    Ok(_) => ("text/plain; charset=utf-8".into(), "OK".into(), 200u16),
+                    Err(Signal::Respond(ct, b, s)) => (ct, b, s),
+                    Err(Signal::Error(e)) => (
+                        "text/plain; charset=utf-8".into(),
+                        format!("500 Internal Error: {}", e),
+                        500,
+                    ),
+                    Err(_) => ("text/plain; charset=utf-8".into(), "OK".into(), 200),
+                }
+            } else {
+                (
+                    "text/plain; charset=utf-8".into(),
+                    format!("404 Not Found: {} {}", method, path),
+                    404,
+                )
+            };
+            let ct_header =
+                tiny_http::Header::from_bytes(b"Content-Type".as_ref(), ct.as_bytes()).unwrap();
+            let response = tiny_http::Response::from_string(body)
+                .with_status_code(status)
+                .with_header(ct_header);
+            let _ = request.respond(response);
+        }
+        Ok(Value::Null)
+    }
+}
+
+fn value_to_json(v: &Value) -> String {
+    serde_json::to_string(&gx_value_to_json(v)).unwrap_or_else(|_| "null".into())
 }
 
 // ── Internal parse helper ─────────────────────────────────────────────────────

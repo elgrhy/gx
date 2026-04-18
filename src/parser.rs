@@ -111,6 +111,10 @@ impl Parser {
             TokenKind::Break => "break".into(),
             TokenKind::Continue => "continue".into(),
             TokenKind::Assert => "assert".into(),
+            TokenKind::Serve => "serve".into(),
+            TokenKind::Route => "route".into(),
+            TokenKind::Respond => "respond".into(),
+            TokenKind::Port => "port".into(),
             other => {
                 return Err(format!(
                     "Line {}: expected identifier, got {:?}",
@@ -763,6 +767,8 @@ impl Parser {
                 self.expect(&TokenKind::RParen)?;
                 Ok(Stmt::Wait { ms, line })
             }
+            TokenKind::Serve => self.parse_serve(),
+            TokenKind::Respond => self.parse_respond(),
             _ => {
                 let expr = self.parse_expr()?;
                 self.skip_newlines();
@@ -820,6 +826,70 @@ impl Parser {
         Ok(Stmt::While {
             condition,
             body,
+            line,
+        })
+    }
+
+    // serve on port 3000 { route GET "/" { ... } ... }
+    fn parse_serve(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.expect(&TokenKind::Serve)?;
+        self.eat(&TokenKind::On);
+        self.eat(&TokenKind::Port);
+        let port = self.parse_expr()?;
+        self.expect(&TokenKind::LBrace)?;
+        let mut routes = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.eat(&TokenKind::RBrace) {
+                break;
+            }
+            if matches!(self.peek_kind(), TokenKind::Eof) {
+                break;
+            }
+            self.expect(&TokenKind::Route)?;
+            let method = self.expect_ident()?.to_uppercase();
+            let path = self.expect_string()?;
+            self.expect(&TokenKind::LBrace)?;
+            let body = self.parse_stmts()?;
+            routes.push(RouteDecl {
+                method,
+                path,
+                body,
+                line: self.line(),
+            });
+        }
+        Ok(Stmt::Serve { port, routes, line })
+    }
+
+    // respond html "..." | respond json { ... } | respond "..."
+    fn parse_respond(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.expect(&TokenKind::Respond)?;
+        let format = match self.peek_kind() {
+            TokenKind::Ident(s) if matches!(s.as_str(), "html" | "json" | "text") => {
+                let f = s.clone();
+                self.advance();
+                f
+            }
+            _ => "text".to_string(),
+        };
+        // optional status code: respond html 200 "..."
+        let status = if matches!(self.peek_kind(), TokenKind::NumberLit(_)) {
+            if let TokenKind::NumberLit(n) = self.peek_kind().clone() {
+                self.advance();
+                n as u16
+            } else {
+                200
+            }
+        } else {
+            200
+        };
+        let value = self.parse_expr()?;
+        Ok(Stmt::Respond {
+            format,
+            value,
+            status,
             line,
         })
     }

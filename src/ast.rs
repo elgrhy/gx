@@ -219,6 +219,27 @@ pub enum Stmt {
     EscalateToHuman {
         line: usize,
     },
+    Serve {
+        port: Expr,
+        routes: Vec<RouteDecl>,
+        line: usize,
+    },
+    Respond {
+        format: String, // "html" | "json" | "text"
+        value: Expr,
+        status: u16,
+        line: usize,
+    },
+}
+
+// ── HTTP route declaration ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct RouteDecl {
+    pub method: String, // "GET" | "POST" | "PUT" | "DELETE" | "ANY"
+    pub path: String,
+    pub body: Vec<Stmt>,
+    pub line: usize,
 }
 
 // ── Expressions ───────────────────────────────────────────────────────────────

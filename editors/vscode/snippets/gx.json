@@ -269,5 +269,61 @@
       "}"
     ],
     "description": "Run a shell command and capture output"
+  },
+  "HTTP Server": {
+    "prefix": "serve",
+    "body": [
+      "serve on port ${1:3000} {",
+      "  route GET \"${2:/}\" {",
+      "    respond html \"${3:<h1>Hello from GX!</h1>}\"",
+      "  }",
+      "  route GET \"${4:/api/hello}\" {",
+      "    respond json { message: \"${5:Hello!}\" }",
+      "  }",
+      "  route POST \"${6:/api/ask}\" {",
+      "    body = request.body",
+      "    respond json { reply: body }",
+      "  }",
+      "}"
+    ],
+    "description": "HTTP server with routes"
+  },
+  "Route handler": {
+    "prefix": "route",
+    "body": [
+      "route ${1|GET,POST,PUT,DELETE|} \"${2:/path}\" {",
+      "  ${3:respond json { message: \"ok\" }}",
+      "}"
+    ],
+    "description": "Single HTTP route"
+  },
+  "Respond HTML": {
+    "prefix": "respond-html",
+    "body": [
+      "respond html \"${1:<h1>Hello!</h1>}\""
+    ],
+    "description": "Respond with HTML"
+  },
+  "Respond JSON": {
+    "prefix": "respond-json",
+    "body": [
+      "respond json { ${1:key}: ${2:\"value\"} }"
+    ],
+    "description": "Respond with JSON"
+  },
+  "Progressive Agent": {
+    "prefix": "agent-simple",
+    "body": [
+      "Agent ${1:MyAgent}",
+      "",
+      "${2:name} = \"${3:World}\"",
+      "",
+      "Greet:",
+      "  \"Hello {${2:name}}!\"",
+      "",
+      "On start:",
+      "  Greet"
+    ],
+    "description": "Progressive syntax agent (no braces needed)"
   }
 }

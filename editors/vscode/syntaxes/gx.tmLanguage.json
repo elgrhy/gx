@@ -41,7 +41,7 @@
     },
     "keyword": {
       "name": "keyword.control.gx",
-      "match": "\\b(agent|helper|brain|plan|execute|remember|communicate|receive|channel|when|started|changes|if|else|for|each|in|while|break|continue|assert|try|catch|return|re-run|escalate|to|human|wait|emit|broadcast|use|import|function|memory)\\b"
+      "match": "\\b(agent|helper|brain|plan|execute|remember|communicate|receive|channel|when|started|changes|if|else|for|each|in|while|break|continue|assert|try|catch|return|re-run|escalate|to|human|wait|emit|broadcast|use|import|function|memory|serve|route|respond|port|on)\\b"
     },
     "type-keyword": {
       "name": "keyword.declaration.gx",

@@ -1,0 +1,42 @@
+// Web Server (Named Behaviors) — same server in Level 2 progressive syntax
+//
+// Run:
+//   gx run docs/examples/web_server_simple.gx
+//
+// curl http://localhost:3000
+// curl http://localhost:3000/api/hello
+// curl -X POST http://localhost:3000/api/ask -d "What is GX?"
+
+Agent WebServer
+
+Home:
+  respond html "<!DOCTYPE html><html><body><h1>Hello from GX!</h1><p>Try <a href='/api/hello'>/api/hello</a></p></body></html>"
+
+Hello:
+  respond json { message: "Hello from GX!", version: "0.1.3" }
+
+Time:
+  ts = get_timestamp()
+  respond json { timestamp: ts }
+
+Ask:
+  question = request.body
+  If question == ""
+    respond json { error: "Send a question in the request body" }
+  result = ask openai { prompt: "Answer briefly: " + question, model: "gpt-4o-mini" }
+  If result["ok"] == true
+    respond json { answer: result["text"] }
+  Else
+    respond json { error: result["error"] }
+
+On start:
+  print("GX server ready on http://localhost:3000")
+  serve on port 3000
+    route GET "/"
+      Home
+    route GET "/api/hello"
+      Hello
+    route GET "/api/time"
+      Time
+    route POST "/api/ask"
+      Ask

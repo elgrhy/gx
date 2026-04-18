@@ -75,6 +75,11 @@ pub enum TokenKind {
     Break,
     Continue,
     Assert,
+    // HTTP server
+    Serve,
+    Route,
+    Respond,
+    Port,
 
     // Operators / punctuation
     LBrace,           // {
@@ -311,6 +316,10 @@ impl Lexer {
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
             "assert" => TokenKind::Assert,
+            "serve" => TokenKind::Serve,
+            "route" => TokenKind::Route,
+            "respond" => TokenKind::Respond,
+            "port" => TokenKind::Port,
             "true" => TokenKind::BoolLit(true),
             "false" => TokenKind::BoolLit(false),
             "null" => TokenKind::Null,

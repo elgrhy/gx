@@ -334,7 +334,13 @@ fn parse_one_stmt(
         } else {
             crate::ast::Expr::Null
         };
-        return Ok((Stmt::Return { value: Some(expr), line: line.no }, 1));
+        return Ok((
+            Stmt::Return {
+                value: Some(expr),
+                line: line.no,
+            },
+            1,
+        ));
     }
 
     // ── Assert ────────────────────────────────────────────────────────────────
@@ -354,7 +360,14 @@ fn parse_one_stmt(
         };
         let cond = parse_expr_str(cond_src, line.no)?;
         let message = msg_src.map(|m| parse_expr_str(m, line.no)).transpose()?;
-        return Ok((Stmt::Assert { condition: cond, message, line: line.no }, 1));
+        return Ok((
+            Stmt::Assert {
+                condition: cond,
+                message,
+                line: line.no,
+            },
+            1,
+        ));
     }
 
     // ── Try / Catch ───────────────────────────────────────────────────────────
@@ -398,6 +411,108 @@ fn parse_one_stmt(
                 line: line.no,
             },
             consumed,
+        ));
+    }
+
+    // ── Serve on port N ──────────────────────────────────────────────────────────
+    // serve on port 3000
+    //   route GET "/"
+    //     <body>
+    if lower.starts_with("serve") {
+        // Parse "serve [on] [port] <N>" — extract the port number token
+        let port_src = lower
+            .split_whitespace()
+            .find(|w| !matches!(*w, "serve" | "on" | "port"))
+            .unwrap_or("3000");
+        let port_expr = parse_expr_str(
+            if port_src.is_empty() {
+                "3000"
+            } else {
+                port_src
+            },
+            line.no,
+        )?;
+        let children = sub_block(lines, start + 1, line.indent);
+        let mut routes = Vec::new();
+        let mut ci = 0;
+        while ci < children.len() {
+            let cl = &children[ci];
+            let cl_lower = cl.text.to_lowercase();
+            if cl_lower.starts_with("route ") {
+                let rest = cl.text[6..].trim();
+                let mut parts = rest.splitn(2, ' ');
+                let method = parts.next().unwrap_or("GET").to_uppercase();
+                let path_raw = parts
+                    .next()
+                    .unwrap_or("\"/\"")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
+                // Body is either the next indented block or a single behavior name on same line
+                let route_body: Vec<crate::ast::Stmt>;
+                let sub = sub_block(children, ci + 1, cl.indent);
+                if sub.is_empty() {
+                    // inline: route GET "/" BehaviorName
+                    // treat trailing token as a behavior call if it looks like an identifier
+                    route_body = Vec::new();
+                    ci += 1;
+                } else {
+                    route_body = parse_stmts(sub, false)?;
+                    ci += 1 + sub.len();
+                }
+                routes.push(crate::ast::RouteDecl {
+                    method,
+                    path: format!("/{}", path_raw.trim_start_matches('/')),
+                    body: route_body,
+                    line: cl.no,
+                });
+            } else {
+                ci += 1;
+            }
+        }
+        let consumed = 1 + children.len();
+        return Ok((
+            Stmt::Serve {
+                port: port_expr,
+                routes,
+                line: line.no,
+            },
+            consumed,
+        ));
+    }
+
+    // ── Respond ────────────────────────────────────────────────────────────────
+    // respond html "..."  |  respond json { ... }  |  respond "..."
+    if lower.starts_with("respond ") {
+        let rest = text[8..].trim();
+        let (format, value_src) = if let Some(s) = rest.strip_prefix("html ") {
+            ("html".to_string(), s.trim().to_string())
+        } else if let Some(s) = rest.strip_prefix("json ") {
+            ("json".to_string(), s.trim().to_string())
+        } else if let Some(s) = rest.strip_prefix("text ") {
+            ("text".to_string(), s.trim().to_string())
+        } else {
+            ("text".to_string(), rest.to_string())
+        };
+        // Optional status code prefix: respond html 200 "..."
+        let (status, value_src) = if let Some(first) = value_src.split_whitespace().next() {
+            if let Ok(n) = first.parse::<u16>() {
+                (n, value_src[first.len()..].trim().to_string())
+            } else {
+                (200, value_src)
+            }
+        } else {
+            (200, value_src)
+        };
+        let value = parse_expr_str(&value_src, line.no)?;
+        return Ok((
+            Stmt::Respond {
+                format,
+                value,
+                status,
+                line: line.no,
+            },
+            1,
         ));
     }
 
