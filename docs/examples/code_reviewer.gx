@@ -1,0 +1,111 @@
+// Code Reviewer — AI-powered code review agent
+//
+// Run:
+//   gx run docs/examples/code_reviewer.gx
+//
+// Point it at any file and get an instant AI code review.
+// Shows how GX behaviors map to a review pipeline:
+// load → analyze → report → suggest
+
+Agent CodeReviewer
+
+file_path   = ""
+code        = ""
+language    = ""
+review      = ""
+suggestions = []
+running     = true
+
+Banner:
+  ""
+  "╔══════════════════════════════════════════╗"
+  "║  Code Reviewer — Powered by GX Language ║"
+  "╚══════════════════════════════════════════╝"
+  ""
+  "Commands: review <file> | langs | exit"
+  ""
+
+DetectLanguage:
+  If ends_with(file_path, ".py")
+    language = "Python"
+  Else
+    If ends_with(file_path, ".js") or ends_with(file_path, ".ts")
+      language = "JavaScript/TypeScript"
+    Else
+      If ends_with(file_path, ".rs")
+        language = "Rust"
+      Else
+        If ends_with(file_path, ".go")
+          language = "Go"
+        Else
+          If ends_with(file_path, ".gx")
+            language = "GX"
+          Else
+            language = "code"
+
+LoadFile:
+  If file_exists(file_path) == false
+    print("File not found: " + file_path)
+    file_path = ""
+    Return
+  code = read_file(file_path)
+  DetectLanguage
+  print("Loaded " + file_path + " (" + language + ", " + len(code) + " chars)")
+  ""
+
+Analyze:
+  If code == ""
+    "No file loaded. Use: review <file>"
+    Return
+  "Reviewing your code..."
+  prompt    = "You are an expert " + language + " code reviewer. Review the following code for: bugs, security issues, performance, readability, and best practices. Be specific and constructive.\n\n```\n" + code + "\n```\n\nProvide a structured review with: 1) Overall assessment 2) Issues found 3) Suggestions."
+  ai_result = ask openai { prompt: prompt, model: "gpt-4o-mini" }
+  If ai_result["ok"] == true
+    review = ai_result["text"]
+  Else
+    review = "Review failed: " + ai_result["error"]
+
+Report:
+  If review == ""
+    "No review yet. Use: review <file>"
+    Return
+  ""
+  "── Code Review Report ───────────────────────"
+  print("File: " + file_path)
+  print("Language: " + language)
+  "─────────────────────────────────────────────"
+  print(review)
+  "─────────────────────────────────────────────"
+  ""
+
+ReviewFile:
+  path      = trim(strip_prefix(cmd, "review "))
+  file_path = path
+  LoadFile
+  If file_path != ""
+    Analyze
+    Report
+
+Handle:
+  cmd = trim(input("> "))
+  If cmd == ""
+    Return
+  If cmd == "exit" or cmd == "quit"
+    "Goodbye!"
+    running = false
+    Return
+  If cmd == "langs"
+    "Supported: .py  .js  .ts  .rs  .go  .gx  (and any other file)"
+    ""
+    Return
+  If starts_with(cmd, "review ")
+    ReviewFile
+    Return
+  print("Unknown: " + cmd)
+  "Try: review <file> | langs | exit"
+  ""
+
+On start:
+  Banner
+  While running == true
+    Handle

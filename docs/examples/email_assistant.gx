@@ -1,0 +1,125 @@
+// Email Assistant — drafts, improves, and summarizes emails with AI
+//
+// Run:
+//   gx run docs/examples/email_assistant.gx
+//
+// Pure intent: you describe what you need, the AI does the writing.
+// Commands: draft | improve | summarize | tone | exit
+
+Agent EmailAssistant
+
+draft    = ""
+subject  = ""
+tone     = "professional"
+running  = true
+
+Banner:
+  ""
+  "╔════════════════════════════════════════════╗"
+  "║  Email Assistant — Powered by GX Language ║"
+  "╚════════════════════════════════════════════╝"
+  ""
+  "Commands: draft | improve | summarize | tone | exit"
+  ""
+
+SetTone:
+  "Available tones: professional | friendly | formal | casual | assertive"
+  new_tone = trim(input("Tone: "))
+  If new_tone != ""
+    tone = new_tone
+  print("Tone set to: " + tone)
+  ""
+
+DraftEmail:
+  "Describe the email you need (recipient, purpose, key points):"
+  description = trim(input("> "))
+  If description == ""
+    "Cancelled."
+    ""
+    Return
+  "Drafting your email..."
+  prompt    = "You are an expert email writer. Write a " + tone + " email based on this description:\n\n" + description + "\n\nProvide: Subject line and full email body. Format as:\nSubject: <subject>\n\n<body>"
+  ai_result = ask openai { prompt: prompt, model: "gpt-4o-mini" }
+  If ai_result["ok"] == true
+    draft = ai_result["text"]
+    ""
+    "── Draft Email ──────────────────────────────"
+    print(draft)
+    "─────────────────────────────────────────────"
+  Else
+    print("Error: " + ai_result["error"])
+  ""
+
+ImproveEmail:
+  If draft == ""
+    "No draft yet. Use 'draft' to create one first."
+    ""
+    Return
+  "What should be improved? (or press Enter for general improvements):"
+  feedback = trim(input("> "))
+  "Improving your email..."
+  context   = "Improve this " + tone + " email."
+  If feedback != ""
+    context = context + " Specifically: " + feedback
+  prompt    = context + "\n\nOriginal email:\n" + draft + "\n\nProvide the improved version."
+  ai_result = ask openai { prompt: prompt, model: "gpt-4o-mini" }
+  If ai_result["ok"] == true
+    draft = ai_result["text"]
+    ""
+    "── Improved Email ───────────────────────────"
+    print(draft)
+    "─────────────────────────────────────────────"
+  Else
+    print("Error: " + ai_result["error"])
+  ""
+
+SummarizeEmail:
+  "Paste the email to summarize (end with a blank line):"
+  email_text = ""
+  done       = false
+  While done == false
+    line = input("")
+    If line == ""
+      done = true
+    Else
+      email_text = email_text + line + "\n"
+  If email_text == ""
+    "No email provided."
+    Return
+  "Summarizing..."
+  prompt    = "Summarize this email in 2-3 bullet points. Identify: sender's intent, key asks, and any deadlines.\n\n" + email_text
+  ai_result = ask openai { prompt: prompt, model: "gpt-4o-mini" }
+  If ai_result["ok"] == true
+    print(ai_result["text"])
+  Else
+    print("Error: " + ai_result["error"])
+  ""
+
+Handle:
+  cmd = trim(input("> "))
+  If cmd == ""
+    Return
+  If cmd == "exit" or cmd == "quit"
+    "Goodbye!"
+    running = false
+    Return
+  If cmd == "draft"
+    DraftEmail
+    Return
+  If cmd == "improve"
+    ImproveEmail
+    Return
+  If cmd == "summarize"
+    SummarizeEmail
+    Return
+  If cmd == "tone"
+    SetTone
+    Return
+  print("Unknown: " + cmd)
+  "Try: draft | improve | summarize | tone | exit"
+  ""
+
+On start:
+  Banner
+  While running == true
+    Handle

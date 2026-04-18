@@ -1,0 +1,120 @@
+// Todo Agent — AI-powered task manager
+//
+// Run:
+//   gx run docs/examples/todo_agent.gx
+//
+// Commands: add <task> | done <n> | list | clear | ai | exit
+
+Agent TodoApp
+
+todos   = []
+running = true
+
+Banner:
+  ""
+  "╔═══════════════════════════════╗"
+  "║    Todo Agent — Powered by GX ║"
+  "╚═══════════════════════════════╝"
+  ""
+  "Commands: add <task> | done <n> | list | clear | ai | exit"
+  ""
+
+ShowList:
+  If len(todos) == 0
+    "No tasks yet. Type: add buy milk"
+  Else
+    "── Your Tasks ──────────────────"
+    i = 0
+    While i < len(todos)
+      item   = todos[i]
+      status = item["done"]
+      label  = item["task"]
+      n      = i + 1
+      If status == true
+        print("  [x] " + n + ". " + label)
+      Else
+        print("  [ ] " + n + ". " + label)
+      i += 1
+    "────────────────────────────────"
+  ""
+
+AddTask:
+  task_text = trim(strip_prefix(cmd, "add "))
+  If task_text == "" or task_text == "add"
+    "Usage: add <task description>"
+  Else
+    todos = push(todos, { task: task_text, done: false })
+    print("Added: " + task_text)
+  ""
+
+MarkDone:
+  n_str = trim(strip_prefix(cmd, "done "))
+  n     = to_number(n_str) - 1
+  If n < 0 or n >= len(todos)
+    "No task at that number."
+  Else
+    item     = todos[n]
+    label    = item["task"]
+    new_item = set_key(item, "done", true)
+    todos    = set_key(todos, n, new_item)
+    print("Done: " + label)
+  ""
+
+AISuggest:
+  If len(todos) == 0
+    "Add some tasks first, then I can help prioritize."
+    Return
+  task_list = ""
+  i = 0
+  While i < len(todos)
+    item   = todos[i]
+    status = item["done"]
+    label  = item["task"]
+    If status == false
+      task_list = task_list + "- " + label + "\n"
+    i += 1
+  If task_list == ""
+    "All tasks are done! Great work."
+    Return
+  "Asking AI to prioritize your tasks..."
+  prompt    = "Here are my todo tasks:\n" + task_list + "\nPlease suggest which to tackle first and why. Be brief."
+  ai_result = ask openai { prompt: prompt, model: "gpt-4o-mini" }
+  If ai_result["ok"] == true
+    print(ai_result["text"])
+  Else
+    print("AI error: " + ai_result["error"])
+  ""
+
+Handle:
+  cmd = trim(input("> "))
+  If cmd == ""
+    Return
+  If cmd == "exit" or cmd == "quit"
+    "Bye!"
+    running = false
+    Return
+  If cmd == "list" or cmd == "ls"
+    ShowList
+    Return
+  If cmd == "clear"
+    todos = []
+    "Tasks cleared."
+    ""
+    Return
+  If cmd == "ai" or cmd == "prioritize"
+    AISuggest
+    Return
+  If starts_with(cmd, "add ")
+    AddTask
+    Return
+  If starts_with(cmd, "done ")
+    MarkDone
+    Return
+  print("Unknown command: " + cmd)
+  "Try: add <task> | done <n> | list | clear | ai | exit"
+  ""
+
+On start:
+  Banner
+  While running == true
+    Handle

@@ -1,0 +1,105 @@
+// Customer Support Bot — handles FAQs, escalates when needed
+//
+// Run:
+//   gx run docs/examples/customer_support.gx
+//
+// Shows how GX named behaviors map to a real support workflow:
+// triage → answer → escalate → log
+
+Agent SupportBot
+
+name        = "SupportBot"
+product     = "GX Language"
+ticket_id   = 0
+running     = true
+escalated   = false
+ticket_log  = []
+
+faqs = {}
+
+
+LoadFAQs:
+  faqs = set_key(faqs, "install", "Run: npm install -g gxlang  (requires Node.js 16+)")
+  faqs = set_key(faqs, "docs", "Full docs at https://github.com/elgrhy/gx")
+  faqs = set_key(faqs, "license", "GX is open-source under the MIT license.")
+  faqs = set_key(faqs, "version", "Latest: 0.1.3. Run: gx --version")
+  faqs = set_key(faqs, "syntax", "GX supports brace syntax and indentation syntax.")
+  faqs = set_key(faqs, "ai", "GX supports OpenAI, Anthropic, and Ollama out of the box.")
+  faqs = set_key(faqs, "vscode", "Search 'GX Language' in the VS Code marketplace.")
+
+Banner:
+  ""
+  "╔═══════════════════════════════════════════╗"
+  "║    SupportBot — Powered by GX Language    ║"
+  "║    Type your question or 'exit' to leave  ║"
+  "╚═══════════════════════════════════════════╝"
+  ""
+
+Greet:
+  ticket_id += 1
+  print("Hello! I'm SupportBot for " + product + ". Ticket #" + ticket_id)
+  "How can I help you today?"
+  ""
+
+CheckFAQ:
+  answer    = ""
+  faq_keys  = keys(faqs)
+  For each key in faq_keys
+    If contains(lower_case(question), key)
+      answer = faqs[key]
+  found_faq = answer
+
+AnswerWithAI:
+  "Let me look that up..."
+  context   = "You are a support agent for " + product + ". Be helpful, concise, and friendly. If unsure, say so."
+  prompt    = context + "\n\nCustomer question: " + question
+  ai_result = ask openai { prompt: prompt, model: "gpt-4o-mini" }
+  If ai_result["ok"] == true
+    ai_answer = ai_result["text"]
+  Else
+    ai_answer = "I had trouble reaching my knowledge base. Please try again or type 'escalate'."
+
+LogTicket:
+  resolved = true
+  If escalated == true
+    resolved = false
+  entry = { ticket: ticket_id, question: question, resolved: resolved }
+  ticket_log = push(ticket_log, entry)
+
+Escalate:
+  escalated = true
+  ""
+  "I'm connecting you with a human agent. They'll follow up within 24 hours."
+  print("Ticket #" + ticket_id + " escalated. We have your question on file:")
+  print("  " + question)
+  ""
+
+Handle:
+  question = trim(input("You: "))
+  If question == ""
+    Return
+  If question == "exit" or question == "bye"
+    LogTicket
+    print("Thank you for contacting support. Ticket #" + ticket_id + " closed.")
+    running = false
+    Return
+  If question == "escalate" or question == "human" or question == "agent"
+    Escalate
+    LogTicket
+    running = false
+    Return
+  CheckFAQ
+  If found_faq != ""
+    print("SupportBot: " + found_faq)
+    ""
+  Else
+    AnswerWithAI
+    print("SupportBot: " + ai_answer)
+    ""
+
+On start:
+  LoadFAQs
+  Banner
+  Greet
+  While running == true
+    Handle

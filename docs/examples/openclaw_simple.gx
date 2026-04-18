@@ -1,0 +1,245 @@
+// OpenClaw — Personal AI Assistant (Named Behaviors syntax)
+//
+// This is the same OpenClaw assistant rewritten in GX Level 2 syntax.
+// Compare with openclaw.gx — same features, far less ceremony.
+//
+// Run:
+//   gx run docs/examples/openclaw_simple.gx
+
+Agent OpenClaw
+
+history      = []
+facts        = {}
+provider     = "openai"
+model        = "gpt-4o-mini"
+session_count = 0
+running      = true
+
+// ── Setup behaviors ─────────────────────────────────────────────────────────
+
+Banner:
+  ""
+  "╔══════════════════════════════════════════╗"
+  "║     OpenClaw — Personal AI Assistant    ║"
+  "║     Built with GX Language              ║"
+  "╚══════════════════════════════════════════╝"
+  ""
+
+ChooseProvider:
+  "Choose your AI provider:"
+  "  1  OpenAI    (needs OPENAI_API_KEY)"
+  "  2  Anthropic (needs ANTHROPIC_API_KEY)"
+  "  3  Ollama    (local, free)"
+  ""
+  ready = false
+  While ready == false
+    choice = trim(input("Enter 1, 2 or 3: "))
+    If choice == "1" or choice == "openai"
+      provider = "openai"
+      model    = "gpt-4o-mini"
+      ready    = true
+    If choice == "2" or choice == "anthropic"
+      provider = "anthropic"
+      model    = "claude-haiku-4-5"
+      ready    = true
+    If choice == "3" or choice == "ollama"
+      provider = "ollama"
+      ready    = true
+    If ready == false
+      "Please enter 1, 2 or 3."
+
+ChooseOllamaModel:
+  result = shell("ollama list")
+  If result["ok"] == true
+    "Your Ollama models:"
+    print(trim(result["stdout"]))
+  ""
+  typed = trim(input("Model (Enter = llama3.2:latest): "))
+  If typed == ""
+    model = "llama3.2:latest"
+  Else
+    model = typed
+
+Setup:
+  Banner
+  ChooseProvider
+  If provider == "ollama"
+    ChooseOllamaModel
+  ""
+  print("Ready! Provider: " + provider + "   Model: " + model)
+  "Type 'help' to see what I can do."
+  ""
+
+// ── Command behaviors ────────────────────────────────────────────────────────
+
+Help:
+  "I can:"
+  "  • Chat — just type anything"
+  "  • run: <cmd>             — run a shell command"
+  "  • read: <file>           — read a file"
+  "  • write: <file> <text>   — write to a file"
+  "  • remember: key = value  — save a fact for this session"
+  "  • forget: <key>          — remove a saved fact"
+  "  • facts                  — list saved facts"
+  "  • history                — show conversation history"
+  "  • clear                  — reset conversation memory"
+  "  • exit                   — quit"
+  ""
+
+ShowHistory:
+  If len(history) == 0
+    "No history yet."
+  Else
+    "── Conversation History ─────────────────────"
+    For each msg in history
+      print(msg["role"] + ": " + msg["content"])
+    "─────────────────────────────────────────────"
+  ""
+
+ShowFacts:
+  fact_keys = keys(facts)
+  If len(fact_keys) == 0
+    "No facts yet. Try: remember: my name = Ahmed"
+  Else
+    "── Saved Facts ──────────────────────────────"
+    For each k in fact_keys
+      print("  " + k + " = " + facts[k])
+    "─────────────────────────────────────────────"
+  ""
+
+RunCommand:
+  cmd = trim(strip_prefix(user_input, "run:"))
+  print("Running → " + cmd)
+  result = shell(cmd)
+  If result["ok"] == true
+    out = trim(result["stdout"])
+    If out == ""
+      "(done, no output)"
+    Else
+      print(out)
+  Else
+    print("Error: " + trim(result["stderr"]))
+  ""
+
+ReadFile:
+  path = trim(strip_prefix(user_input, "read:"))
+  If file_exists(path)
+    "── File ─────────────────────────────────────"
+    print(read_file(path))
+    "─────────────────────────────────────────────"
+  Else
+    print("File not found: " + path)
+  ""
+
+WriteFile:
+  rest  = trim(strip_prefix(user_input, "write:"))
+  parts = split(rest, " ")
+  path  = parts[0]
+  text  = trim(strip_prefix(rest, path))
+  write_file(path, text + "\n")
+  print("Written to " + path)
+  ""
+
+RememberFact:
+  fact_text = trim(strip_prefix(user_input, "remember:"))
+  If contains(fact_text, "=")
+    kv  = split(fact_text, "=")
+    k   = trim(kv[0])
+    v   = trim(kv[1])
+    facts = set_key(facts, k, v)
+    print("Got it — " + k + " = " + v)
+  Else
+    facts = set_key(facts, fact_text, "true")
+    print("Remembered: " + fact_text)
+  ""
+
+ForgetFact:
+  key = trim(strip_prefix(user_input, "forget:"))
+  If has(facts, key)
+    facts = delete_key(facts, key)
+    print("Forgot: " + key)
+  Else
+    print("No fact called '" + key + "'")
+  ""
+
+// ── AI conversation ──────────────────────────────────────────────────────────
+
+BuildPrompt:
+  facts_text = ""
+  fact_keys  = keys(facts)
+  If len(fact_keys) > 0
+    facts_text = "\n[Facts about you]\n"
+    For each k in fact_keys
+      facts_text = facts_text + k + ": " + facts[k] + "\n"
+  history_text = ""
+  i = 0
+  If len(history) > 12
+    i = len(history) - 12
+  While i < len(history)
+    msg          = history[i]
+    history_text = history_text + msg["role"] + ": " + msg["content"] + "\n"
+    i += 1
+  full_prompt = "You are OpenClaw, a helpful AI assistant built with GX Language. Be concise and friendly." + facts_text + "\n\n[Conversation]\n" + history_text + "user: " + user_input
+
+AskAI:
+  BuildPrompt
+  ai_result = ask openai { prompt: full_prompt, model: model }
+  If provider == "anthropic"
+    ai_result = ask anthropic { prompt: full_prompt, model: model }
+  If provider == "ollama"
+    ai_result = ask ollama { prompt: full_prompt, model: model }
+  If ai_result["ok"] == true
+    response = ai_result["text"]
+  Else
+    response = "Sorry, error: " + ai_result["error"]
+  history = push(history, { role: "assistant", content: response })
+  print("OpenClaw: " + response)
+  ""
+
+Chat:
+  user_input = trim(input("You: "))
+  If user_input == ""
+    Return
+  If user_input == "exit" or user_input == "quit" or user_input == "bye"
+    print("Goodbye! " + session_count + " message(s) this session.")
+    running = false
+    Return
+  If user_input == "help"
+    Help
+    Return
+  If user_input == "history"
+    ShowHistory
+    Return
+  If user_input == "clear"
+    history = []
+    "Memory cleared."
+    ""
+    Return
+  If user_input == "facts"
+    ShowFacts
+    Return
+  If starts_with(user_input, "run:")
+    RunCommand
+    Return
+  If starts_with(user_input, "read:")
+    ReadFile
+    Return
+  If starts_with(user_input, "write:")
+    WriteFile
+    Return
+  If starts_with(user_input, "remember:")
+    RememberFact
+    Return
+  If starts_with(user_input, "forget:")
+    ForgetFact
+    Return
+  session_count += 1
+  history = push(history, { role: "user", content: user_input })
+  AskAI
+
+// ── Entry point ──────────────────────────────────────────────────────────────
+
+On start:
+  Setup
+  While running == true
+    Chat

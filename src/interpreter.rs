@@ -950,7 +950,8 @@ impl Interpreter {
         let mem = caller_env.get_memory();
         env.set_memory(mem.clone());
         // Flatten memory into local vars so bare names work in progressive syntax:
-        // writing `count += 1` inside a behavior acts like `memory.count += 1`
+        // `count += 1` inside a behavior acts like `memory.count += 1`
+        let initial: HashMap<String, Value> = mem.clone();
         for (k, v) in &mem {
             env.set(k, v.clone());
         }
@@ -960,12 +961,14 @@ impl Interpreter {
             Err(Signal::Return(v)) => v,
             Err(e) => return Err(e),
         };
-        // Write back explicit memory changes
+        // memory.X assignments are captured in env.get_memory()
         let mut new_mem = env.get_memory();
-        // Also write back any local var that was originally a memory key
-        for k in mem.keys() {
+        // Local var wins only if it actually changed — this lets memory.X = ... and bare x = ...
+        // coexist: whichever was actually modified wins, with local var taking priority on conflict
+        for k in initial.keys() {
             let local_val = env.get(k);
-            if !matches!(local_val, Value::Null) {
+            let was = initial.get(k).cloned().unwrap_or(Value::Null);
+            if local_val != was && !matches!(local_val, Value::Null) {
                 new_mem.insert(k.clone(), local_val);
             }
         }

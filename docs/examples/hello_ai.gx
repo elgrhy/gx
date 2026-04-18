@@ -1,0 +1,22 @@
+// Hello AI — the simplest possible GX AI agent
+//
+// Run:
+//   gx run docs/examples/hello_ai.gx
+//
+// This is Level 1 (Pure Intent) syntax.
+// No braces. No brain cycle. No boilerplate.
+// Just: who you are, what you know, what you do.
+
+Agent Greeter
+
+name    = "World"
+topic   = "the universe"
+
+"Hello {name}! I'm your AI guide to {topic}."
+""
+
+question  = input("What do you want to know about {topic}? ")
+ai_result = ask openai { prompt: "Tell me something fascinating about " + topic + ". The user asked: " + question, model: "gpt-4o-mini" }
+
+"Here's what I found:"
+print(ai_result["text"])
