@@ -2967,23 +2967,27 @@ helper "mathtest" {
 
     #[test]
     fn test_file_io() {
-        run(r#"
-helper "filetest" {
-  brain {
-    plan { }
-    execute {
-      write_file("/tmp/gx_test_file.txt", "hello gx")
-      content = read_file("/tmp/gx_test_file.txt")
+        let tmp = std::env::temp_dir().join("gx_test_file.txt");
+        let path = tmp.to_string_lossy().replace('\\', "/");
+        let src = format!(
+            r#"
+helper "filetest" {{
+  brain {{
+    plan {{ }}
+    execute {{
+      write_file("{path}", "hello gx")
+      content = read_file("{path}")
       assert content == "hello gx" "file round-trip"
-      assert file_exists("/tmp/gx_test_file.txt") "file exists"
-      delete_file("/tmp/gx_test_file.txt")
-      assert not file_exists("/tmp/gx_test_file.txt") "file deleted"
-    }
-    remember { }
-    communicate { }
-  }
-}"#)
-        .unwrap();
+      assert file_exists("{path}") "file exists"
+      delete_file("{path}")
+      assert not file_exists("{path}") "file deleted"
+    }}
+    remember {{ }}
+    communicate {{ }}
+  }}
+}}"#
+        );
+        run(&src).unwrap();
     }
 
     #[test]
