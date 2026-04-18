@@ -947,14 +947,29 @@ impl Interpreter {
 
     fn call_behavior(&mut self, func: &FunctionDef, caller_env: &mut Env) -> IResult {
         let mut env = Env::new();
-        env.set_memory(caller_env.get_memory());
+        let mem = caller_env.get_memory();
+        env.set_memory(mem.clone());
+        // Flatten memory into local vars so bare names work in progressive syntax:
+        // writing `count += 1` inside a behavior acts like `memory.count += 1`
+        for (k, v) in &mem {
+            env.set(k, v.clone());
+        }
         let body = func.body.clone();
         let result = match self.run_stmts(&body, &mut env) {
             Ok(v) => v,
             Err(Signal::Return(v)) => v,
             Err(e) => return Err(e),
         };
-        caller_env.set_memory(env.get_memory());
+        // Write back explicit memory changes
+        let mut new_mem = env.get_memory();
+        // Also write back any local var that was originally a memory key
+        for k in mem.keys() {
+            let local_val = env.get(k);
+            if !matches!(local_val, Value::Null) {
+                new_mem.insert(k.clone(), local_val);
+            }
+        }
+        caller_env.set_memory(new_mem);
         Ok(result)
     }
 

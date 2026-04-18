@@ -304,6 +304,59 @@ fn parse_one_stmt(
         ));
     }
 
+    // ── While ─────────────────────────────────────────────────────────────────
+    if lower.starts_with("while ") || lower == "while true" {
+        let cond_src = text[6..].trim();
+        let cond = parse_expr_str(cond_src, line.no)?;
+        let body_block = sub_block(lines, start + 1, line.indent);
+        let body = parse_stmts(body_block, auto_output)?;
+        let consumed = 1 + body_block.len();
+        return Ok((
+            Stmt::While {
+                condition: cond,
+                body,
+                line: line.no,
+            },
+            consumed,
+        ));
+    }
+
+    // ── Break / Continue / Return ─────────────────────────────────────────────
+    if lower == "break" {
+        return Ok((Stmt::Break { line: line.no }, 1));
+    }
+    if lower == "continue" {
+        return Ok((Stmt::Continue { line: line.no }, 1));
+    }
+    if lower.starts_with("return ") || lower == "return" {
+        let expr = if text.len() > 7 {
+            parse_expr_str(text[7..].trim(), line.no)?
+        } else {
+            crate::ast::Expr::Null
+        };
+        return Ok((Stmt::Return { value: Some(expr), line: line.no }, 1));
+    }
+
+    // ── Assert ────────────────────────────────────────────────────────────────
+    if lower.starts_with("assert ") {
+        let rest = text[7..].trim();
+        // Try to split off a trailing string message: assert EXPR "message"
+        let (cond_src, msg_src) = if let Some(q) = rest.rfind('"') {
+            if let Some(q2) = rest[..q].rfind('"') {
+                let msg = &rest[q2..=q];
+                let cond = rest[..q2].trim();
+                (cond, Some(msg))
+            } else {
+                (rest, None)
+            }
+        } else {
+            (rest, None)
+        };
+        let cond = parse_expr_str(cond_src, line.no)?;
+        let message = msg_src.map(|m| parse_expr_str(m, line.no)).transpose()?;
+        return Ok((Stmt::Assert { condition: cond, message, line: line.no }, 1));
+    }
+
     // ── Try / Catch ───────────────────────────────────────────────────────────
     if lower == "try:" || lower == "try" {
         let try_block = sub_block(lines, start + 1, line.indent);
