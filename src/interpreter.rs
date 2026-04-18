@@ -857,7 +857,7 @@ impl Interpreter {
             },
             BinOp::Mul => match (lv, rv) {
                 (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a * b)),
-                (Value::Str(s), Value::Number(n)) => Ok(Value::Str(s.repeat((*n as usize).max(0)))),
+                (Value::Str(s), Value::Number(n)) => Ok(Value::Str(s.repeat(*n as usize))),
                 _ => Err(Signal::Error(format!(
                     "Cannot multiply {} by {}",
                     lv.type_name(),
