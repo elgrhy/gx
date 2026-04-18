@@ -1,0 +1,38 @@
+// gx make docs/examples/make_todo_api.gx
+//
+// This is a GX Make spec — it describes a project for `gx make` to build.
+// Run:
+//   gx make docs/examples/make_todo_api.gx
+//
+// Output: a complete Node.js REST API ready to run.
+
+Make "todo-api"
+
+Description:
+  A REST API for managing a todo list.
+  Built with Node.js and Express (no database — in-memory storage).
+  Supports full CRUD: create, read, update, delete todos.
+
+Stack:
+  Runtime: Node.js
+  Framework: Express
+  Storage: in-memory array
+  Port: 3000
+
+Endpoints:
+  GET    /todos          — list all todos (supports ?done=true/false filter)
+  GET    /todos/:id      — get one todo by id
+  POST   /todos          — create todo (body: { "text": "Buy milk" })
+  PUT    /todos/:id      — update todo (body: { "text": "...", "done": true })
+  DELETE /todos/:id      — delete todo
+
+Response format:
+  All responses are JSON.
+  Success: { "ok": true, "data": ... }
+  Error:   { "ok": false, "error": "message" }
+
+Files to generate:
+  server.js     — Express server with all routes and middleware
+  package.json  — name, version, scripts, express dependency
+  .gitignore    — node_modules, .env
+  README.md     — setup instructions, curl examples for every endpoint

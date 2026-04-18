@@ -396,88 +396,87 @@ fn token_to_str(kind: &crate::lexer::TokenKind) -> String {
 
 // ── gx make ───────────────────────────────────────────────────────────────────
 
-pub fn make(description: &str, output: Option<&str>) -> Result<(), String> {
+pub fn make(input: &str, out_dir: Option<&str>) -> Result<(), String> {
     use crate::ai;
     use crate::value::Value;
     use std::collections::HashMap;
 
-    let system_prompt = r#"You are a GX language expert. GX is a brain-first programming language for building transparent AI assistants.
+    // Input is either a .gx spec file or a plain text description
+    let spec = if input.ends_with(".gx") && Path::new(input).exists() {
+        let raw = fs::read_to_string(input).map_err(|e| format!("Cannot read {}: {}", input, e))?;
+        println!("Reading spec: {}", input);
+        raw
+    } else {
+        input.to_string()
+    };
 
-GX SYNTAX:
-```
-agent "name" {
-  remember { key = value }
+    println!("Generating project with AI...");
 
-  when started {
-    say "message"
-  }
+    let system_prompt = r#"You are an expert software architect and full-stack developer.
+Your job is to generate complete, working software projects from specifications.
 
-  brain {
-    plan {
-      if memory.condition { plan = { action: "do_something" } }
+RULES:
+- Return ONLY a valid JSON object — no markdown fences, no explanation, no text before or after
+- Every file must contain complete, working code — no placeholder comments like "// TODO" or "// implement me"
+- Code must run without modification after following the setup commands
+- Prefer simplicity: use the fewest dependencies that get the job done
+- Include a helpful README.md in every project
+
+JSON SCHEMA (respond with exactly this structure):
+{
+  "project_name": "kebab-case-directory-name",
+  "description": "one sentence describing what this project does",
+  "files": [
+    {
+      "path": "relative/path/to/file.ext",
+      "content": "complete file content as a string"
     }
-    execute {
-      if plan.action == "do_something" {
-        result = "done"
-        memory.result = result
-        output("Result: " + result)
-      }
-    }
-    remember {
-      memory.last_run = get_timestamp()
-    }
-    communicate {
-      emit "done" { result: memory.result }
-    }
-  }
-}
-```
-
-AI primitives: `result = ask openai { prompt: "...", system: "..." }`
-The result has: result.text, result.confidence, result.ok
-
-Builtins: log(x), output(x), say x, get_timestamp(), count(x), to_string(x), to_number(x)
-
-Generate ONLY valid GX code. No markdown fences. No explanation."#;
+  ],
+  "setup": ["command1", "command2"],
+  "run": "command to start the project",
+  "notes": "any important notes for the user"
+}"#;
 
     let user_prompt = format!(
-        "Generate a GX agent that does the following: {}",
-        description
+        "Generate a complete, working project for the following specification:\n\n{}\n\nReturn only the JSON object.",
+        spec.trim()
     );
 
     let mut params = HashMap::new();
     params.insert("prompt".into(), Value::Str(user_prompt));
     params.insert("system".into(), Value::Str(system_prompt.into()));
-    params.insert("max_tokens".into(), Value::Number(2000.0));
+    params.insert("max_tokens".into(), Value::Number(4000.0));
     params.insert("temperature".into(), Value::Number(0.2));
 
-    // Try providers in order
-    let providers = ["openai", "anthropic"];
-    let mut last_error = String::new();
+    // Try providers in order: openai → anthropic → ollama
+    // Use env var GX_PROVIDER to override
+    let env_provider = std::env::var("GX_PROVIDER").unwrap_or_default();
+    let providers: Vec<(&str, Option<&str>)> = if !env_provider.is_empty() {
+        vec![(Box::leak(env_provider.into_boxed_str()), None)]
+    } else {
+        vec![
+            ("openai", Some("gpt-4o-mini")),
+            ("anthropic", Some("claude-haiku-4-5")),
+            ("ollama", Some("llama3.2:latest")),
+        ]
+    };
+    let mut ai_text = String::new();
+    let mut last_error = "No AI provider configured.".to_string();
 
-    for provider in &providers {
-        let result = ai::ask_ai(provider, None, &params);
+    for (provider, default_model) in &providers {
+        let env_model = std::env::var("GX_MODEL").unwrap_or_default();
+        let model = if !env_model.is_empty() {
+            Some(env_model.as_str())
+        } else {
+            *default_model
+        };
+        let result = ai::ask_ai(provider, model, &params);
         if let Value::Object(ref map) = result {
             if map.get("ok") == Some(&Value::Bool(true)) {
-                if let Some(Value::Str(code)) = map.get("text") {
-                    let code = code.trim().to_string();
-                    // Strip markdown fences if AI added them anyway
-                    let code = code
-                        .trim_start_matches("```gx")
-                        .trim_start_matches("```")
-                        .trim_end_matches("```")
-                        .trim()
-                        .to_string();
-
-                    println!("{}", code);
-
-                    if let Some(out_file) = output {
-                        fs::write(out_file, &code)
-                            .map_err(|e| format!("Cannot write {}: {}", out_file, e))?;
-                        println!("\nSaved to: {}", out_file);
-                    }
-
-                    return Ok(());
+                if let Some(Value::Str(text)) = map.get("text") {
+                    ai_text = text.trim().to_string();
+                    println!("  (generated with {} {})", provider, model.unwrap_or(""));
+                    break;
                 }
             } else if let Some(Value::Str(err)) = map.get("error") {
                 last_error = err.clone();
@@ -485,10 +484,175 @@ Generate ONLY valid GX code. No markdown fences. No explanation."#;
         }
     }
 
-    Err(format!(
-        "Could not generate code. {}\n\nSet OPENAI_API_KEY or ANTHROPIC_API_KEY to use gx make.",
-        last_error
-    ))
+    if ai_text.is_empty() {
+        return Err(format!(
+            "Could not generate project.\n{}\n\nSet OPENAI_API_KEY or ANTHROPIC_API_KEY.",
+            last_error
+        ));
+    }
+
+    // Strip markdown fences the AI sometimes adds despite instructions
+    let json_str = strip_json_fences(&ai_text);
+
+    // Parse the JSON response (try raw first, then repair unescaped control chars)
+    let json: serde_json::Value = serde_json::from_str(json_str)
+        .or_else(|_| {
+            let repaired = repair_json(json_str);
+            serde_json::from_str(&repaired)
+        })
+        .map_err(|e| {
+            format!(
+                "AI returned invalid JSON: {}\n\nRaw response:\n{}",
+                e,
+                &ai_text[..ai_text.len().min(500)]
+            )
+        })?;
+
+    let project_name = json["project_name"]
+        .as_str()
+        .unwrap_or("gx-project")
+        .to_string();
+    let description = json["description"].as_str().unwrap_or("").to_string();
+    let run_cmd = json["run"].as_str().unwrap_or("").to_string();
+    let notes = json["notes"].as_str().unwrap_or("").to_string();
+
+    // Determine output directory
+    let target_dir = out_dir.unwrap_or(&project_name);
+    let target_path = Path::new(target_dir);
+
+    if target_path.exists() {
+        return Err(format!(
+            "Directory '{}' already exists. Use --out <other-name> to choose a different name.",
+            target_dir
+        ));
+    }
+
+    // Write all files
+    let files = json["files"]
+        .as_array()
+        .ok_or("JSON missing 'files' array")?;
+    if files.is_empty() {
+        return Err("AI returned no files.".into());
+    }
+
+    println!();
+    println!("Creating project: {}", target_dir);
+    if !description.is_empty() {
+        println!("  {}", description);
+    }
+    println!();
+
+    for file_entry in files {
+        let rel_path = file_entry["path"]
+            .as_str()
+            .ok_or("File entry missing 'path'")?;
+        let content = file_entry["content"].as_str().unwrap_or("");
+
+        let full_path = target_path.join(rel_path);
+
+        // Create parent directories
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create directory {:?}: {}", parent, e))?;
+        }
+
+        fs::write(&full_path, content)
+            .map_err(|e| format!("Cannot write {:?}: {}", full_path, e))?;
+
+        println!("  wrote  {}/{}", target_dir, rel_path);
+    }
+
+    // Setup commands
+    let setup_cmds: Vec<String> = json["setup"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    println!();
+    println!("Done! {} file(s) written to {}/", files.len(), target_dir);
+    println!();
+
+    if !setup_cmds.is_empty() || !run_cmd.is_empty() {
+        println!("Next steps:");
+        println!("  cd {}", target_dir);
+        for cmd in &setup_cmds {
+            println!("  {}", cmd);
+        }
+        if !run_cmd.is_empty() {
+            println!("  {}", run_cmd);
+        }
+        println!();
+    }
+
+    if !notes.is_empty() {
+        println!("Notes: {}", notes);
+        println!();
+    }
+
+    Ok(())
+}
+
+/// Escape unescaped control characters inside JSON string values.
+/// LLMs often emit literal newlines inside strings instead of \n.
+fn repair_json(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 64);
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in s.chars() {
+        if escaped {
+            escaped = false;
+            result.push(ch);
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escaped = true;
+            result.push(ch);
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            result.push(ch);
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\n' => result.push_str("\\n"),
+                '\r' => result.push_str("\\r"),
+                '\t' => result.push_str("\\t"),
+                '\x00'..='\x1f' => {
+                    result.push_str(&format!("\\u{:04x}", ch as u32));
+                }
+                _ => result.push(ch),
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn strip_json_fences(s: &str) -> &str {
+    let s = s.trim();
+    // Strip ```json ... ``` or ``` ... ```
+    if s.starts_with("```") {
+        let after_fence = s.trim_start_matches('`');
+        // Skip the language identifier if present (e.g. "json\n")
+        let after_lang = if let Some(newline) = after_fence.find('\n') {
+            &after_fence[newline + 1..]
+        } else {
+            after_fence
+        };
+        after_lang
+            .trim_end_matches('`')
+            .trim_end_matches('\n')
+            .trim()
+    } else {
+        s
+    }
 }
 
 // ── gx test ───────────────────────────────────────────────────────────────────

@@ -1,0 +1,32 @@
+// gx make docs/examples/make_chat_app.gx
+//
+// A GX Make spec for a real-time chat application.
+// Run:
+//   gx make docs/examples/make_chat_app.gx
+
+Make "chat-app"
+
+Description:
+  A real-time chat web application.
+  Anyone can open the page and chat — no login required.
+  Messages appear instantly for all connected users.
+
+Stack:
+  Backend: Node.js + Express + Socket.IO
+  Frontend: Plain HTML/CSS/JS (served by Express, no build step)
+  Storage: in-memory (messages reset on restart, last 100 kept)
+  Port: 3000
+
+Features:
+  - User picks a display name on first visit (stored in localStorage)
+  - Messages broadcast to all connected clients in real-time
+  - Shows join/leave notifications
+  - Scrollable message history (last 100 messages)
+  - Mobile-friendly UI
+
+Files to generate:
+  server.js         — Express + Socket.IO server
+  public/index.html — full chat UI (HTML + CSS + JS in one file)
+  package.json      — express and socket.io dependencies
+  .gitignore        — node_modules
+  README.md         — setup and run instructions

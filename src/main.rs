@@ -61,13 +61,13 @@ fn main() {
             toolchain::fmt(file)
         }
         "make" => {
-            let desc = require_arg(&args, 2, "gx make \"description of what to build\"");
-            let output = args
+            let input = require_arg(&args, 2, "gx make <spec.gx|\"description\"> [--out <dir>]");
+            let out_dir = args
                 .iter()
-                .position(|a| a == "--output" || a == "-o")
+                .position(|a| a == "--out" || a == "-o" || a == "--output")
                 .and_then(|i| args.get(i + 1))
                 .map(|s| s.as_str());
-            toolchain::make(desc, output)
+            toolchain::make(input, out_dir)
         }
         "test" => {
             let path = args.get(2).map(|s| s.as_str());
@@ -256,7 +256,7 @@ fn print_help() {
     println!("  gx build <file.gx> [-o name]           Build standalone launcher");
     println!("  gx install <js.pkg|py.pkg>             Install a package");
     println!("  gx fmt <file.gx>                       Format GX source code");
-    println!("  gx make \"description\" [-o file]        AI-generate GX code");
+    println!("  gx make <spec.gx|\"description\"> [--out dir]  Generate a complete project");
     println!("  gx test [dir]                          Run test files");
     println!("  gx repl                                Interactive REPL");
     println!("  gx version                             Show version");
@@ -265,7 +265,10 @@ fn print_help() {
     println!("EXAMPLES:");
     println!("  gx run main.gx");
     println!("  gx init my-agent && cd my-agent && gx run main.gx");
-    println!("  gx make \"a weather bot that checks London daily\" -o weather.gx");
+    println!(
+        "  gx make \"a REST todo API with Node.js\"
+  gx make spec.gx --out my-project"
+    );
     println!("  gx install js.axios");
     println!("  gx repl");
     println!();

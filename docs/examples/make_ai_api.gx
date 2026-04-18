@@ -1,0 +1,44 @@
+// gx make docs/examples/make_ai_api.gx
+//
+// A GX Make spec for an AI-powered REST API.
+// Run:
+//   gx make docs/examples/make_ai_api.gx
+//
+// Requires OPENAI_API_KEY in .env
+
+Make "ai-api"
+
+Description:
+  A REST API that wraps OpenAI's GPT to provide:
+  text summarization, sentiment analysis, and Q&A.
+  Uses GPT-4o-mini for cost efficiency.
+
+Stack:
+  Runtime: Node.js
+  Framework: Express
+  AI: OpenAI API (gpt-4o-mini)
+  Config: dotenv for OPENAI_API_KEY
+  Port: 3000
+
+Endpoints:
+  POST /summarize
+    body: { "text": "long text to summarize", "max_words": 100 }
+    returns: { "ok": true, "summary": "..." }
+
+  POST /sentiment
+    body: { "text": "text to analyze" }
+    returns: { "ok": true, "sentiment": "positive|negative|neutral", "confidence": 0.9, "reason": "..." }
+
+  POST /ask
+    body: { "question": "What is the capital of France?", "context": "optional background info" }
+    returns: { "ok": true, "answer": "..." }
+
+  GET /health
+    returns: { "ok": true, "model": "gpt-4o-mini" }
+
+Files to generate:
+  server.js     — Express server with all AI endpoints
+  package.json  — express, openai, dotenv dependencies
+  .env.example  — OPENAI_API_KEY=your-key-here
+  .gitignore    — node_modules, .env
+  README.md     — setup, curl examples, deployment notes
