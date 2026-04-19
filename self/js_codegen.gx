@@ -42,7 +42,10 @@ function codegen_stmt(s, depth) {
   if tag == "Assign" {
     lhs = codegen_lhs(s.target)
     rhs = codegen_expr(s.value)
-    return d + "var " + lhs + " = " + rhs + ";"
+    if s.target.tag == "Ident" {
+      return d + "var " + lhs + " = " + rhs + ";"
+    }
+    return d + lhs + " = " + rhs + ";"
   }
 
   if tag == "PlusEq" {
@@ -297,6 +300,10 @@ function codegen_call(node) {
   if fname == "json_parse"    { return "JSON.parse(" + a + ")" }
   if fname == "json_stringify" { return "JSON.stringify(" + a + ")" }
   if fname == "set_key"       { return "gx_set_key(" + a + ")" }
+  if fname == "env"           { return "__builtin_env(" + a + ")" }
+  if fname == "read_file"     { return "read_file(" + a + ")" }
+  if fname == "file_exists"   { return "file_exists(" + a + ")" }
+  if fname == "write_file"    { return "write_file(" + a + ")" }
   if fname == "type_of"       { return "typeof " + args[0] }
   if fname == "assert" {
     msg = "\"\""

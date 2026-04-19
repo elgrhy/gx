@@ -1,0 +1,29 @@
+// GX → JavaScript Bootstrap Compiler
+// Uses the Rust native parser (parse_gx builtin) instead of the GX-written parser
+// to avoid the O(n²) token-clone bottleneck from GX's pass-by-value semantics.
+//
+// Usage: gx run self/jsc_bootstrap.gx > gx_interp.js
+//   GX_FILE=self/test_self.gx node gx_interp.js
+
+import "self/js_codegen.gx"
+
+agent "gx_jsc_bootstrap" {
+  when started {
+    runtime = read_file("self/gx_runtime.js")
+
+    // parse_gx() uses the fast Rust parser, returning the same AST format
+    // as the GX-written parser.gx — compatible with js_codegen.gx
+    js_lexer  = codegen_file("self/lexer.gx")
+    js_parser = codegen_file("self/parser.gx")
+    js_eval   = codegen_file("self/eval.gx")
+    js_main   = codegen_file("self/gx_main_logic.gx")
+
+    log(runtime + "\n" + js_lexer + "\n" + js_parser + "\n" + js_eval + "\n" + js_main + "\ngx_main();")
+  }
+}
+
+function codegen_file(path) {
+  src = read_file(path)
+  ast = parse_gx(src)
+  return codegen_program(ast)
+}

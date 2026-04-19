@@ -62,7 +62,7 @@ function eval_stmt(s, env, fns) {
   if tag == "PlusEq" {
     cur = eval_expr(s.target, env, fns)
     rhs = eval_expr(s.value, env, fns)
-    env = do_assign(s.target, gx_add(cur, rhs), env)
+    env = do_assign(s.target, eval_add(cur, rhs), env)
     return [env, null]
   }
 
@@ -332,7 +332,7 @@ function eval_expr(node, env, fns) {
     }
     lv = eval_expr(node.left, env, fns)
     rv = eval_expr(node.right, env, fns)
-    if op == "+"  { return gx_add(lv, rv) }
+    if op == "+"  { return eval_add(lv, rv) }
     if op == "-"  { return lv - rv }
     if op == "*"  { return lv * rv }
     if op == "/"  { return lv / rv }
@@ -406,7 +406,7 @@ function eval_call(node, env, fns) {
   if fname == "read_file"    { return read_file(args[0]) }
   if fname == "write_file"   { write_file(args[0], args[1]) return null }
   if fname == "file_exists"  { return file_exists(args[0]) }
-  if fname == "env"          { return env(args[0]) }
+  if fname == "env"          { return __builtin_env(args[0]) }
   if fname == "tokenize"     { return tokenize(args[0]) }
   if fname == "parse"        { return parse(args[0]) }
 
@@ -486,7 +486,7 @@ function is_truthy(v) {
   return true
 }
 
-function gx_add(a, b) {
+function eval_add(a, b) {
   return a + b
 }
 

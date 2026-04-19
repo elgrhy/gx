@@ -1,0 +1,1171 @@
+// GX Self-Interpreter Bundle — all sources concatenated for JS bootstrap
+// Compile: GX_FILE=self/gx_interp_bundle.gx gx run self/jsc.gx > gx_interp.js
+// Run:     GX_FILE=self/test_self.gx node gx_interp.js
+
+// ── Lexer ─────────────────────────────────────────────────────────────────────
+
+function is_ident_start(c) {
+  return is_alpha(c) or c == "_"
+}
+
+function is_ident_cont(c) {
+  return is_alnum(c) or c == "_"
+}
+
+function make_token(kind, value, line) {
+  return { kind: kind, value: value, line: line }
+}
+
+function tokenize(src) {
+  LBRACE = chr(123)
+  RBRACE = chr(125)
+  tokens = []
+  i = 0
+  line = 1
+  n = len(src)
+
+  while i < n {
+    c = src[i]
+
+    if c == "\n" {
+      line = line + 1
+      i = i + 1
+      continue
+    }
+
+    if is_whitespace(c) {
+      i = i + 1
+      continue
+    }
+
+    if c == "/" and i + 1 < n and src[i + 1] == "/" {
+      while i < n and src[i] != "\n" {
+        i = i + 1
+      }
+      continue
+    }
+
+    if c == "\"" {
+      i = i + 1
+      buf = ""
+      while i < n and src[i] != "\"" {
+        if src[i] == "\\" and i + 1 < n {
+          next = src[i + 1]
+          if next == "n" {
+            buf = buf + "\n"
+          } else if next == "t" {
+            buf = buf + "\t"
+          } else if next == "r" {
+            buf = buf + "\r"
+          } else if next == "\\" {
+            buf = buf + "\\"
+          } else if next == "\"" {
+            buf = buf + "\""
+          } else {
+            buf = buf + "\\" + next
+          }
+          i = i + 2
+        } else {
+          buf = buf + src[i]
+          i = i + 1
+        }
+      }
+      i = i + 1
+      tokens = tokens.push(make_token("Str", buf, line))
+      continue
+    }
+
+    if is_digit(c) or (c == "-" and i + 1 < n and is_digit(src[i + 1])) {
+      buf = ""
+      if c == "-" {
+        buf = buf + c
+        i = i + 1
+      }
+      while i < n and is_digit(src[i]) {
+        buf = buf + src[i]
+        i = i + 1
+      }
+      if i < n and src[i] == "." and i + 1 < n and is_digit(src[i + 1]) {
+        buf = buf + "."
+        i = i + 1
+        while i < n and is_digit(src[i]) {
+          buf = buf + src[i]
+          i = i + 1
+        }
+      }
+      tokens = tokens.push(make_token("Num", buf, line))
+      continue
+    }
+
+    if is_ident_start(c) {
+      buf = ""
+      while i < n and is_ident_cont(src[i]) {
+        buf = buf + src[i]
+        i = i + 1
+      }
+      kind = ident_kind(buf)
+      tokens = tokens.push(make_token(kind, buf, line))
+      continue
+    }
+
+    if i + 1 < n {
+      two = src[i] + src[i + 1]
+      if two == "==" { tokens = tokens.push(make_token("EqEq",    two, line)) i = i + 2 continue }
+      if two == "!=" { tokens = tokens.push(make_token("NotEq",   two, line)) i = i + 2 continue }
+      if two == "<=" { tokens = tokens.push(make_token("LtEq",    two, line)) i = i + 2 continue }
+      if two == ">=" { tokens = tokens.push(make_token("GtEq",    two, line)) i = i + 2 continue }
+      if two == "+=" { tokens = tokens.push(make_token("PlusEq",  two, line)) i = i + 2 continue }
+      if two == "-=" { tokens = tokens.push(make_token("MinusEq", two, line)) i = i + 2 continue }
+      if two == "*=" { tokens = tokens.push(make_token("MulEq",   two, line)) i = i + 2 continue }
+      if two == "/=" { tokens = tokens.push(make_token("DivEq",   two, line)) i = i + 2 continue }
+      if two == "|>" { tokens = tokens.push(make_token("Pipe",    two, line)) i = i + 2 continue }
+      if two == "??" { tokens = tokens.push(make_token("NullCoal",two, line)) i = i + 2 continue }
+      if two == "&&" { tokens = tokens.push(make_token("And",     two, line)) i = i + 2 continue }
+      if two == "||" { tokens = tokens.push(make_token("Or",      two, line)) i = i + 2 continue }
+    }
+
+    if c == "=" { tokens = tokens.push(make_token("Eq",     c, line)) i = i + 1 continue }
+    if c == "+" { tokens = tokens.push(make_token("Plus",   c, line)) i = i + 1 continue }
+    if c == "-" { tokens = tokens.push(make_token("Minus",  c, line)) i = i + 1 continue }
+    if c == "*" { tokens = tokens.push(make_token("Star",   c, line)) i = i + 1 continue }
+    if c == "/" { tokens = tokens.push(make_token("Slash",  c, line)) i = i + 1 continue }
+    if c == "%" { tokens = tokens.push(make_token("Percent",c, line)) i = i + 1 continue }
+    if c == "<" { tokens = tokens.push(make_token("Lt",     c, line)) i = i + 1 continue }
+    if c == ">" { tokens = tokens.push(make_token("Gt",     c, line)) i = i + 1 continue }
+    if c == "!" { tokens = tokens.push(make_token("Bang",   c, line)) i = i + 1 continue }
+    if c == "(" { tokens = tokens.push(make_token("LParen", c, line)) i = i + 1 continue }
+    if c == ")" { tokens = tokens.push(make_token("RParen", c, line)) i = i + 1 continue }
+    if c == LBRACE { tokens = tokens.push(make_token("LBrace", c, line)) i = i + 1 continue }
+    if c == RBRACE { tokens = tokens.push(make_token("RBrace", c, line)) i = i + 1 continue }
+    if c == "[" { tokens = tokens.push(make_token("LBrack", c, line)) i = i + 1 continue }
+    if c == "]" { tokens = tokens.push(make_token("RBrack", c, line)) i = i + 1 continue }
+    if c == "," { tokens = tokens.push(make_token("Comma",  c, line)) i = i + 1 continue }
+    if c == "." { tokens = tokens.push(make_token("Dot",    c, line)) i = i + 1 continue }
+    if c == ":" { tokens = tokens.push(make_token("Colon",  c, line)) i = i + 1 continue }
+    if c == ";" { i = i + 1 continue }
+
+    i = i + 1
+  }
+
+  tokens = tokens.push(make_token("EOF", "", line))
+  return tokens
+}
+
+function ident_kind(word) {
+  if word == "if"       { return "If" }
+  if word == "else"     { return "Else" }
+  if word == "while"    { return "While" }
+  if word == "for"      { return "For" }
+  if word == "each"     { return "Each" }
+  if word == "in"       { return "In" }
+  if word == "return"   { return "Return" }
+  if word == "function" { return "Function" }
+  if word == "true"     { return "True" }
+  if word == "false"    { return "False" }
+  if word == "null"     { return "Null" }
+  if word == "and"      { return "And" }
+  if word == "or"       { return "Or" }
+  if word == "not"      { return "Not" }
+  if word == "log"      { return "Log" }
+  if word == "say"      { return "Say" }
+  if word == "assert"   { return "Assert" }
+  if word == "break"    { return "Break" }
+  if word == "continue" { return "Continue" }
+  if word == "try"      { return "Try" }
+  if word == "catch"    { return "Catch" }
+  if word == "import"   { return "Import" }
+  if word == "agent"    { return "Agent" }
+  if word == "helper"   { return "Helper" }
+  if word == "when"     { return "When" }
+  if word == "started"  { return "Started" }
+  if word == "changes"  { return "Changes" }
+  if word == "brain"    { return "Brain" }
+  if word == "plan"     { return "Plan" }
+  if word == "execute"  { return "Execute" }
+  if word == "remember" { return "Remember" }
+  if word == "communicate" { return "Communicate" }
+  if word == "memory"   { return "Memory" }
+  if word == "re"       { return "Re" }
+  if word == "run"      { return "Run" }
+  if word == "escalate" { return "Escalate" }
+  if word == "to"       { return "To" }
+  if word == "human"    { return "Human" }
+  if word == "spawn"    { return "Spawn" }
+  if word == "with"     { return "With" }
+  if word == "message"  { return "Message" }
+  return "Ident"
+}
+
+// ── Parser ────────────────────────────────────────────────────────────────────
+
+function tok(tokens, pos) {
+  return tokens[pos]
+}
+
+function tok_kind(tokens, pos) {
+  t = tokens[pos]
+  if t == null { return "EOF" }
+  return t.kind
+}
+
+function tok_val(tokens, pos) {
+  t = tokens[pos]
+  if t == null { return "" }
+  return t.value
+}
+
+function at_end(tokens, pos) {
+  return tok_kind(tokens, pos) == "EOF"
+}
+
+function check(tokens, pos, kind) {
+  return tok_kind(tokens, pos) == kind
+}
+
+function eat(tokens, pos, kind) {
+  if tok_kind(tokens, pos) == kind {
+    return [pos + 1, tokens[pos]]
+  }
+  t = tokens[pos]
+  tval = ""
+  tline = 0
+  if t != null {
+    tval = t.value
+    tline = t.line
+  }
+  log("Parse error: expected " + kind + " got " + tok_kind(tokens, pos) + " ('" + tval + "') at line " + to_string(tline))
+  return [pos, tokens[pos]]
+}
+
+function parse(tokens) {
+  pos = 0
+  stmts = []
+  while not at_end(tokens, pos) {
+    r = parse_stmt(tokens, pos)
+    pos = r[0]
+    stmts = stmts.push(r[1])
+  }
+  return { tag: "Program", stmts: stmts }
+}
+
+function parse_stmt(tokens, pos) {
+  k = tok_kind(tokens, pos)
+
+  if k == "Function" { return parse_funcdef(tokens, pos) }
+  if k == "If"       { return parse_if(tokens, pos) }
+  if k == "While"    { return parse_while(tokens, pos) }
+  if k == "For"      { return parse_for(tokens, pos) }
+  if k == "Return"   { return parse_return(tokens, pos) }
+  if k == "Log"      { return parse_log(tokens, pos) }
+  if k == "Say"      { return parse_say(tokens, pos) }
+  if k == "Assert"   { return parse_assert(tokens, pos) }
+  if k == "Break"    { return [pos + 1, { tag: "Break" }] }
+  if k == "Continue" { return [pos + 1, { tag: "Continue" }] }
+  if k == "Try"      { return parse_try(tokens, pos) }
+
+  return parse_assign_or_expr(tokens, pos)
+}
+
+function parse_funcdef(tokens, pos) {
+  r0 = eat(tokens, pos, "Function")   pos = r0[0]
+  r1 = eat(tokens, pos, "Ident")      pos = r1[0]
+  name = r1[1].value
+  r2 = eat(tokens, pos, "LParen")     pos = r2[0]
+  params = []
+  while not check(tokens, pos, "RParen") and not at_end(tokens, pos) {
+    r3 = eat(tokens, pos, "Ident")    pos = r3[0]
+    params = params.push(r3[1].value)
+    if check(tokens, pos, "Comma") { pos = pos + 1 }
+  }
+  r4 = eat(tokens, pos, "RParen")     pos = r4[0]
+  rb = parse_block(tokens, pos)       pos = rb[0]
+  return [pos, { tag: "FuncDef", name: name, params: params, body: rb[1] }]
+}
+
+function parse_if(tokens, pos) {
+  r0 = eat(tokens, pos, "If")         pos = r0[0]
+  rc = parse_expr(tokens, pos)        pos = rc[0]
+  rb = parse_block(tokens, pos)       pos = rb[0]
+  branches = [{ cond: rc[1], body: rb[1] }]
+  else_body = null
+
+  while check(tokens, pos, "Else") {
+    pos = pos + 1
+    if check(tokens, pos, "If") {
+      pos = pos + 1
+      rc2 = parse_expr(tokens, pos)   pos = rc2[0]
+      rb2 = parse_block(tokens, pos)  pos = rb2[0]
+      branches = branches.push({ cond: rc2[1], body: rb2[1] })
+    } else {
+      reb = parse_block(tokens, pos)  pos = reb[0]
+      else_body = reb[1]
+      break
+    }
+  }
+
+  return [pos, { tag: "If", branches: branches, else_body: else_body }]
+}
+
+function parse_while(tokens, pos) {
+  r0 = eat(tokens, pos, "While")      pos = r0[0]
+  rc = parse_expr(tokens, pos)        pos = rc[0]
+  rb = parse_block(tokens, pos)       pos = rb[0]
+  return [pos, { tag: "While", cond: rc[1], body: rb[1] }]
+}
+
+function parse_for(tokens, pos) {
+  r0 = eat(tokens, pos, "For")        pos = r0[0]
+  if check(tokens, pos, "Each") { pos = pos + 1 }
+  rv = eat(tokens, pos, "Ident")      pos = rv[0]
+  ri = eat(tokens, pos, "In")         pos = ri[0]
+  re = parse_expr(tokens, pos)        pos = re[0]
+  rb = parse_block(tokens, pos)       pos = rb[0]
+  return [pos, { tag: "For", var: rv[1].value, iter: re[1], body: rb[1] }]
+}
+
+function parse_return(tokens, pos) {
+  r0 = eat(tokens, pos, "Return")     pos = r0[0]
+  if check(tokens, pos, "RBrace") or at_end(tokens, pos) {
+    return [pos, { tag: "Return", value: null }]
+  }
+  rv = parse_expr(tokens, pos)        pos = rv[0]
+  return [pos, { tag: "Return", value: rv[1] }]
+}
+
+function parse_log(tokens, pos) {
+  r0 = eat(tokens, pos, "Log")        pos = r0[0]
+  r1 = eat(tokens, pos, "LParen")     pos = r1[0]
+  rv = parse_expr(tokens, pos)        pos = rv[0]
+  r2 = eat(tokens, pos, "RParen")     pos = r2[0]
+  return [pos, { tag: "Log", value: rv[1] }]
+}
+
+function parse_say(tokens, pos) {
+  r0 = eat(tokens, pos, "Say")        pos = r0[0]
+  rv = parse_expr(tokens, pos)        pos = rv[0]
+  return [pos, { tag: "Say", value: rv[1] }]
+}
+
+function parse_assert(tokens, pos) {
+  r0 = eat(tokens, pos, "Assert")     pos = r0[0]
+  rc = parse_expr(tokens, pos)        pos = rc[0]
+  msg = null
+  if check(tokens, pos, "Str") {
+    msg = { tag: "Str", value: tokens[pos].value }
+    pos = pos + 1
+  }
+  return [pos, { tag: "Assert", cond: rc[1], msg: msg }]
+}
+
+function parse_try(tokens, pos) {
+  r0 = eat(tokens, pos, "Try")        pos = r0[0]
+  rb = parse_block(tokens, pos)       pos = rb[0]
+  r1 = eat(tokens, pos, "Catch")      pos = r1[0]
+  rv = eat(tokens, pos, "Ident")      pos = rv[0]
+  rcb = parse_block(tokens, pos)      pos = rcb[0]
+  return [pos, { tag: "TryCatch", try_body: rb[1], catch_var: rv[1].value, catch_body: rcb[1] }]
+}
+
+function parse_block(tokens, pos) {
+  r0 = eat(tokens, pos, "LBrace")     pos = r0[0]
+  stmts = []
+  while not check(tokens, pos, "RBrace") and not at_end(tokens, pos) {
+    rs = parse_stmt(tokens, pos)      pos = rs[0]
+    stmts = stmts.push(rs[1])
+  }
+  r1 = eat(tokens, pos, "RBrace")     pos = r1[0]
+  return [pos, stmts]
+}
+
+function parse_assign_or_expr(tokens, pos) {
+  re = parse_expr(tokens, pos)        pos = re[0]
+  expr = re[1]
+
+  k = tok_kind(tokens, pos)
+  if k == "Eq" {
+    pos = pos + 1
+    rv = parse_expr(tokens, pos)      pos = rv[0]
+    return [pos, { tag: "Assign", target: expr, value: rv[1] }]
+  }
+  if k == "PlusEq" {
+    pos = pos + 1
+    rv = parse_expr(tokens, pos)      pos = rv[0]
+    return [pos, { tag: "PlusEq", target: expr, value: rv[1] }]
+  }
+  if k == "MinusEq" {
+    pos = pos + 1
+    rv = parse_expr(tokens, pos)      pos = rv[0]
+    return [pos, { tag: "MinusEq", target: expr, value: rv[1] }]
+  }
+  if k == "MulEq" {
+    pos = pos + 1
+    rv = parse_expr(tokens, pos)      pos = rv[0]
+    return [pos, { tag: "MulEq", target: expr, value: rv[1] }]
+  }
+  if k == "DivEq" {
+    pos = pos + 1
+    rv = parse_expr(tokens, pos)      pos = rv[0]
+    return [pos, { tag: "DivEq", target: expr, value: rv[1] }]
+  }
+
+  return [pos, { tag: "ExprStmt", expr: expr }]
+}
+
+function parse_expr(tokens, pos) {
+  return parse_null_coal(tokens, pos)
+}
+
+function parse_null_coal(tokens, pos) {
+  r = parse_or(tokens, pos)          pos = r[0]
+  left = r[1]
+  while check(tokens, pos, "NullCoal") {
+    pos = pos + 1
+    r2 = parse_or(tokens, pos)       pos = r2[0]
+    left = { tag: "NullCoal", left: left, right: r2[1] }
+  }
+  return [pos, left]
+}
+
+function parse_or(tokens, pos) {
+  r = parse_and(tokens, pos)         pos = r[0]
+  left = r[1]
+  while check(tokens, pos, "Or") {
+    pos = pos + 1
+    r2 = parse_and(tokens, pos)      pos = r2[0]
+    left = { tag: "BinOp", op: "or", left: left, right: r2[1] }
+  }
+  return [pos, left]
+}
+
+function parse_and(tokens, pos) {
+  r = parse_eq(tokens, pos)          pos = r[0]
+  left = r[1]
+  while check(tokens, pos, "And") {
+    pos = pos + 1
+    r2 = parse_eq(tokens, pos)       pos = r2[0]
+    left = { tag: "BinOp", op: "and", left: left, right: r2[1] }
+  }
+  return [pos, left]
+}
+
+function parse_eq(tokens, pos) {
+  r = parse_cmp(tokens, pos)         pos = r[0]
+  left = r[1]
+  k = tok_kind(tokens, pos)
+  if k == "EqEq" or k == "NotEq" {
+    op = tokens[pos].value
+    pos = pos + 1
+    r2 = parse_cmp(tokens, pos)      pos = r2[0]
+    return [pos, { tag: "BinOp", op: op, left: left, right: r2[1] }]
+  }
+  return [pos, left]
+}
+
+function parse_cmp(tokens, pos) {
+  r = parse_add(tokens, pos)         pos = r[0]
+  left = r[1]
+  k = tok_kind(tokens, pos)
+  if k == "Lt" or k == "Gt" or k == "LtEq" or k == "GtEq" {
+    op = tokens[pos].value
+    pos = pos + 1
+    r2 = parse_add(tokens, pos)      pos = r2[0]
+    return [pos, { tag: "BinOp", op: op, left: left, right: r2[1] }]
+  }
+  return [pos, left]
+}
+
+function parse_add(tokens, pos) {
+  r = parse_mul(tokens, pos)         pos = r[0]
+  left = r[1]
+  k = tok_kind(tokens, pos)
+  while k == "Plus" or k == "Minus" {
+    op = tokens[pos].value
+    pos = pos + 1
+    r2 = parse_mul(tokens, pos)      pos = r2[0]
+    left = { tag: "BinOp", op: op, left: left, right: r2[1] }
+    k = tok_kind(tokens, pos)
+  }
+  return [pos, left]
+}
+
+function parse_mul(tokens, pos) {
+  r = parse_unary(tokens, pos)       pos = r[0]
+  left = r[1]
+  k = tok_kind(tokens, pos)
+  while k == "Star" or k == "Slash" or k == "Percent" {
+    op = tokens[pos].value
+    pos = pos + 1
+    r2 = parse_unary(tokens, pos)    pos = r2[0]
+    left = { tag: "BinOp", op: op, left: left, right: r2[1] }
+    k = tok_kind(tokens, pos)
+  }
+  return [pos, left]
+}
+
+function parse_unary(tokens, pos) {
+  if check(tokens, pos, "Not") {
+    pos = pos + 1
+    r = parse_unary(tokens, pos)     pos = r[0]
+    return [pos, { tag: "Unary", op: "not", expr: r[1] }]
+  }
+  if check(tokens, pos, "Minus") {
+    pos = pos + 1
+    r = parse_unary(tokens, pos)     pos = r[0]
+    return [pos, { tag: "Unary", op: "-", expr: r[1] }]
+  }
+  return parse_postfix(tokens, pos)
+}
+
+function parse_postfix(tokens, pos) {
+  r = parse_primary(tokens, pos)     pos = r[0]
+  base = r[1]
+  go = true
+  while go {
+    k = tok_kind(tokens, pos)
+    if k == "Dot" {
+      pos = pos + 1
+      field_tok = tokens[pos]
+      pos = pos + 1
+      if check(tokens, pos, "LParen") {
+        pos = pos + 1
+        ra = parse_arglist(tokens, pos)  pos = ra[0]
+        r2 = eat(tokens, pos, "RParen")  pos = r2[0]
+        base = { tag: "MethodCall", obj: base, method: field_tok.value, args: ra[1] }
+      } else {
+        base = { tag: "Field", obj: base, field: field_tok.value }
+      }
+    } else if k == "LBrack" {
+      pos = pos + 1
+      ri = parse_expr(tokens, pos)   pos = ri[0]
+      r2 = eat(tokens, pos, "RBrack") pos = r2[0]
+      base = { tag: "Index", obj: base, idx: ri[1] }
+    } else if k == "LParen" and base.tag == "Ident" {
+      pos = pos + 1
+      ra = parse_arglist(tokens, pos) pos = ra[0]
+      r2 = eat(tokens, pos, "RParen") pos = r2[0]
+      base = { tag: "Call", callee: base, args: ra[1] }
+    } else {
+      go = false
+    }
+  }
+  return [pos, base]
+}
+
+function parse_arglist(tokens, pos) {
+  args = []
+  while not check(tokens, pos, "RParen") and not at_end(tokens, pos) {
+    ra = parse_expr(tokens, pos)     pos = ra[0]
+    args = args.push(ra[1])
+    if check(tokens, pos, "Comma") { pos = pos + 1 }
+  }
+  return [pos, args]
+}
+
+function parse_primary(tokens, pos) {
+  k = tok_kind(tokens, pos)
+  t = tokens[pos]
+
+  if k == "Num" {
+    pos = pos + 1
+    return [pos, { tag: "Num", value: t.value.to_number() }]
+  }
+  if k == "Str" {
+    pos = pos + 1
+    return [pos, parse_interp(t.value)]
+  }
+  if k == "True" {
+    pos = pos + 1
+    return [pos, { tag: "Bool", value: true }]
+  }
+  if k == "False" {
+    pos = pos + 1
+    return [pos, { tag: "Bool", value: false }]
+  }
+  if k == "Null" {
+    pos = pos + 1
+    return [pos, { tag: "Null" }]
+  }
+  if k == "Ident" or k == "Memory" {
+    pos = pos + 1
+    return [pos, { tag: "Ident", name: t.value }]
+  }
+  if k == "LParen" {
+    pos = pos + 1
+    re = parse_expr(tokens, pos)     pos = re[0]
+    r2 = eat(tokens, pos, "RParen")  pos = r2[0]
+    return [pos, re[1]]
+  }
+  if k == "LBrack" {
+    return parse_array(tokens, pos)
+  }
+  if k == "LBrace" {
+    return parse_object(tokens, pos)
+  }
+
+  if k != "EOF" { pos = pos + 1 }
+  return [pos, { tag: "Null" }]
+}
+
+function parse_array(tokens, pos) {
+  r0 = eat(tokens, pos, "LBrack")   pos = r0[0]
+  items = []
+  while not check(tokens, pos, "RBrack") and not at_end(tokens, pos) {
+    ri = parse_expr(tokens, pos)     pos = ri[0]
+    items = items.push(ri[1])
+    if check(tokens, pos, "Comma") { pos = pos + 1 }
+  }
+  r1 = eat(tokens, pos, "RBrack")   pos = r1[0]
+  return [pos, { tag: "Array", items: items }]
+}
+
+function parse_object(tokens, pos) {
+  r0 = eat(tokens, pos, "LBrace")   pos = r0[0]
+  pairs = []
+  while not check(tokens, pos, "RBrace") and not at_end(tokens, pos) {
+    key_tok = tokens[pos]
+    pos = pos + 1
+    key = key_tok.value
+    r1 = eat(tokens, pos, "Colon")   pos = r1[0]
+    rv = parse_expr(tokens, pos)     pos = rv[0]
+    pairs = pairs.push({ key: key, value: rv[1] })
+    if check(tokens, pos, "Comma") { pos = pos + 1 }
+  }
+  r2 = eat(tokens, pos, "RBrace")   pos = r2[0]
+  return [pos, { tag: "Object", pairs: pairs }]
+}
+
+function parse_interp(s) {
+  LBRACE = chr(123)
+  RBRACE = chr(125)
+  parts = []
+  i = 0
+  n = len(s)
+  buf = ""
+
+  while i < n {
+    c = s[i]
+    if c == LBRACE {
+      if len(buf) > 0 {
+        parts = parts.push({ tag: "Lit", v: buf })
+        buf = ""
+      }
+      i = i + 1
+      inner = ""
+      depth = 1
+      while i < n and depth > 0 {
+        ch = s[i]
+        if ch == LBRACE { depth = depth + 1 }
+        if ch == RBRACE { depth = depth - 1 }
+        if depth > 0 { inner = inner + ch }
+        i = i + 1
+      }
+      inner_tokens = tokenize(inner)
+      r = parse_expr(inner_tokens, 0)
+      parts = parts.push({ tag: "Expr", e: r[1] })
+    } else {
+      buf = buf + c
+      i = i + 1
+    }
+  }
+
+  if len(buf) > 0 {
+    parts = parts.push({ tag: "Lit", v: buf })
+  }
+
+  if len(parts) == 1 and parts[0].tag == "Lit" {
+    return { tag: "Str", value: parts[0].v }
+  }
+
+  return { tag: "Interp", parts: parts }
+}
+
+// ── Evaluator ─────────────────────────────────────────────────────────────────
+
+function sig_return(v)  { return { signal: "return",   value: v } }
+function sig_break()    { return { signal: "break",    value: null } }
+function sig_continue() { return { signal: "continue", value: null } }
+function sig_error(msg) { return { signal: "error",    value: msg } }
+
+function is_sig(s) { return s != null }
+
+function eval_program(ast) {
+  env = {}
+  fns = {}
+
+  i = 0
+  while i < len(ast.stmts) {
+    s = ast.stmts[i]
+    if s.tag == "FuncDef" {
+      fns = set_key(fns, s.name, { params: s.params, body: s.body })
+    }
+    i = i + 1
+  }
+
+  i = 0
+  while i < len(ast.stmts) {
+    s = ast.stmts[i]
+    if s.tag != "FuncDef" {
+      r = eval_stmt(s, env, fns)
+      env = r[0]
+      sig = r[1]
+      if is_sig(sig) and sig.signal == "error" {
+        log("Runtime error: " + sig.value)
+        return
+      }
+    }
+    i = i + 1
+  }
+}
+
+function eval_stmt(s, env, fns) {
+  tag = s.tag
+
+  if tag == "Assign" {
+    val = eval_expr(s.value, env, fns)
+    env = do_assign(s.target, val, env)
+    return [env, null]
+  }
+
+  if tag == "PlusEq" {
+    cur = eval_expr(s.target, env, fns)
+    rhs = eval_expr(s.value, env, fns)
+    env = do_assign(s.target, eval_add(cur, rhs), env)
+    return [env, null]
+  }
+
+  if tag == "MinusEq" {
+    cur = eval_expr(s.target, env, fns)
+    rhs = eval_expr(s.value, env, fns)
+    env = do_assign(s.target, cur - rhs, env)
+    return [env, null]
+  }
+
+  if tag == "MulEq" {
+    cur = eval_expr(s.target, env, fns)
+    rhs = eval_expr(s.value, env, fns)
+    env = do_assign(s.target, cur * rhs, env)
+    return [env, null]
+  }
+
+  if tag == "DivEq" {
+    cur = eval_expr(s.target, env, fns)
+    rhs = eval_expr(s.value, env, fns)
+    if rhs == 0 { return [env, sig_error("Division by zero")] }
+    env = do_assign(s.target, cur / rhs, env)
+    return [env, null]
+  }
+
+  if tag == "If" {
+    i = 0
+    while i < len(s.branches) {
+      br = s.branches[i]
+      cond = eval_expr(br.cond, env, fns)
+      if is_truthy(cond) {
+        r = eval_block(br.body, env, fns)
+        env = r[0]
+        if is_sig(r[1]) { return [env, r[1]] }
+        return [env, null]
+      }
+      i = i + 1
+    }
+    if s.else_body != null {
+      r = eval_block(s.else_body, env, fns)
+      env = r[0]
+      if is_sig(r[1]) { return [env, r[1]] }
+    }
+    return [env, null]
+  }
+
+  if tag == "While" {
+    guard = 0
+    while true {
+      guard = guard + 1
+      if guard > 100000 { return [env, sig_error("While loop exceeded 100000 iterations")] }
+      cond = eval_expr(s.cond, env, fns)
+      if not is_truthy(cond) { break }
+      r = eval_block(s.body, env, fns)
+      env = r[0]
+      sig = r[1]
+      if is_sig(sig) {
+        if sig.signal == "break"    { break }
+        if sig.signal == "continue" { continue }
+        return [env, sig]
+      }
+    }
+    return [env, null]
+  }
+
+  if tag == "For" {
+    iter = eval_expr(s.iter, env, fns)
+    i = 0
+    while i < len(iter) {
+      env = set_key(env, s.var, iter[i])
+      r = eval_block(s.body, env, fns)
+      env = r[0]
+      sig = r[1]
+      if is_sig(sig) {
+        if sig.signal == "break"    { break }
+        if sig.signal == "continue" { i = i + 1 continue }
+        return [env, sig]
+      }
+      i = i + 1
+    }
+    return [env, null]
+  }
+
+  if tag == "Return" {
+    if s.value == null { return [env, sig_return(null)] }
+    val = eval_expr(s.value, env, fns)
+    return [env, sig_return(val)]
+  }
+
+  if tag == "Break"    { return [env, sig_break()] }
+  if tag == "Continue" { return [env, sig_continue()] }
+
+  if tag == "Log" or tag == "Say" {
+    val = eval_expr(s.value, env, fns)
+    log(gx_to_string(val))
+    return [env, null]
+  }
+
+  if tag == "Assert" {
+    cond = eval_expr(s.cond, env, fns)
+    if not is_truthy(cond) {
+      msg = "Assertion failed"
+      if s.msg != null {
+        msg = gx_to_string(eval_expr(s.msg, env, fns))
+      }
+      return [env, sig_error(msg)]
+    }
+    return [env, null]
+  }
+
+  if tag == "TryCatch" {
+    r = eval_block(s.try_body, env, fns)
+    env = r[0]
+    sig = r[1]
+    if is_sig(sig) and sig.signal == "error" {
+      env = set_key(env, s.catch_var, sig.value)
+      r2 = eval_block(s.catch_body, env, fns)
+      env = r2[0]
+      if is_sig(r2[1]) { return [env, r2[1]] }
+      return [env, null]
+    }
+    if is_sig(sig) { return [env, sig] }
+    return [env, null]
+  }
+
+  if tag == "FuncDef" {
+    fns = set_key(fns, s.name, { params: s.params, body: s.body })
+    return [env, null]
+  }
+
+  if tag == "ExprStmt" {
+    eval_expr(s.expr, env, fns)
+    return [env, null]
+  }
+
+  return [env, sig_error("Unknown statement: " + tag)]
+}
+
+function eval_block(stmts, env, fns) {
+  i = 0
+  while i < len(stmts) {
+    r = eval_stmt(stmts[i], env, fns)
+    env = r[0]
+    if is_sig(r[1]) { return [env, r[1]] }
+    i = i + 1
+  }
+  return [env, null]
+}
+
+function do_assign(target, value, env) {
+  if target.tag == "Ident" {
+    return set_key(env, target.name, value)
+  }
+  if target.tag == "Field" {
+    obj_name = target.obj.name
+    obj = env[obj_name]
+    if obj == null { obj = {} }
+    obj = set_key(obj, target.field, value)
+    return set_key(env, obj_name, obj)
+  }
+  if target.tag == "Index" {
+    obj_name = target.obj.name
+    obj = env[obj_name]
+    idx = eval_expr(target.idx, env, {})
+    if obj == null { obj = {} }
+    obj[idx] = value
+    return set_key(env, obj_name, obj)
+  }
+  return env
+}
+
+function eval_expr(node, env, fns) {
+  tag = node.tag
+
+  if tag == "Num"  { return node.value }
+  if tag == "Str"  { return node.value }
+  if tag == "Bool" { return node.value }
+  if tag == "Null" { return null }
+
+  if tag == "Ident" {
+    v = env[node.name]
+    return v
+  }
+
+  if tag == "Interp" {
+    buf = ""
+    i = 0
+    while i < len(node.parts) {
+      p = node.parts[i]
+      if p.tag == "Lit" {
+        buf = eval_add(buf, p.v)
+      } else {
+        v = eval_expr(p.e, env, fns)
+        buf = eval_add(buf, gx_to_string(v))
+      }
+      i = i + 1
+    }
+    return buf
+  }
+
+  if tag == "Array" {
+    arr = []
+    i = 0
+    while i < len(node.items) {
+      arr = arr.push(eval_expr(node.items[i], env, fns))
+      i = i + 1
+    }
+    return arr
+  }
+
+  if tag == "Object" {
+    obj = {}
+    i = 0
+    while i < len(node.pairs) {
+      pair = node.pairs[i]
+      val = eval_expr(pair.value, env, fns)
+      obj = set_key(obj, pair.key, val)
+      i = i + 1
+    }
+    return obj
+  }
+
+  if tag == "Field" {
+    obj = eval_expr(node.obj, env, fns)
+    if obj == null { return null }
+    return obj[node.field]
+  }
+
+  if tag == "Index" {
+    obj = eval_expr(node.obj, env, fns)
+    idx = eval_expr(node.idx, env, fns)
+    if obj == null { return null }
+    return obj[idx]
+  }
+
+  if tag == "NullCoal" {
+    lv = eval_expr(node.left, env, fns)
+    if lv != null { return lv }
+    return eval_expr(node.right, env, fns)
+  }
+
+  if tag == "Unary" {
+    v = eval_expr(node.expr, env, fns)
+    if node.op == "not" { return not is_truthy(v) }
+    if node.op == "-"   { return 0 - v }
+    return null
+  }
+
+  if tag == "BinOp" {
+    op = node.op
+    if op == "and" {
+      lv = eval_expr(node.left, env, fns)
+      if not is_truthy(lv) { return false }
+      return is_truthy(eval_expr(node.right, env, fns))
+    }
+    if op == "or" {
+      lv = eval_expr(node.left, env, fns)
+      if is_truthy(lv) { return true }
+      return is_truthy(eval_expr(node.right, env, fns))
+    }
+    lv = eval_expr(node.left, env, fns)
+    rv = eval_expr(node.right, env, fns)
+    if op == "+"  { return eval_add(lv, rv) }
+    if op == "-"  { return lv - rv }
+    if op == "*"  { return lv * rv }
+    if op == "/"  { return lv / rv }
+    if op == "%"  { return lv % rv }
+    if op == "==" { return lv == rv }
+    if op == "!=" { return lv != rv }
+    if op == "<"  { return lv < rv }
+    if op == ">"  { return lv > rv }
+    if op == "<=" { return lv <= rv }
+    if op == ">=" { return lv >= rv }
+    return null
+  }
+
+  if tag == "Call" {
+    return eval_call(node, env, fns)
+  }
+
+  if tag == "MethodCall" {
+    return eval_method(node, env, fns)
+  }
+
+  return null
+}
+
+function eval_call(node, env, fns) {
+  fname = node.callee.name
+  args = eval_arglist(node.args, env, fns)
+
+  if fname == "log" or fname == "print" or fname == "say" {
+    log(gx_to_string(args[0]))
+    return null
+  }
+  if fname == "len"          { return len(args[0]) }
+  if fname == "to_string"    { return gx_to_string(args[0]) }
+  if fname == "to_number"    { return args[0].to_number() }
+  if fname == "range" {
+    if len(args) == 1 { return range(0, args[0]) }
+    if len(args) == 2 { return range(args[0], args[1]) }
+    return range(args[0], args[1], args[2])
+  }
+  if fname == "ord"          { return ord(args[0]) }
+  if fname == "chr"          { return chr(args[0]) }
+  if fname == "is_digit"     { return is_digit(args[0]) }
+  if fname == "is_alpha"     { return is_alpha(args[0]) }
+  if fname == "is_alnum"     { return is_alnum(args[0]) }
+  if fname == "is_whitespace"{ return is_whitespace(args[0]) }
+  if fname == "floor"        { return floor(args[0]) }
+  if fname == "ceil"         { return ceil(args[0]) }
+  if fname == "abs"          { return abs(args[0]) }
+  if fname == "sqrt"         { return sqrt(args[0]) }
+  if fname == "get_timestamp"{ return get_timestamp() }
+  if fname == "push"         { return args[0].push(args[1]) }
+  if fname == "pop"          { return args[0].pop() }
+  if fname == "join"         { return args[0].join(args[1]) }
+  if fname == "split"        { return args[0].split(args[1]) }
+  if fname == "trim"         { return args[0].trim() }
+  if fname == "upper" or fname == "to_upper" { return args[0].to_upper() }
+  if fname == "lower" or fname == "to_lower" { return args[0].to_lower() }
+  if fname == "contains"     { return args[0].contains(args[1]) }
+  if fname == "starts_with"  { return args[0].starts_with(args[1]) }
+  if fname == "ends_with"    { return args[0].ends_with(args[1]) }
+  if fname == "replace"      { return args[0].replace(args[1], args[2]) }
+  if fname == "set_key"      { return set_key(args[0], args[1], args[2]) }
+  if fname == "keys"         { return args[0].keys() }
+  if fname == "values"       { return args[0].values() }
+  if fname == "json_parse"   { return json_parse(args[0]) }
+  if fname == "json_stringify" { return json_stringify(args[0]) }
+  if fname == "read_file"    { return read_file(args[0]) }
+  if fname == "write_file"   { write_file(args[0], args[1]) return null }
+  if fname == "file_exists"  { return file_exists(args[0]) }
+  if fname == "env"          { return __builtin_env(args[0]) }
+  if fname == "tokenize"     { return tokenize(args[0]) }
+  if fname == "parse"        { return parse(args[0]) }
+
+  fn_def = fns[fname]
+  if fn_def != null {
+    fn_env = {}
+    i = 0
+    while i < len(fn_def.params) {
+      val = null
+      if i < len(args) { val = args[i] }
+      fn_env = set_key(fn_env, fn_def.params[i], val)
+      i = i + 1
+    }
+    r = eval_block(fn_def.body, fn_env, fns)
+    sig = r[1]
+    if is_sig(sig) and sig.signal == "return" { return sig.value }
+    return null
+  }
+
+  log("Unknown function: " + fname)
+  return null
+}
+
+function eval_method(node, env, fns) {
+  obj = eval_expr(node.obj, env, fns)
+  m = node.method
+  args = eval_arglist(node.args, env, fns)
+
+  if m == "push"         { return obj.push(args[0]) }
+  if m == "pop"          { return obj.pop() }
+  if m == "first"        { return obj.first() }
+  if m == "last"         { return obj.last() }
+  if m == "join"         { return obj.join(args[0]) }
+  if m == "reverse"      { return obj.reverse() }
+  if m == "split"        { return obj.split(args[0]) }
+  if m == "trim"         { return obj.trim() }
+  if m == "to_upper"     { return obj.to_upper() }
+  if m == "to_lower"     { return obj.to_lower() }
+  if m == "contains"     { return obj.contains(args[0]) }
+  if m == "starts_with"  { return obj.starts_with(args[0]) }
+  if m == "ends_with"    { return obj.ends_with(args[0]) }
+  if m == "replace"      { return obj.replace(args[0], args[1]) }
+  if m == "to_number" or m == "parse_number" { return obj.to_number() }
+  if m == "has" or m == "has_key" { return obj.has(args[0]) }
+  if m == "keys"         { return obj.keys() }
+  if m == "values"       { return obj.values() }
+  if m == "len" or m == "length" { return len(obj) }
+  if m == "slice" or m == "substring" {
+    if len(args) == 1 { return obj.slice(args[0], len(obj)) }
+    return obj.slice(args[0], args[1])
+  }
+  if m == "repeat"       { return obj.repeat(args[0]) }
+  if m == "index_of"     { return obj.index_of(args[0]) }
+
+  log("Unknown method: " + m)
+  return null
+}
+
+function eval_arglist(arg_nodes, env, fns) {
+  args = []
+  i = 0
+  while i < len(arg_nodes) {
+    args = args.push(eval_expr(arg_nodes[i], env, fns))
+    i = i + 1
+  }
+  return args
+}
+
+function is_truthy(v) {
+  if v == null  { return false }
+  if v == false { return false }
+  if v == 0     { return false }
+  if v == ""    { return false }
+  return true
+}
+
+function eval_add(a, b) {
+  return a + b
+}
+
+function gx_to_string(v) {
+  if v == null  { return "null" }
+  if v == true  { return "true" }
+  if v == false { return "false" }
+  return to_string(v)
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+function gx_main() {
+  target_file = __builtin_env("GX_FILE")
+  if target_file == null {
+    target_file = "self/test_self.gx"
+  }
+  if not file_exists(target_file) {
+    log("Error: file not found: " + target_file)
+  } else {
+    src = read_file(target_file)
+    tokens = tokenize(src)
+    ast = parse(tokens)
+    eval_program(ast)
+  }
+}
+
+gx_main()

@@ -31,3 +31,7 @@ function gx_is_alpha(c)      { return /^[a-zA-Z]$/.test(c); }
 function gx_is_alnum(c)      { return /^[a-zA-Z0-9]$/.test(c); }
 function gx_is_whitespace(c) { return /^\s$/.test(c); }
 function gx_assert(cond, msg) { if (!cond) throw new Error(msg || "Assertion failed"); }
+function __builtin_env(name) { return process.env[name] ?? null; }
+function read_file(path) { try { return require('fs').readFileSync(path, 'utf8'); } catch(e) { return null; } }
+function file_exists(path) { return require('fs').existsSync(path); }
+function write_file(path, content) { require('fs').writeFileSync(path, content, 'utf8'); }
