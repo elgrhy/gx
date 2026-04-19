@@ -648,6 +648,10 @@ fn parse_agent(
                     let event = block_lower[3..].trim().to_string();
                     let trigger = match event.as_str() {
                         "start" | "started" => WhenTrigger::Started,
+                        other if other.starts_with("message ") => {
+                            let msg_event = other[8..].trim().trim_matches('"').to_string();
+                            WhenTrigger::Message(msg_event)
+                        }
                         other => WhenTrigger::Expr(Expr::Ident(other.to_string())),
                     };
                     let body = parse_stmts(sub, false)?;

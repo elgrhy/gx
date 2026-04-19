@@ -5,7 +5,7 @@
     "Ahmed Elgarhy <ahmed@devjsx.com>"
   ],
   "description": "GX — brain-first programming language for building transparent AI assistants",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "files": [
     "gx_runtime_bg.wasm",
     "gx_runtime.js",

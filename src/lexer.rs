@@ -80,6 +80,12 @@ pub enum TokenKind {
     Route,
     Respond,
     Port,
+    // Phase 5 — multi-agent orchestration
+    With,
+    To,
+    Message,
+    Call,
+    Pipe, // |>
 
     // Operators / punctuation
     LBrace,           // {
@@ -317,6 +323,10 @@ impl Lexer {
             "continue" => TokenKind::Continue,
             "assert" => TokenKind::Assert,
             "serve" => TokenKind::Serve,
+            "with" => TokenKind::With,
+            "to" => TokenKind::To,
+            "message" => TokenKind::Message,
+            "call" => TokenKind::Call,
             "route" => TokenKind::Route,
             "respond" => TokenKind::Respond,
             "port" => TokenKind::Port,
@@ -480,6 +490,18 @@ impl Lexer {
                 Some(';') => {
                     self.advance();
                     tokens.push(Token::new(TokenKind::Newline, line, col));
+                }
+                Some('|') => {
+                    self.advance();
+                    if self.peek() == Some('>') {
+                        self.advance();
+                        tokens.push(Token::new(TokenKind::Pipe, line, col));
+                    } else {
+                        return Err(format!(
+                            "Unexpected '|' at line {}, col {} (did you mean '|>'?)",
+                            line, col
+                        ));
+                    }
                 }
                 Some('?') => {
                     self.advance();

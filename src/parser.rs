@@ -115,6 +115,10 @@ impl Parser {
             TokenKind::Route => "route".into(),
             TokenKind::Respond => "respond".into(),
             TokenKind::Port => "port".into(),
+            TokenKind::With => "with".into(),
+            TokenKind::To => "to".into(),
+            TokenKind::Message => "message".into(),
+            TokenKind::Call => "call".into(),
             other => {
                 return Err(format!(
                     "Line {}: expected identifier, got {:?}",
@@ -635,6 +639,9 @@ impl Parser {
 
         let trigger = if self.eat(&TokenKind::Started) {
             WhenTrigger::Started
+        } else if self.eat(&TokenKind::Message) {
+            let event = self.expect_string()?;
+            WhenTrigger::Message(event)
         } else {
             let expr = self.parse_expr()?;
             self.skip_newlines();
@@ -769,6 +776,8 @@ impl Parser {
             }
             TokenKind::Serve => self.parse_serve(),
             TokenKind::Respond => self.parse_respond(),
+            // Phase 5: send "event" to "agent" with { key: val }
+            TokenKind::Spawn | TokenKind::Call => self.parse_send_or_expr(line),
             _ => {
                 let expr = self.parse_expr()?;
                 self.skip_newlines();
@@ -828,6 +837,65 @@ impl Parser {
             body,
             line,
         })
+    }
+
+    // Phase 5: spawn/call at statement level — may be a send or just an expr-stmt
+    // Handles: send "event" to "agent" with { key: val }
+    // Or falls through to parse_expr for: result = spawn agent "name" with { }
+    fn parse_send_or_expr(&mut self, line: usize) -> Result<Stmt, String> {
+        // Peek: if it's `spawn "string" to` or `call "string" to` — it's a send
+        // Otherwise treat as expression (assignment target, etc.)
+        let saved_pos = self.pos;
+        // Check for: send pattern — `spawn "event" to "agent"`
+        // We detect by peeking: (Spawn|Call) StringLit To
+        let is_send = {
+            let p1 = self.tokens.get(self.pos).map(|t| &t.kind);
+            let p2 = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+            let p3 = self.tokens.get(self.pos + 2).map(|t| &t.kind);
+            matches!(p1, Some(TokenKind::Spawn) | Some(TokenKind::Call))
+                && matches!(p2, Some(TokenKind::StringLit(_)))
+                && matches!(p3, Some(TokenKind::To))
+        };
+        if is_send {
+            self.advance(); // consume spawn/call
+            let event = self.expect_string()?;
+            self.expect(&TokenKind::To)?;
+            let agent_name = self.parse_expr()?;
+            let mut data = Vec::new();
+            if self.eat(&TokenKind::With) {
+                self.expect(&TokenKind::LBrace)?;
+                loop {
+                    self.skip_newlines();
+                    if self.eat(&TokenKind::RBrace) {
+                        break;
+                    }
+                    let key = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    let val = self.parse_expr()?;
+                    data.push((key, val));
+                    self.eat(&TokenKind::Comma);
+                }
+            }
+            return Ok(Stmt::SendMessage {
+                agent_name,
+                event,
+                data,
+                line,
+            });
+        }
+        let _ = saved_pos; // unused if we fall through
+                           // Fall through — parse as expression statement (assignment etc.)
+        let expr = self.parse_expr()?;
+        self.skip_newlines();
+        if self.eat(&TokenKind::Eq) {
+            let value = self.parse_expr()?;
+            return Ok(Stmt::Assign {
+                target: expr,
+                value,
+                line,
+            });
+        }
+        Ok(Stmt::Expr { expr, line })
     }
 
     // serve on port 3000 { route GET "/" { ... } ... }
@@ -1010,7 +1078,26 @@ impl Parser {
     // ── Expressions ───────────────────────────────────────────────────────────
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
-        self.parse_null_coalesce()
+        self.parse_pipeline()
+    }
+
+    // |> pipeline: value |> spawn agent "name" |> spawn agent "name2"
+    fn parse_pipeline(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_null_coalesce()?;
+        loop {
+            self.skip_newlines();
+            if self.eat(&TokenKind::Pipe) {
+                let right = self.parse_null_coalesce()?;
+                left = Expr::BinOp {
+                    left: Box::new(left),
+                    op: BinOp::Pipe,
+                    right: Box::new(right),
+                };
+            } else {
+                break;
+            }
+        }
+        Ok(left)
     }
 
     fn parse_null_coalesce(&mut self) -> Result<Expr, String> {
@@ -1357,6 +1444,37 @@ impl Parser {
                 Ok(Expr::InferClassifier {
                     input: Box::new(input),
                     classes: Box::new(classes),
+                })
+            }
+
+            // Phase 5: spawn agent "name" with { key: val }
+            //      or: call agent "name" with { key: val }
+            //      or: spawn agent "name"  (no input)
+            TokenKind::Spawn | TokenKind::Call => {
+                self.advance(); // consume spawn/call
+                                // optional `agent` keyword
+                if matches!(self.peek_kind(), TokenKind::Agent) {
+                    self.advance();
+                }
+                let name = self.parse_primary()?;
+                let mut input = Vec::new();
+                if self.eat(&TokenKind::With) {
+                    self.expect(&TokenKind::LBrace)?;
+                    loop {
+                        self.skip_newlines();
+                        if self.eat(&TokenKind::RBrace) {
+                            break;
+                        }
+                        let key = self.expect_ident()?;
+                        self.expect(&TokenKind::Colon)?;
+                        let val = self.parse_expr()?;
+                        input.push((key, val));
+                        self.eat(&TokenKind::Comma);
+                    }
+                }
+                Ok(Expr::CallAgent {
+                    name: Box::new(name),
+                    input,
                 })
             }
 

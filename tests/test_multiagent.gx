@@ -1,0 +1,114 @@
+// Phase 5 — Multi-Agent Orchestration Tests
+
+// ── Agent 1: Simple summarizer ───────────────────────────────────────────────
+
+helper "summarizer" {
+  brain {
+    plan { }
+    execute {
+      words = split(input.text, " ")
+      count = len(words)
+      summary = "'{input.text}' has {count} word(s)"
+    }
+    remember { }
+    communicate { summary }
+  }
+}
+
+// ── Agent 2: Math processor ──────────────────────────────────────────────────
+
+helper "doubler" {
+  brain {
+    plan { }
+    execute {
+      result = input.value * 2
+    }
+    remember { }
+    communicate { result }
+  }
+}
+
+// ── Agent 3: Formatter ───────────────────────────────────────────────────────
+
+helper "formatter" {
+  brain {
+    plan { }
+    execute {
+      formatted = "RESULT: {input.value}"
+    }
+    remember { }
+    communicate { formatted }
+  }
+}
+
+// ── Agent 4: Greeter with default ────────────────────────────────────────────
+
+helper "greeter" {
+  brain {
+    plan { }
+    execute {
+      name = input.name ?? "stranger"
+      greeting = "Hello, {name}!"
+    }
+    remember { }
+    communicate { greeting }
+  }
+}
+
+// ── Agent 5: Message receiver ─────────────────────────────────────────────────
+
+helper "worker" {
+  when message "task" {
+    log("Worker received task: {message.task}")
+  }
+}
+
+// ── Orchestrator ─────────────────────────────────────────────────────────────
+
+helper "orchestrator" {
+  when started {
+
+    // Test 1: Basic agent call
+    log("=== Test 1: Basic call ===")
+    result1 = spawn agent "summarizer" with { text: "hello world foo" }
+    log(result1)
+    assert result1 == "'hello world foo' has 3 word(s)" "summarizer failed"
+
+    // Test 2: Chained calls
+    log("=== Test 2: Chained calls ===")
+    doubled = spawn agent "doubler" with { value: 21 }
+    assert doubled == 42 "doubler failed"
+    formatted = spawn agent "formatter" with { value: doubled }
+    log(formatted)
+    assert formatted == "RESULT: 42" "formatter failed"
+
+    // Test 3: Pipeline |>
+    log("=== Test 3: Pipeline ===")
+    pipeline_result = { value: 5 } |> spawn agent "doubler" |> spawn agent "formatter"
+    log(pipeline_result)
+    assert pipeline_result == "RESULT: 10" "pipeline failed"
+
+    // Test 4: Null coalescing in called agent
+    log("=== Test 4: Default input ===")
+    g1 = spawn agent "greeter" with { name: "GX" }
+    log(g1)
+    assert g1 == "Hello, GX!" "greeter with name failed"
+    g2 = spawn agent "greeter" with { }
+    log(g2)
+    assert g2 == "Hello, stranger!" "greeter default failed"
+
+    // Test 5: Multiple calls to same agent
+    log("=== Test 5: Multiple calls ===")
+    r1 = spawn agent "doubler" with { value: 10 }
+    r2 = spawn agent "doubler" with { value: r1 }
+    r3 = spawn agent "doubler" with { value: r2 }
+    log("10 doubled 3x = {r3}")
+    assert r3 == 80 "triple doubler failed"
+
+    // Test 6: Send message + when message handler
+    log("=== Test 6: Message passing ===")
+    spawn "task" to "worker" with { task: "process data" }
+
+    log("=== All tests passed ===")
+  }
+}

@@ -72,6 +72,7 @@ pub enum WhenTrigger {
     Started,
     Expr(Expr),
     Changes(Expr),
+    Message(String), // when message "event_name" { }
 }
 
 // ── Brain ─────────────────────────────────────────────────────────────────────
@@ -224,6 +225,13 @@ pub enum Stmt {
         routes: Vec<RouteDecl>,
         line: usize,
     },
+    // Phase 5: send "event" to "agent" with { key: val }
+    SendMessage {
+        agent_name: Expr,
+        event: String,
+        data: Vec<(String, Expr)>,
+        line: usize,
+    },
     Respond {
         format: String, // "html" | "json" | "text"
         value: Expr,
@@ -292,6 +300,11 @@ pub enum Expr {
         method: String,
         args: Vec<Expr>,
     },
+    // Phase 5: spawn agent "name" with { key: val }
+    CallAgent {
+        name: Box<Expr>,
+        input: Vec<(String, Expr)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -317,4 +330,5 @@ pub enum BinOp {
     Or,
     Concat,
     NullCoalesce, // ??
+    Pipe,         // |>
 }

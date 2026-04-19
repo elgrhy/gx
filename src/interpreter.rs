@@ -161,6 +161,11 @@ impl Interpreter {
         }
 
         for h in &program.helpers.clone() {
+            // Skip auto-running callable agents (those whose brain uses `input`).
+            // They are only executed when called via `spawn agent`.
+            if helper_is_callable_only(h) {
+                continue;
+            }
             self.run_helper(h).map_err(|e| match e {
                 Signal::Error(m) => m,
                 Signal::AssertFail(m) => format!("Assertion failed: {}", m),
@@ -317,10 +322,90 @@ impl Interpreter {
                         memory = env.get_memory();
                     }
                 }
+                // Phase 5: when message "event" { ... }
+                WhenTrigger::Message(event) => {
+                    let bus_key = format!("{}:{}", helper.name, event);
+                    if let Some(messages) = self.event_bus.remove(&bus_key) {
+                        for msg in messages {
+                            env.set_memory(memory.clone());
+                            env.set("message", msg);
+                            self.run_stmts(&wb.body, &mut env)?;
+                            memory = env.get_memory();
+                        }
+                    }
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Phase 5: call another agent by name, inject `input`, return communicate value.
+    pub fn call_agent(&mut self, name: &str, input: Value) -> IResult {
+        let helper = self.helpers.get(name).cloned().ok_or_else(|| {
+            Signal::Error(format!(
+                "Agent '{}' not defined. Make sure it is declared before use.",
+                name
+            ))
+        })?;
+
+        let mut env = Env::new();
+        env.set("input", input);
+
+        // Initialize memory
+        let mut memory: HashMap<String, Value> = HashMap::new();
+        memory.insert("ai_trace".into(), Value::Array(Vec::new()));
+        for entry in &helper.memory {
+            let val = self.eval_expr(&entry.value.clone(), &mut env)?;
+            memory.insert(entry.key.clone(), val);
+        }
+        env.set_memory(memory);
+
+        // Run brain if present — collect communicate return value
+        if let Some(brain) = &helper.brain.clone() {
+            self.run_stmts(&brain.plan, &mut env)?;
+            self.run_stmts(&brain.execute, &mut env)?;
+            self.run_stmts(&brain.remember, &mut env)?;
+            return self.eval_communicate(&brain.communicate, &mut env);
+        }
+
+        // Run when started block
+        for wb in &helper.when_blocks.clone() {
+            if matches!(wb.trigger, WhenTrigger::Started) {
+                self.run_stmts(&wb.body, &mut env)?;
+            }
+        }
+
+        // No brain — return the env's last meaningful value or Null
+        Ok(Value::Null)
+    }
+
+    /// Run communicate stmts and return the last expression value (for call_agent).
+    fn eval_communicate(&mut self, stmts: &[Stmt], env: &mut Env) -> IResult {
+        let mut last = Value::Null;
+        for stmt in stmts {
+            match stmt {
+                Stmt::Expr { expr, .. } => {
+                    last = self.eval_expr(expr, env)?;
+                    // Don't auto-print — caller uses log() if they want output
+                }
+                Stmt::Log { value, .. } | Stmt::Output { value, .. } | Stmt::Say { value, .. } => {
+                    let v = self.eval_expr(value, env)?;
+                    self.emit_output(&v.to_string());
+                    last = v;
+                }
+                Stmt::Return { value, .. } => {
+                    return Ok(match value {
+                        Some(e) => self.eval_expr(e, env)?,
+                        None => Value::Null,
+                    });
+                }
+                other => {
+                    self.run_stmt(other, env)?;
+                }
+            }
+        }
+        Ok(last)
     }
 
     fn run_brain(&mut self, brain: &BrainBlock, env: &mut Env) -> IResult {
@@ -505,6 +590,53 @@ impl Interpreter {
                     .entry(event.clone())
                     .or_default()
                     .push(Value::Null);
+                Ok(Value::Null)
+            }
+
+            // Phase 5: send "event" to "agent" with { key: val }
+            Stmt::SendMessage {
+                agent_name,
+                event,
+                data,
+                ..
+            } => {
+                let name_val = self.eval_expr(agent_name, env)?;
+                let target = match &name_val {
+                    Value::Str(s) => s.clone(),
+                    _ => {
+                        return Err(Signal::Error(format!(
+                            "send: agent name must be a string, got {}",
+                            name_val.type_name()
+                        )))
+                    }
+                };
+                let mut map = HashMap::new();
+                map.insert("event".into(), Value::Str(event.clone()));
+                for (k, v) in data {
+                    map.insert(k.clone(), self.eval_expr(v, env)?);
+                }
+                let msg = Value::Object(map);
+                // Deliver synchronously to the target agent's when message handlers
+                let helper = self.helpers.get(&target).cloned();
+                if let Some(h) = helper {
+                    let handlers: Vec<_> = h
+                        .when_blocks
+                        .iter()
+                        .filter(|wb| matches!(&wb.trigger, WhenTrigger::Message(e) if e == event))
+                        .cloned()
+                        .collect();
+                    if !handlers.is_empty() {
+                        let mut msg_env = Env::new();
+                        msg_env.set("message", msg.clone());
+                        for wb in &handlers {
+                            self.run_stmts(&wb.body, &mut msg_env)?;
+                        }
+                        return Ok(Value::Null);
+                    }
+                }
+                // No handler found — queue for deferred processing
+                let bus_key = format!("{}:{}", target, event);
+                self.event_bus.entry(bus_key).or_default().push(msg);
                 Ok(Value::Null)
             }
 
@@ -821,6 +953,46 @@ impl Interpreter {
                     let rv = self.eval_expr(right, env)?;
                     return Ok(Value::Bool(rv.is_truthy()));
                 }
+                // Pipeline: lv |> spawn agent "name" → call_agent(name, lv)
+                if matches!(op, BinOp::Pipe) {
+                    let input = self.eval_expr(left, env)?;
+                    // RHS must resolve to a CallAgent expr
+                    match right.as_ref() {
+                        Expr::CallAgent { name, input: extra } => {
+                            let name_val = self.eval_expr(name, env)?;
+                            let agent_name = match &name_val {
+                                Value::Str(s) => s.clone(),
+                                _ => {
+                                    return Err(Signal::Error(format!(
+                                        "Pipeline: agent name must be a string, got {}",
+                                        name_val.type_name()
+                                    )))
+                                }
+                            };
+                            // Merge input value + extra { } fields.
+                            // Non-object scalars are wrapped as { value: X } for clean chaining.
+                            let mut map = match input {
+                                Value::Object(m) => m,
+                                other => {
+                                    let mut m = HashMap::new();
+                                    m.insert("value".into(), other);
+                                    m
+                                }
+                            };
+                            for (k, v) in extra {
+                                map.insert(k.clone(), self.eval_expr(v, env)?);
+                            }
+                            return self.call_agent(&agent_name, Value::Object(map));
+                        }
+                        other => {
+                            // Evaluate RHS as a function/value and apply
+                            let _ = other;
+                            return Err(Signal::Error(
+                                "|> right side must be `spawn agent` or `call agent`".into(),
+                            ));
+                        }
+                    }
+                }
                 let lv = self.eval_expr(left, env)?;
                 let rv = self.eval_expr(right, env)?;
                 self.eval_binop(&lv, op, &rv)
@@ -885,6 +1057,26 @@ impl Interpreter {
                         "JS/Python bridge not available in playground".into(),
                     ))
                 }
+            }
+
+            // Phase 5: spawn agent "name" with { key: val }
+            Expr::CallAgent { name, input } => {
+                let name_val = self.eval_expr(name, env)?;
+                let agent_name = match &name_val {
+                    Value::Str(s) => s.clone(),
+                    _ => {
+                        return Err(Signal::Error(format!(
+                            "Agent name must be a string, got {}",
+                            name_val.type_name()
+                        )))
+                    }
+                };
+                let mut map = HashMap::new();
+                for (k, v) in input {
+                    map.insert(k.clone(), self.eval_expr(v, env)?);
+                }
+                let input_val = Value::Object(map);
+                self.call_agent(&agent_name, input_val)
             }
         }
     }
@@ -963,6 +1155,9 @@ impl Interpreter {
                 ))),
             },
             BinOp::Add | BinOp::Concat => self.add_values(lv, rv),
+            BinOp::Pipe => Err(Signal::Error(
+                "|> pipeline: right side must be `spawn agent` or `call agent`".into(),
+            )),
         }
     }
 
@@ -2568,6 +2763,87 @@ impl Interpreter {
 
 fn value_to_json(v: &Value) -> String {
     serde_json::to_string(&gx_value_to_json(v)).unwrap_or_else(|_| "null".into())
+}
+
+// ── Callable-agent detector ───────────────────────────────────────────────────
+
+/// Returns true if the helper's brain accesses `input`, meaning it's designed
+/// to be called via `spawn agent` rather than run standalone.
+fn helper_is_callable_only(h: &HelperDef) -> bool {
+    if let Some(brain) = &h.brain {
+        stmts_use_input(&brain.plan)
+            || stmts_use_input(&brain.execute)
+            || stmts_use_input(&brain.remember)
+            || stmts_use_input(&brain.communicate)
+    } else {
+        false
+    }
+}
+
+fn stmts_use_input(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(stmt_uses_input)
+}
+
+fn stmt_uses_input(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Assign { value, .. } => expr_uses_input(value),
+        Stmt::PlusAssign { value, .. }
+        | Stmt::MinusAssign { value, .. }
+        | Stmt::MulAssign { value, .. }
+        | Stmt::DivAssign { value, .. } => expr_uses_input(value),
+        Stmt::If {
+            branches,
+            else_body,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(c, b)| expr_uses_input(c) || stmts_use_input(b))
+                || else_body.as_deref().is_some_and(stmts_use_input)
+        }
+        Stmt::ForEach { iter, body, .. } => expr_uses_input(iter) || stmts_use_input(body),
+        Stmt::While {
+            condition, body, ..
+        } => expr_uses_input(condition) || stmts_use_input(body),
+        Stmt::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => stmts_use_input(try_body) || stmts_use_input(catch_body),
+        Stmt::Log { value, .. }
+        | Stmt::Output { value, .. }
+        | Stmt::Say { value, .. }
+        | Stmt::Return {
+            value: Some(value), ..
+        }
+        | Stmt::Assert {
+            condition: value, ..
+        }
+        | Stmt::Wait { ms: value, .. } => expr_uses_input(value),
+        Stmt::Expr { expr, .. } => expr_uses_input(expr),
+        _ => false,
+    }
+}
+
+fn expr_uses_input(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(n) => n == "input",
+        Expr::FieldAccess { object, .. } => expr_uses_input(object),
+        Expr::Index { object, index } => expr_uses_input(object) || expr_uses_input(index),
+        Expr::Call { callee, args } => expr_uses_input(callee) || args.iter().any(expr_uses_input),
+        Expr::BinOp { left, right, .. } => expr_uses_input(left) || expr_uses_input(right),
+        Expr::Not(inner) => expr_uses_input(inner),
+        Expr::Array(items) => items.iter().any(expr_uses_input),
+        Expr::Object(pairs) => pairs.iter().any(|(_, v)| expr_uses_input(v)),
+        Expr::Interpolated(parts) => parts.iter().any(|p| match p {
+            InterpolatedPart::Expr(e) => expr_uses_input(e),
+            _ => false,
+        }),
+        Expr::CallAgent { name, input } => {
+            expr_uses_input(name) || input.iter().any(|(_, v)| expr_uses_input(v))
+        }
+        _ => false,
+    }
 }
 
 // ── HTTP builtins (native only) ───────────────────────────────────────────────

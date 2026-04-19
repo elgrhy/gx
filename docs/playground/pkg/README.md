@@ -348,6 +348,55 @@ when memory.status changes {
 escalate to human    // emit escalation event and stop brain cycle
 ```
 
+### Multi-Agent Orchestration (v0.1.5)
+
+Agents can call each other, chain results through pipelines, and pass messages.
+
+**Spawn an agent** (returns the communicate value):
+```gx
+result = spawn agent "summarizer" with { text: "hello world" }
+log(result)  // "'hello world' has 2 word(s)"
+```
+
+**Chain calls** (output of one becomes input of next):
+```gx
+doubled   = spawn agent "doubler"    with { value: 21 }
+formatted = spawn agent "formatter" with { value: doubled }
+log(formatted)  // "RESULT: 42"
+```
+
+**Pipeline with `|>`** (scalar values are auto-wrapped as `{ value: X }`):
+```gx
+result = { value: 5 } |> spawn agent "doubler" |> spawn agent "formatter"
+log(result)  // "RESULT: 10"
+```
+
+**Send a message** to a `when message` handler:
+```gx
+spawn "task" to "worker" with { task: "process data" }
+```
+
+**Receive messages** in a helper:
+```gx
+helper "worker" {
+  when message "task" {
+    log("Worker received: {message.task}")
+  }
+}
+```
+
+**Define a callable agent** (any helper that reads `input` becomes call-only — it won't auto-run):
+```gx
+helper "doubler" {
+  brain {
+    plan { }
+    execute { result = input.value * 2 }
+    remember { }
+    communicate { result }
+  }
+}
+```
+
 ---
 
 ## Examples
@@ -399,9 +448,10 @@ src/
 | 4 | Package interop — `use js.X`, `use py.X` | Done |
 | 5 | Toolchain — `gx init/build/install/fmt/make/test` | Done |
 | 6 | Distribution — curl installer, GitHub Actions CI/release, npm package | Done |
-| 7 | Self-hosting — rewrite GX interpreter in GX itself | Planned |
+| 7 | Multi-agent orchestration — `spawn agent`, `\|>` pipelines, `when message` | Done |
+| 8 | Self-hosting — rewrite GX interpreter in GX itself | Planned |
 
-CI: `cargo test` (24 tests), `cargo clippy -D warnings`, `cargo fmt --check` — all pass on ubuntu/macos/windows.
+CI: `cargo test` (40 tests), `cargo clippy -D warnings`, `cargo fmt --check` — all pass on ubuntu/macos/windows.
 
 ---
 
