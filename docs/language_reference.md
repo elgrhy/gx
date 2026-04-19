@@ -206,7 +206,7 @@ The brain cycle runs until it finishes or a `re-run` is encountered (which resta
 ### `when` — Trigger Blocks
 
 ```gx
-// Runs once on startup, before the brain cycle
+// Runs once on startup
 when started {
   say "Agent is ready"
 }
@@ -220,7 +220,14 @@ when memory.count > 10 {
 when memory.status changes {
   re-run
 }
+
+// Receives a message sent by another agent
+when message "task" {
+  log("Received task: {message.task}")
+}
 ```
+
+The brain cycle is **optional**. Agents can rely entirely on `when` blocks without a `brain` block.
 
 ### `receive` — Channel Bindings
 
@@ -233,6 +240,57 @@ receive {
     on_receive: brain.handler
   }
 }
+```
+
+---
+
+## Multi-Agent Orchestration
+
+### `spawn agent` — Call Another Agent
+
+```gx
+result = spawn agent "summarizer" with { text: "hello world" }
+log(result)   // the value from the agent's communicate block
+```
+
+### `|>` Pipeline
+
+Pipes the result of one `spawn agent` call directly into the next as input. Non-object values are auto-wrapped as `{ value: X }`.
+
+```gx
+result = { value: 5 } |> spawn agent "doubler" |> spawn agent "formatter"
+log(result)  // "RESULT: 10"
+```
+
+### `spawn "event" to "agent"` — Send a Message
+
+Delivers a message synchronously to the target agent's `when message` handler.
+
+```gx
+spawn "task" to "worker" with { task: "process data" }
+```
+
+### Callable Agent Pattern
+
+Any `helper` that reads `input` in its brain is treated as callable-only (it won't auto-run at startup). The communicate block's last expression is the return value.
+
+```gx
+helper "doubler" {
+  brain {
+    plan { }
+    execute { result = input.value * 2 }
+    remember { }
+    communicate { result }
+  }
+}
+```
+
+### Null Coalescing in Agents
+
+Use `??` to provide defaults when input fields are absent:
+
+```gx
+name = input.name ?? "stranger"
 ```
 
 ---

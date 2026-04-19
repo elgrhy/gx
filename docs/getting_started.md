@@ -130,27 +130,33 @@ my-project/
 
 ---
 
-## The Brain Cycle
+## The Brain Cycle (optional)
 
-Every agent follows four phases: **Plan → Execute → Remember → Communicate**.
+GX agents can run with simple `when started` blocks, message handlers, or progressive syntax — no brain cycle required. The brain cycle (`Plan → Execute → Remember → Communicate`) is an explicit structure you opt into when you need full control over the decision loop.
 
-In Level 1/2 syntax, GX maps your code to these phases automatically. In Level 3 you control them directly.
+```gx
+// No brain cycle needed — this is a complete agent
+Agent greeter
+
+On start:
+  "Hello, world!"
+```
+
+When you want explicit phases:
 
 ```gx
 Agent smart
 
 name = "Ahmed"
 
-// Level 2: named behavior
-Greet:
-  "Hello {name}, welcome back!"
-
-// Level 3: explicit phase
 Plan:
   Greet
 
 Communicate:
   "Session complete"
+
+Greet:
+  "Hello {name}, welcome back!"
 ```
 
 ---
@@ -250,6 +256,36 @@ gx check main.gx        # syntax check only
 gx test                 # run all tests/
 gx build main.gx        # build standalone launcher → dist/main
 gx fmt main.gx          # format source
+```
+
+---
+
+## Multi-Agent Orchestration
+
+Agents can call each other, chain through pipelines, and exchange messages.
+
+```gx
+// Call an agent and get its result
+doubled = spawn agent "doubler" with { value: 21 }
+
+// Chain via pipeline
+result = { value: 5 } |> spawn agent "doubler" |> spawn agent "formatter"
+
+// Send a message to another agent's when message handler
+spawn "task" to "worker" with { task: "process data" }
+```
+
+A callable agent reads from `input` in its brain:
+
+```gx
+helper "doubler" {
+  brain {
+    plan { }
+    execute { result = input.value * 2 }
+    remember { }
+    communicate { result }
+  }
+}
 ```
 
 ---

@@ -22,8 +22,8 @@ agent "assistant" {
     say "Confidence: {result.confidence}"
   }
 
-  brain { plan {} execute {} remember {} communicate {} }
 }
+
 ```
 
 ```bash
@@ -91,8 +91,8 @@ agent "safe_assistant" {
     }
   }
 
-  brain { plan {} execute {} remember {} communicate {} }
 }
+
 ```
 
 ---
@@ -132,8 +132,8 @@ agent "reliable" {
     }
   }
 
-  brain { plan {} execute {} remember {} communicate {} }
 }
+
 ```
 
 ---
@@ -154,8 +154,8 @@ agent "router" {
     say "Category: {label}"
   }
 
-  brain { plan {} execute {} remember {} communicate {} }
 }
+
 ```
 
 ---
@@ -186,8 +186,8 @@ agent "auditable" {
     say "AI calls made: {len(memory.ai_trace)}"
   }
 
-  brain { plan {} execute {} remember {} communicate {} }
 }
+
 ```
 
 ---
