@@ -41,6 +41,7 @@ pub struct ImportDecl {
 #[derive(Debug, Clone)]
 pub struct HelperDef {
     pub name: String,
+    pub goal: Option<String>,
     pub can_do: Vec<String>,
     pub memory: Vec<MemoryEntry>,
     pub receive_block: Vec<ChannelDef>,
@@ -48,6 +49,9 @@ pub struct HelperDef {
     pub recipes: Vec<RecipeDef>,
     pub objectives: Vec<ObjectiveDef>,
     pub when_blocks: Vec<WhenBlock>,
+    pub retry: Option<u32>,
+    pub timeout_ms: Option<u64>,
+    pub on_error: Option<String>,
     pub line: usize,
 }
 
@@ -230,6 +234,38 @@ pub enum Stmt {
         agent_name: Expr,
         event: String,
         data: Vec<(String, Expr)>,
+        line: usize,
+    },
+    // v0.2.0: opinionated sugar
+    Think {
+        prompt: Expr,
+        model: Option<String>,
+        temperature: Option<Expr>,
+        min_confidence: Option<Expr>,
+        into_var: String,
+        line: usize,
+    },
+    Observe {
+        bindings: Vec<(String, Expr)>,
+        line: usize,
+    },
+    Act {
+        body: Vec<Stmt>,
+        line: usize,
+    },
+    LoopUntil {
+        condition: Expr,
+        body: Vec<Stmt>,
+        line: usize,
+    },
+    RepeatTimes {
+        count: Expr,
+        var: Option<String>,
+        body: Vec<Stmt>,
+        line: usize,
+    },
+    Parallel {
+        branches: Vec<Vec<Stmt>>,
         line: usize,
     },
     Respond {

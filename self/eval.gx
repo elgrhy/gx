@@ -1,0 +1,603 @@
+// GX Evaluator — written in GX
+// Walks the AST produced by parser.gx and executes it.
+//
+// Environment ("env") is a flat object: { vars: {}, parent: env_or_null, fns: {} }
+// Functions are stored in the root env's fns map.
+
+// ── Environment ───────────────────────────────────────────────────────────────
+
+function env_new(parent) {
+  return { vars: {}, parent: parent, fns: {} }
+}
+
+function env_get(env, name) {
+  if env.vars.has(name) {
+    return env.vars[name]
+  }
+  if env.parent != null {
+    return env_get(env.parent, name)
+  }
+  return null
+}
+
+function env_set(env, name, value) {
+  // Walk up to find existing binding; if not found, set in current scope
+  if env.vars.has(name) {
+    env.vars[name] = value
+    return env
+  }
+  if env.parent != null and env_has(env.parent, name) {
+    env_set(env.parent, name, value)
+    return env
+  }
+  env.vars[name] = value
+  return env
+}
+
+function env_has(env, name) {
+  if env.vars.has(name) { return true }
+  if env.parent != null { return env_has(env.parent, name) }
+  return false
+}
+
+function env_def_fn(env, name, params, body) {
+  root = env_root(env)
+  root.fns[name] = { params: params, body: body }
+}
+
+function env_get_fn(env, name) {
+  root = env_root(env)
+  if root.fns.has(name) { return root.fns[name] }
+  return null
+}
+
+function env_root(env) {
+  if env.parent == null { return env }
+  return env_root(env.parent)
+}
+
+// ── Signals (return / break / continue / error) ───────────────────────────────
+// We use a result wrapper: { ok: bool, value: any, signal: "return"|"break"|"continue"|"error" }
+
+function ok_val(v)     { return { ok: true,  value: v,    signal: "" } }
+function sig_return(v) { return { ok: false, value: v,    signal: "return" } }
+function sig_break()   { return { ok: false, value: null, signal: "break" } }
+function sig_continue(){ return { ok: false, value: null, signal: "continue" } }
+function sig_error(msg){ return { ok: false, value: msg,  signal: "error" } }
+
+function is_signal(r)  { return not r.ok }
+
+// ── Program entry ─────────────────────────────────────────────────────────────
+
+function eval_program(ast) {
+  env = env_new(null)
+  // First pass: collect function definitions
+  i = 0
+  while i < len(ast.stmts) {
+    s = ast.stmts[i]
+    if s.tag == "FuncDef" {
+      env_def_fn(env, s.name, s.params, s.body)
+    }
+    i = i + 1
+  }
+  // Second pass: execute non-function statements
+  i = 0
+  while i < len(ast.stmts) {
+    s = ast.stmts[i]
+    if s.tag != "FuncDef" {
+      r = eval_stmt(s, env)
+      if is_signal(r) and r.signal == "error" {
+        log("Runtime error: " + r.value)
+        return
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ── Statement evaluator ───────────────────────────────────────────────────────
+
+function eval_stmt(s, env) {
+  tag = s.tag
+
+  if tag == "Assign" {
+    v = eval_expr(s.value, env)
+    if v.signal == "error" { return v }
+    assign_target(s.target, v.value, env)
+    return ok_val(null)
+  }
+
+  if tag == "PlusEq" {
+    cur = eval_expr(s.target, env)
+    rhs = eval_expr(s.value, env)
+    if cur.signal == "error" { return cur }
+    if rhs.signal == "error" { return rhs }
+    result = gx_add(cur.value, rhs.value)
+    assign_target(s.target, result, env)
+    return ok_val(null)
+  }
+
+  if tag == "MinusEq" {
+    cur = eval_expr(s.target, env)
+    rhs = eval_expr(s.value, env)
+    if cur.signal == "error" { return cur }
+    if rhs.signal == "error" { return rhs }
+    assign_target(s.target, cur.value - rhs.value, env)
+    return ok_val(null)
+  }
+
+  if tag == "MulEq" {
+    cur = eval_expr(s.target, env)
+    rhs = eval_expr(s.value, env)
+    if cur.signal == "error" { return cur }
+    if rhs.signal == "error" { return rhs }
+    assign_target(s.target, cur.value * rhs.value, env)
+    return ok_val(null)
+  }
+
+  if tag == "DivEq" {
+    cur = eval_expr(s.target, env)
+    rhs = eval_expr(s.value, env)
+    if cur.signal == "error" { return cur }
+    if rhs.signal == "error" { return rhs }
+    if rhs.value == 0 { return sig_error("Division by zero") }
+    assign_target(s.target, cur.value / rhs.value, env)
+    return ok_val(null)
+  }
+
+  if tag == "If" {
+    i = 0
+    while i < len(s.branches) {
+      br = s.branches[i]
+      cv = eval_expr(br.cond, env)
+      if cv.signal == "error" { return cv }
+      if is_truthy(cv.value) {
+        return eval_block(br.body, env)
+      }
+      i = i + 1
+    }
+    if s.else_body != null {
+      return eval_block(s.else_body, env)
+    }
+    return ok_val(null)
+  }
+
+  if tag == "While" {
+    while true {
+      cv = eval_expr(s.cond, env)
+      if cv.signal == "error" { return cv }
+      if not is_truthy(cv.value) { break }
+      r = eval_block(s.body, env)
+      if is_signal(r) {
+        if r.signal == "break"    { break }
+        if r.signal == "continue" { continue }
+        return r
+      }
+    }
+    return ok_val(null)
+  }
+
+  if tag == "For" {
+    iterv = eval_expr(s.iter, env)
+    if iterv.signal == "error" { return iterv }
+    arr = iterv.value
+    i = 0
+    while i < len(arr) {
+      child = env_new(env)
+      env_set(child, s.var, arr[i])
+      r = eval_block(s.body, child)
+      if is_signal(r) {
+        if r.signal == "break"    { break }
+        if r.signal == "continue" { i = i + 1 continue }
+        return r
+      }
+      i = i + 1
+    }
+    return ok_val(null)
+  }
+
+  if tag == "Return" {
+    if s.value == null { return sig_return(null) }
+    v = eval_expr(s.value, env)
+    if v.signal == "error" { return v }
+    return sig_return(v.value)
+  }
+
+  if tag == "Break"    { return sig_break() }
+  if tag == "Continue" { return sig_continue() }
+
+  if tag == "Log" {
+    v = eval_expr(s.value, env)
+    if v.signal == "error" { return v }
+    log(gx_to_string(v.value))
+    return ok_val(null)
+  }
+
+  if tag == "Say" {
+    v = eval_expr(s.value, env)
+    if v.signal == "error" { return v }
+    log(gx_to_string(v.value))
+    return ok_val(null)
+  }
+
+  if tag == "Assert" {
+    cv = eval_expr(s.cond, env)
+    if cv.signal == "error" { return cv }
+    if not is_truthy(cv.value) {
+      msg = "Assertion failed"
+      if s.msg != null {
+        mv = eval_expr(s.msg, env)
+        if mv.ok { msg = gx_to_string(mv.value) }
+      }
+      return sig_error(msg)
+    }
+    return ok_val(null)
+  }
+
+  if tag == "TryCatch" {
+    r = eval_block(s.try_body, env)
+    if is_signal(r) and r.signal == "error" {
+      child = env_new(env)
+      env_set(child, s.catch_var, r.value)
+      return eval_block(s.catch_body, child)
+    }
+    return r
+  }
+
+  if tag == "FuncDef" {
+    env_def_fn(env, s.name, s.params, s.body)
+    return ok_val(null)
+  }
+
+  if tag == "ExprStmt" {
+    v = eval_expr(s.expr, env)
+    return ok_val(null)
+  }
+
+  return sig_error("Unknown statement: " + tag)
+}
+
+function eval_block(stmts, parent_env) {
+  env = env_new(parent_env)
+  i = 0
+  while i < len(stmts) {
+    r = eval_stmt(stmts[i], env)
+    if is_signal(r) { return r }
+    i = i + 1
+  }
+  return ok_val(null)
+}
+
+// ── Assignment target ─────────────────────────────────────────────────────────
+
+function assign_target(target, value, env) {
+  if target.tag == "Ident" {
+    env_set(env, target.name, value)
+    return
+  }
+  if target.tag == "Field" {
+    obj = eval_expr_raw(target.obj, env)
+    if obj != null {
+      obj[target.field] = value
+      // Write back to root binding if obj is from a var
+      if target.obj.tag == "Ident" {
+        env_set(env, target.obj.name, obj)
+      }
+    }
+    return
+  }
+  if target.tag == "Index" {
+    obj = eval_expr_raw(target.obj, env)
+    idx = eval_expr_raw(target.idx, env)
+    if obj != null and idx != null {
+      obj[idx] = value
+      if target.obj.tag == "Ident" {
+        env_set(env, target.obj.name, obj)
+      }
+    }
+    return
+  }
+}
+
+// ── Expression evaluator ──────────────────────────────────────────────────────
+
+function eval_expr(node, env) {
+  v = eval_expr_raw(node, env)
+  if v != null and v.signal == "error" { return v }
+  return ok_val(v)
+}
+
+function eval_expr_raw(node, env) {
+  tag = node.tag
+
+  if tag == "Num"  { return node.value }
+  if tag == "Str"  { return node.value }
+  if tag == "Bool" { return node.value }
+  if tag == "Null" { return null }
+
+  if tag == "Ident" {
+    return env_get(env, node.name)
+  }
+
+  if tag == "Interp" {
+    buf = ""
+    i = 0
+    while i < len(node.parts) {
+      p = node.parts[i]
+      if p.tag == "Lit" {
+        buf = buf + p.v
+      } else {
+        v = eval_expr_raw(p.e, env)
+        buf = buf + gx_to_string(v)
+      }
+      i = i + 1
+    }
+    return buf
+  }
+
+  if tag == "Array" {
+    arr = []
+    i = 0
+    while i < len(node.items) {
+      v = eval_expr_raw(node.items[i], env)
+      arr = arr.push(v)
+      i = i + 1
+    }
+    return arr
+  }
+
+  if tag == "Object" {
+    obj = {}
+    i = 0
+    while i < len(node.pairs) {
+      pair = node.pairs[i]
+      v = eval_expr_raw(pair.value, env)
+      obj[pair.key] = v
+      i = i + 1
+    }
+    return obj
+  }
+
+  if tag == "Field" {
+    obj = eval_expr_raw(node.obj, env)
+    if obj == null { return null }
+    return obj[node.field]
+  }
+
+  if tag == "Index" {
+    obj = eval_expr_raw(node.obj, env)
+    idx = eval_expr_raw(node.idx, env)
+    if obj == null { return null }
+    return obj[idx]
+  }
+
+  if tag == "NullCoal" {
+    lv = eval_expr_raw(node.left, env)
+    if lv != null { return lv }
+    return eval_expr_raw(node.right, env)
+  }
+
+  if tag == "Unary" {
+    v = eval_expr_raw(node.expr, env)
+    if node.op == "not" { return not is_truthy(v) }
+    if node.op == "-"   { return 0 - v }
+    return null
+  }
+
+  if tag == "BinOp" {
+    return eval_binop(node, env)
+  }
+
+  if tag == "Call" {
+    return eval_call(node, env)
+  }
+
+  if tag == "MethodCall" {
+    return eval_method(node, env)
+  }
+
+  return null
+}
+
+function eval_binop(node, env) {
+  op = node.op
+  // Short-circuit
+  if op == "and" {
+    lv = eval_expr_raw(node.left, env)
+    if not is_truthy(lv) { return false }
+    return is_truthy(eval_expr_raw(node.right, env))
+  }
+  if op == "or" {
+    lv = eval_expr_raw(node.left, env)
+    if is_truthy(lv) { return true }
+    return is_truthy(eval_expr_raw(node.right, env))
+  }
+
+  lv = eval_expr_raw(node.left, env)
+  rv = eval_expr_raw(node.right, env)
+
+  if op == "+"  { return gx_add(lv, rv) }
+  if op == "-"  { return lv - rv }
+  if op == "*"  { return lv * rv }
+  if op == "/"  { return lv / rv }
+  if op == "%"  { return lv % rv }
+  if op == "==" { return gx_eq(lv, rv) }
+  if op == "!=" { return not gx_eq(lv, rv) }
+  if op == "<"  { return lv < rv }
+  if op == ">"  { return lv > rv }
+  if op == "<=" { return lv <= rv }
+  if op == ">=" { return lv >= rv }
+  return null
+}
+
+function eval_call(node, env) {
+  if node.callee.tag != "Ident" { return null }
+  fname = node.callee.name
+
+  // Built-in functions
+  if fname == "log" or fname == "print" {
+    args = eval_args(node.args, env)
+    log(gx_to_string(args[0]))
+    return null
+  }
+  if fname == "len" {
+    args = eval_args(node.args, env)
+    return len(args[0])
+  }
+  if fname == "to_string" {
+    args = eval_args(node.args, env)
+    return gx_to_string(args[0])
+  }
+  if fname == "ord" {
+    args = eval_args(node.args, env)
+    return ord(args[0])
+  }
+  if fname == "chr" {
+    args = eval_args(node.args, env)
+    return chr(args[0])
+  }
+  if fname == "is_digit" {
+    args = eval_args(node.args, env)
+    return is_digit(args[0])
+  }
+  if fname == "is_alpha" {
+    args = eval_args(node.args, env)
+    return is_alpha(args[0])
+  }
+  if fname == "is_alnum" {
+    args = eval_args(node.args, env)
+    return is_alnum(args[0])
+  }
+  if fname == "is_whitespace" {
+    args = eval_args(node.args, env)
+    return is_whitespace(args[0])
+  }
+  if fname == "floor" {
+    args = eval_args(node.args, env)
+    return floor(args[0])
+  }
+  if fname == "ceil" {
+    args = eval_args(node.args, env)
+    return ceil(args[0])
+  }
+  if fname == "abs" {
+    args = eval_args(node.args, env)
+    return abs(args[0])
+  }
+  if fname == "sqrt" {
+    args = eval_args(node.args, env)
+    return sqrt(args[0])
+  }
+  if fname == "get_timestamp" {
+    return get_timestamp()
+  }
+  if fname == "range" {
+    args = eval_args(node.args, env)
+    return range(args[0])
+  }
+  if fname == "split" {
+    args = eval_args(node.args, env)
+    return args[0].split(args[1])
+  }
+  if fname == "tokenize" {
+    args = eval_args(node.args, env)
+    return tokenize(args[0])
+  }
+
+  // User-defined function
+  fn_def = env_get_fn(env, fname)
+  if fn_def != null {
+    args = eval_args(node.args, env)
+    child = env_new(env_root(env))
+    i = 0
+    while i < len(fn_def.params) {
+      val = null
+      if i < len(args) { val = args[i] }
+      env_set(child, fn_def.params[i], val)
+      i = i + 1
+    }
+    r = eval_block(fn_def.body, child)
+    if is_signal(r) and r.signal == "return" { return r.value }
+    return null
+  }
+
+  log("Unknown function: " + fname)
+  return null
+}
+
+function eval_method(node, env) {
+  obj = eval_expr_raw(node.obj, env)
+  m = node.method
+  args = eval_args(node.args, env)
+
+  // String methods
+  if m == "length" or m == "len" { return len(obj) }
+  if m == "to_upper"  { return obj.to_upper() }
+  if m == "to_lower"  { return obj.to_lower() }
+  if m == "trim"      { return obj.trim() }
+  if m == "split"     { return obj.split(args[0]) }
+  if m == "contains"  { return obj.contains(args[0]) }
+  if m == "starts_with" { return obj.starts_with(args[0]) }
+  if m == "ends_with"   { return obj.ends_with(args[0]) }
+  if m == "replace"   { return obj.replace(args[0], args[1]) }
+  if m == "index_of"  { return obj.index_of(args[0]) }
+  if m == "char_at"   { return obj.char_at(args[0]) }
+  if m == "slice" or m == "substring" {
+    if len(args) == 1 { return obj.slice(args[0], len(obj)) }
+    return obj.slice(args[0], args[1])
+  }
+  if m == "to_number" or m == "parse_number" { return obj.to_number() }
+  if m == "repeat"    { return obj.repeat(args[0]) }
+
+  // Array methods
+  if m == "push"      { return obj.push(args[0]) }
+  if m == "pop"       { return obj.pop() }
+  if m == "first"     { return obj.first() }
+  if m == "last"      { return obj.last() }
+  if m == "join"      { return obj.join(args[0]) }
+  if m == "reverse"   { return obj.reverse() }
+
+  // Object methods
+  if m == "has" or m == "has_key" { return obj.has(args[0]) }
+  if m == "keys"   { return obj.keys() }
+  if m == "values" { return obj.values() }
+
+  log("Unknown method: " + m)
+  return null
+}
+
+function eval_args(arg_nodes, env) {
+  args = []
+  i = 0
+  while i < len(arg_nodes) {
+    v = eval_expr_raw(arg_nodes[i], env)
+    args = args.push(v)
+    i = i + 1
+  }
+  return args
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function is_truthy(v) {
+  if v == null  { return false }
+  if v == false { return false }
+  if v == 0     { return false }
+  if v == ""    { return false }
+  return true
+}
+
+function gx_eq(a, b) {
+  return a == b
+}
+
+function gx_add(a, b) {
+  return a + b
+}
+
+function gx_to_string(v) {
+  if v == null  { return "null" }
+  if v == true  { return "true" }
+  if v == false { return "false" }
+  return to_string(v)
+}

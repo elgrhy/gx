@@ -1,0 +1,11 @@
+{
+  "name": "legal-assistant",
+  "version": "0.1.0",
+  "description": "UAE law assistant with multi-turn memory, escalation, and multi-agent orchestration",
+  "entry": "main.gx",
+  "dependencies": {
+    "js": [],
+    "py": [],
+    "gx": []
+  }
+}

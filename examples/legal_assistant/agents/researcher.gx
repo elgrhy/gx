@@ -1,0 +1,43 @@
+// Researcher agent — provides answers based on category
+// In production this would call ask openai { prompt: ... }
+// For demo: uses a built-in knowledge base
+
+helper "researcher" {
+  brain {
+    plan { }
+    execute {
+      question = input.question
+      category = input.category
+
+      answer = "I could not find specific information on this topic."
+
+      if category == "employment_law" {
+        if question.to_lower().contains("gratuity") or question.to_lower().contains("end of service") {
+          answer = "Under UAE Labour Law (Federal Decree-Law No. 33 of 2021 and its amendments), an employee is entitled to end-of-service gratuity if they have completed at least one year of continuous service. The calculation is: 21 calendar days' basic salary per year for the first 5 years, and 30 calendar days per year thereafter. An employer cannot withhold gratuity unless there is a court judgment for compensation exceeding the gratuity amount. Resignation does not forfeit the right to gratuity after 5+ years of service."
+        }
+      }
+
+      if category == "labour_law" {
+        answer = "Under UAE Federal Decree-Law No. 33 of 2021 (Labour Law), standard working hours are 8 hours/day or 48 hours/week. Overtime is compensated at 125% of base pay (150% for night/holiday hours). Annual leave is 30 calendar days after one year of service."
+      }
+
+      if category == "immigration_law" {
+        answer = "UAE residency visas are generally tied to employment sponsorship or property ownership. The UAE Golden Visa provides 10-year residency for investors, entrepreneurs, and skilled professionals. Visa overstay fines are AED 50/day after a 10-day grace period."
+      }
+
+      if category == "commercial_law" {
+        answer = "Mainland LLCs require a UAE national shareholder holding at least 51% (exceptions for professional companies). Free zone companies offer 100% foreign ownership but are restricted in mainland trade. The Commercial Companies Law (Federal Law No. 32 of 2021) governs corporate structures."
+      }
+
+      if category == "property_law" {
+        answer = "UAE tenancy disputes are handled by the Rental Dispute Settlement Centre (RDSC). RERA Index governs rental increases — landlords may only increase rent per the RERA calculator. Ejari registration is mandatory for all tenancy contracts in Dubai."
+      }
+
+      if category == "family_law" {
+        answer = "UAE Personal Status Law (Federal Law No. 28 of 2005) governs marriage, divorce, custody, and inheritance for Muslims. Non-Muslims may apply their home country law under Federal Decree-Law No. 41 of 2022. Child custody defaults to the mother until age 11 (boys) or 13 (girls), after which the court decides based on best interest."
+      }
+    }
+    remember { }
+    communicate { answer }
+  }
+}

@@ -34,6 +34,68 @@ gx run main.gx
 
 ---
 
+## The Official GX Style (v0.2.0)
+
+GX is opinionated. Every agent follows a clear, readable structure — **goal → observe → think → act → remember → communicate**. You can see exactly what an agent does without running it.
+
+```gx
+agent "lead_generator" {
+  goal: "Find and contact 10 qualified real-estate leads this week"
+
+  retry: 3
+  on_error: escalate
+
+  when started {
+    observe {
+      context: "Dubai Marina, 2BR, AED 120k budget"
+    }
+
+    think {
+      prompt: "Extract 10 qualified leads matching: {context}",
+      model: "openai",
+      min_confidence: 0.82
+    }
+
+    act {
+      if result.confidence > 0.82 {
+        log("Processing {len(result.leads)} leads")
+        for each lead in result.leads {
+          log("Lead: {lead.name} — {lead.email}")
+        }
+      } else {
+        escalate to human
+      }
+    }
+
+    remember {
+      memory.total_leads += 1
+      memory.last_run = get_timestamp()
+    }
+
+    communicate {
+      say "Processed leads for: {context}"
+    }
+  }
+}
+```
+
+Without an AI key, use the built-in brain cycle directly — no `think` required:
+
+```gx
+agent "classifier" {
+  goal: "Route incoming questions to the right specialist"
+
+  when started {
+    question = "Can my employer withhold my gratuity in UAE?"
+
+    category = spawn agent "domain_expert" with { question: question }
+    log("Routed to: {category}")
+  }
+}
+```
+
+---
+
 ## The Language
 
 GX has **three progressive syntax levels** — all compile to the same runtime. Use the level that fits what you're building.
@@ -449,7 +511,9 @@ src/
 | 5 | Toolchain — `gx init/build/install/fmt/make/test` | Done |
 | 6 | Distribution — curl installer, GitHub Actions CI/release, npm package | Done |
 | 7 | Multi-agent orchestration — `spawn agent`, `\|>` pipelines, `when message` | Done |
-| 8 | Self-hosting — rewrite GX interpreter in GX itself | Planned |
+| 8 | Opinionated sugar — `goal`, `think`, `act`, `observe`, `loop until`, `repeat N times`, `parallel`, `retry`, `timeout`, `on_error` | Done |
+| 9 | Native tools — `http_request`, `send_email`, `scrape`, `notify`, `read/write_file`, `json_parse`, `ord`/`chr`/`is_digit` | Done |
+| 10 | Self-hosting — rewrite GX interpreter in GX itself | Planned |
 
 CI: `cargo test` (40 tests), `cargo clippy -D warnings`, `cargo fmt --check` — all pass on ubuntu/macos/windows.
 

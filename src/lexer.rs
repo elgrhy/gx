@@ -86,6 +86,20 @@ pub enum TokenKind {
     Message,
     Call,
     Pipe, // |>
+    // v0.2.0 — opinionated sugar primitives
+    Goal,
+    Think,
+    Act,
+    Observe,
+    Loop,
+    Until,
+    Repeat,
+    Times,
+    // v0.2.0 — execution attributes
+    Parallel,
+    Retry,
+    Timeout,
+    OnError,
 
     // Operators / punctuation
     LBrace,           // {
@@ -328,6 +342,18 @@ impl Lexer {
             "message" => TokenKind::Message,
             "call" => TokenKind::Call,
             "route" => TokenKind::Route,
+            "goal" => TokenKind::Goal,
+            "think" => TokenKind::Think,
+            "act" => TokenKind::Act,
+            "observe" => TokenKind::Observe,
+            "loop" => TokenKind::Loop,
+            "until" => TokenKind::Until,
+            "repeat" => TokenKind::Repeat,
+            "times" => TokenKind::Times,
+            "parallel" => TokenKind::Parallel,
+            "retry" => TokenKind::Retry,
+            "timeout" => TokenKind::Timeout,
+            "on_error" => TokenKind::OnError,
             "respond" => TokenKind::Respond,
             "port" => TokenKind::Port,
             "true" => TokenKind::BoolLit(true),

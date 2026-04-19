@@ -1,0 +1,31 @@
+// Formatter agent — produces the final user-facing response
+
+helper "formatter" {
+  brain {
+    plan { }
+    execute {
+      question  = input.question
+      answer    = input.answer
+      category  = input.category
+
+      // Map category to display name
+      domain = "General Law"
+      if category == "employment_law" { domain = "UAE Employment Law" }
+      if category == "labour_law"     { domain = "UAE Labour Law" }
+      if category == "immigration_law"{ domain = "UAE Immigration Law" }
+      if category == "commercial_law" { domain = "UAE Commercial Law" }
+      if category == "property_law"   { domain = "UAE Property Law" }
+      if category == "family_law"     { domain = "UAE Family Law" }
+
+      response = "
+[{domain}]
+Q: {question}
+
+A: {answer}
+
+Disclaimer: This is general legal information, not legal advice. Consult a qualified UAE lawyer for your specific situation."
+    }
+    remember { }
+    communicate { response }
+  }
+}

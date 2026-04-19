@@ -1,0 +1,524 @@
+// GX Parser — written in GX
+// Input:  token array from lexer.gx
+// Output: AST as nested GX objects
+//
+// Node shapes (all stored as objects with a "tag" field):
+//   { tag: "Program",  stmts: [...] }
+//   { tag: "Assign",   target: expr, value: expr }
+//   { tag: "PlusEq",   target: expr, value: expr }
+//   { tag: "If",       branches: [{cond, body}], else_body: [...] }
+//   { tag: "While",    cond: expr, body: [...] }
+//   { tag: "For",      var: name, iter: expr, body: [...] }
+//   { tag: "Return",   value: expr_or_null }
+//   { tag: "Log",      value: expr }
+//   { tag: "Say",      value: expr }
+//   { tag: "Assert",   cond: expr, msg: expr_or_null }
+//   { tag: "Break" }
+//   { tag: "Continue" }
+//   { tag: "TryCatch", try_body: [...], catch_var: name, catch_body: [...] }
+//   { tag: "FuncDef",  name: str, params: [...], body: [...] }
+//   { tag: "ExprStmt", expr: expr }
+//   Expressions:
+//   { tag: "Num",    value: f64 }
+//   { tag: "Str",    value: str }
+//   { tag: "Bool",   value: bool }
+//   { tag: "Null" }
+//   { tag: "Ident",  name: str }
+//   { tag: "BinOp",  op: str, left: expr, right: expr }
+//   { tag: "Unary",  op: str, expr: expr }
+//   { tag: "Call",   callee: expr, args: [...] }
+//   { tag: "Index",  obj: expr, idx: expr }
+//   { tag: "Field",  obj: expr, field: str }
+//   { tag: "Array",  items: [...] }
+//   { tag: "Object", pairs: [{key, value}] }
+//   { tag: "NullCoal", left: expr, right: expr }
+//   { tag: "Interp", parts: [{tag: "Lit", v: str} | {tag: "Expr", e: expr}] }
+
+// ── Parser state helpers ─────────────────────────────────────────────────────
+
+function p_peek(state) {
+  return state.tokens[state.pos]
+}
+
+function p_peek_kind(state) {
+  t = state.tokens[state.pos]
+  return t.kind
+}
+
+function p_advance(state) {
+  t = state.tokens[state.pos]
+  state.pos = state.pos + 1
+  return t
+}
+
+function p_check(state, kind) {
+  return p_peek_kind(state) == kind
+}
+
+function p_eat(state, kind) {
+  if p_peek_kind(state) == kind {
+    return p_advance(state)
+  }
+  t = p_peek(state)
+  log("Parse error: expected " + kind + " got " + t.kind + " ('" + t.value + "') at line " + to_string(t.line))
+  return { kind: "Error", value: "", line: t.line }
+}
+
+function p_at_end(state) {
+  return p_peek_kind(state) == "EOF"
+}
+
+// ── Top-level ────────────────────────────────────────────────────────────────
+
+function parse(tokens) {
+  state = { tokens: tokens, pos: 0 }
+  stmts = []
+  while not p_at_end(state) {
+    s = parse_stmt(state)
+    stmts = stmts.push(s)
+  }
+  return { tag: "Program", stmts: stmts }
+}
+
+// ── Statements ───────────────────────────────────────────────────────────────
+
+function parse_stmt(state) {
+  k = p_peek_kind(state)
+
+  if k == "Function" {
+    return parse_funcdef(state)
+  }
+  if k == "If" {
+    return parse_if(state)
+  }
+  if k == "While" {
+    return parse_while(state)
+  }
+  if k == "For" {
+    return parse_for(state)
+  }
+  if k == "Return" {
+    return parse_return(state)
+  }
+  if k == "Log" {
+    return parse_log(state)
+  }
+  if k == "Say" {
+    return parse_say(state)
+  }
+  if k == "Assert" {
+    return parse_assert(state)
+  }
+  if k == "Break" {
+    p_advance(state)
+    return { tag: "Break" }
+  }
+  if k == "Continue" {
+    p_advance(state)
+    return { tag: "Continue" }
+  }
+  if k == "Try" {
+    return parse_try(state)
+  }
+
+  return parse_assign_or_expr(state)
+}
+
+function parse_funcdef(state) {
+  p_eat(state, "Function")
+  name_tok = p_eat(state, "Ident")
+  name = name_tok.value
+  p_eat(state, "LParen")
+  params = []
+  while not p_check(state, "RParen") and not p_at_end(state) {
+    pt = p_eat(state, "Ident")
+    params = params.push(pt.value)
+    if p_check(state, "Comma") { p_advance(state) }
+  }
+  p_eat(state, "RParen")
+  body = parse_block(state)
+  return { tag: "FuncDef", name: name, params: params, body: body }
+}
+
+function parse_if(state) {
+  p_eat(state, "If")
+  cond = parse_expr(state)
+  body = parse_block(state)
+  branches = [{ cond: cond, body: body }]
+  else_body = null
+
+  while p_check(state, "Else") {
+    p_advance(state)
+    if p_check(state, "If") {
+      p_advance(state)
+      ec = parse_expr(state)
+      eb = parse_block(state)
+      branches = branches.push({ cond: ec, body: eb })
+    } else {
+      else_body = parse_block(state)
+      break
+    }
+  }
+
+  return { tag: "If", branches: branches, else_body: else_body }
+}
+
+function parse_while(state) {
+  p_eat(state, "While")
+  cond = parse_expr(state)
+  body = parse_block(state)
+  return { tag: "While", cond: cond, body: body }
+}
+
+function parse_for(state) {
+  p_eat(state, "For")
+  if p_check(state, "Each") { p_advance(state) }
+  var_tok = p_eat(state, "Ident")
+  p_eat(state, "In")
+  iter = parse_expr(state)
+  body = parse_block(state)
+  return { tag: "For", var: var_tok.value, iter: iter, body: body }
+}
+
+function parse_return(state) {
+  p_eat(state, "Return")
+  if p_check(state, "RBrace") or p_at_end(state) {
+    return { tag: "Return", value: null }
+  }
+  v = parse_expr(state)
+  return { tag: "Return", value: v }
+}
+
+function parse_log(state) {
+  p_eat(state, "Log")
+  p_eat(state, "LParen")
+  v = parse_expr(state)
+  p_eat(state, "RParen")
+  return { tag: "Log", value: v }
+}
+
+function parse_say(state) {
+  p_eat(state, "Say")
+  v = parse_expr(state)
+  return { tag: "Say", value: v }
+}
+
+function parse_assert(state) {
+  p_eat(state, "Assert")
+  cond = parse_expr(state)
+  msg = null
+  if p_check(state, "Str") {
+    msg_tok = p_advance(state)
+    msg = { tag: "Str", value: msg_tok.value }
+  }
+  return { tag: "Assert", cond: cond, msg: msg }
+}
+
+function parse_try(state) {
+  p_eat(state, "Try")
+  try_body = parse_block(state)
+  p_eat(state, "Catch")
+  cv = p_eat(state, "Ident")
+  catch_body = parse_block(state)
+  return { tag: "TryCatch", try_body: try_body, catch_var: cv.value, catch_body: catch_body }
+}
+
+function parse_block(state) {
+  p_eat(state, "LBrace")
+  stmts = []
+  while not p_check(state, "RBrace") and not p_at_end(state) {
+    s = parse_stmt(state)
+    stmts = stmts.push(s)
+  }
+  p_eat(state, "RBrace")
+  return stmts
+}
+
+function parse_assign_or_expr(state) {
+  expr = parse_expr(state)
+
+  k = p_peek_kind(state)
+  if k == "Eq" {
+    p_advance(state)
+    rhs = parse_expr(state)
+    return { tag: "Assign", target: expr, value: rhs }
+  }
+  if k == "PlusEq" {
+    p_advance(state)
+    rhs = parse_expr(state)
+    return { tag: "PlusEq", target: expr, value: rhs }
+  }
+  if k == "MinusEq" {
+    p_advance(state)
+    rhs = parse_expr(state)
+    return { tag: "MinusEq", target: expr, value: rhs }
+  }
+  if k == "MulEq" {
+    p_advance(state)
+    rhs = parse_expr(state)
+    return { tag: "MulEq", target: expr, value: rhs }
+  }
+  if k == "DivEq" {
+    p_advance(state)
+    rhs = parse_expr(state)
+    return { tag: "DivEq", target: expr, value: rhs }
+  }
+
+  return { tag: "ExprStmt", expr: expr }
+}
+
+// ── Expressions (precedence climbing) ────────────────────────────────────────
+
+function parse_expr(state) {
+  return parse_null_coal(state)
+}
+
+function parse_null_coal(state) {
+  left = parse_or(state)
+  while p_check(state, "NullCoal") {
+    p_advance(state)
+    right = parse_or(state)
+    left = { tag: "NullCoal", left: left, right: right }
+  }
+  return left
+}
+
+function parse_or(state) {
+  left = parse_and(state)
+  while p_check(state, "Or") {
+    p_advance(state)
+    right = parse_and(state)
+    left = { tag: "BinOp", op: "or", left: left, right: right }
+  }
+  return left
+}
+
+function parse_and(state) {
+  left = parse_eq(state)
+  while p_check(state, "And") {
+    p_advance(state)
+    right = parse_eq(state)
+    left = { tag: "BinOp", op: "and", left: left, right: right }
+  }
+  return left
+}
+
+function parse_eq(state) {
+  left = parse_cmp(state)
+  k = p_peek_kind(state)
+  if k == "EqEq" or k == "NotEq" {
+    op_tok = p_advance(state)
+    right = parse_cmp(state)
+    return { tag: "BinOp", op: op_tok.value, left: left, right: right }
+  }
+  return left
+}
+
+function parse_cmp(state) {
+  left = parse_add(state)
+  k = p_peek_kind(state)
+  if k == "Lt" or k == "Gt" or k == "LtEq" or k == "GtEq" {
+    op_tok = p_advance(state)
+    right = parse_add(state)
+    return { tag: "BinOp", op: op_tok.value, left: left, right: right }
+  }
+  return left
+}
+
+function parse_add(state) {
+  left = parse_mul(state)
+  k = p_peek_kind(state)
+  while k == "Plus" or k == "Minus" {
+    op_tok = p_advance(state)
+    right = parse_mul(state)
+    left = { tag: "BinOp", op: op_tok.value, left: left, right: right }
+    k = p_peek_kind(state)
+  }
+  return left
+}
+
+function parse_mul(state) {
+  left = parse_unary(state)
+  k = p_peek_kind(state)
+  while k == "Star" or k == "Slash" or k == "Percent" {
+    op_tok = p_advance(state)
+    right = parse_unary(state)
+    left = { tag: "BinOp", op: op_tok.value, left: left, right: right }
+    k = p_peek_kind(state)
+  }
+  return left
+}
+
+function parse_unary(state) {
+  if p_check(state, "Not") {
+    p_advance(state)
+    e = parse_unary(state)
+    return { tag: "Unary", op: "not", expr: e }
+  }
+  if p_check(state, "Minus") {
+    p_advance(state)
+    e = parse_unary(state)
+    return { tag: "Unary", op: "-", expr: e }
+  }
+  return parse_postfix(state)
+}
+
+function parse_postfix(state) {
+  base = parse_primary(state)
+  go = true
+  while go {
+    k = p_peek_kind(state)
+    if k == "Dot" {
+      p_advance(state)
+      field_tok = p_advance(state)
+      if p_check(state, "LParen") {
+        p_advance(state)
+        args = parse_arglist(state)
+        p_eat(state, "RParen")
+        base = { tag: "MethodCall", obj: base, method: field_tok.value, args: args }
+      } else {
+        base = { tag: "Field", obj: base, field: field_tok.value }
+      }
+    } else if k == "LBrack" {
+      p_advance(state)
+      idx = parse_expr(state)
+      p_eat(state, "RBrack")
+      base = { tag: "Index", obj: base, idx: idx }
+    } else if k == "LParen" and base.tag == "Ident" {
+      p_advance(state)
+      args = parse_arglist(state)
+      p_eat(state, "RParen")
+      base = { tag: "Call", callee: base, args: args }
+    } else {
+      go = false
+    }
+  }
+  return base
+}
+
+function parse_arglist(state) {
+  args = []
+  while not p_check(state, "RParen") and not p_at_end(state) {
+    args = args.push(parse_expr(state))
+    if p_check(state, "Comma") { p_advance(state) }
+  }
+  return args
+}
+
+function parse_primary(state) {
+  k = p_peek_kind(state)
+  t = p_peek(state)
+
+  if k == "Num" {
+    p_advance(state)
+    return { tag: "Num", value: t.value.to_number() }
+  }
+  if k == "Str" {
+    p_advance(state)
+    return parse_interp(t.value)
+  }
+  if k == "True" {
+    p_advance(state)
+    return { tag: "Bool", value: true }
+  }
+  if k == "False" {
+    p_advance(state)
+    return { tag: "Bool", value: false }
+  }
+  if k == "Null" {
+    p_advance(state)
+    return { tag: "Null" }
+  }
+  if k == "Ident" or k == "Memory" {
+    p_advance(state)
+    return { tag: "Ident", name: t.value }
+  }
+  if k == "LParen" {
+    p_advance(state)
+    e = parse_expr(state)
+    p_eat(state, "RParen")
+    return e
+  }
+  if k == "LBrack" {
+    return parse_array(state)
+  }
+  if k == "LBrace" {
+    return parse_object(state)
+  }
+
+  p_advance(state)
+  return { tag: "Null" }
+}
+
+function parse_array(state) {
+  p_eat(state, "LBrack")
+  items = []
+  while not p_check(state, "RBrack") and not p_at_end(state) {
+    items = items.push(parse_expr(state))
+    if p_check(state, "Comma") { p_advance(state) }
+  }
+  p_eat(state, "RBrack")
+  return { tag: "Array", items: items }
+}
+
+function parse_object(state) {
+  p_eat(state, "LBrace")
+  pairs = []
+  while not p_check(state, "RBrace") and not p_at_end(state) {
+    key_tok = p_advance(state)
+    key = key_tok.value
+    p_eat(state, "Colon")
+    val = parse_expr(state)
+    pairs = pairs.push({ key: key, value: val })
+    if p_check(state, "Comma") { p_advance(state) }
+  }
+  p_eat(state, "RBrace")
+  return { tag: "Object", pairs: pairs }
+}
+
+// ── String interpolation parser ───────────────────────────────────────────────
+// Splits "hello {name}!" into Lit("hello ") + Expr(Ident("name")) + Lit("!")
+
+function parse_interp(s) {
+  parts = []
+  i = 0
+  n = len(s)
+  buf = ""
+
+  while i < n {
+    c = s[i]
+    if c == "{" {
+      if len(buf) > 0 {
+        parts = parts.push({ tag: "Lit", v: buf })
+        buf = ""
+      }
+      i = i + 1
+      inner = ""
+      depth = 1
+      while i < n and depth > 0 {
+        ch = s[i]
+        if ch == "{" { depth = depth + 1 }
+        if ch == "}" { depth = depth - 1 }
+        if depth > 0 { inner = inner + ch }
+        i = i + 1
+      }
+      inner_tokens = tokenize(inner)
+      inner_state = { tokens: inner_tokens, pos: 0 }
+      expr = parse_expr(inner_state)
+      parts = parts.push({ tag: "Expr", e: expr })
+    } else {
+      buf = buf + c
+      i = i + 1
+    }
+  }
+
+  if len(buf) > 0 {
+    parts = parts.push({ tag: "Lit", v: buf })
+  }
+
+  if len(parts) == 1 and parts[0].tag == "Lit" {
+    return { tag: "Str", value: parts[0].v }
+  }
+
+  return { tag: "Interp", parts: parts }
+}

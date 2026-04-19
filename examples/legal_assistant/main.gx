@@ -1,0 +1,94 @@
+// Legal Assistant — UAE Law
+// Demonstrates: goal, think, act, observe, memory, escalation,
+// multi-agent orchestration, retry, and confidence-gated responses.
+//
+// Run: gx run examples/legal_assistant/main.gx
+// Set: OPENAI_API_KEY or ANTHROPIC_API_KEY in environment
+
+import "examples/legal_assistant/agents/classifier.gx"
+import "examples/legal_assistant/agents/researcher.gx"
+import "examples/legal_assistant/agents/formatter.gx"
+
+// ── Intake agent ──────────────────────────────────────────────────────────────
+// Classifies the question and routes it to the right specialist.
+
+agent "intake" {
+  goal: "Classify incoming legal questions and route to the correct specialist"
+
+  retry: 2
+  on_error: escalate
+
+  remember {
+    questions_handled = 0
+    escalations = 0
+  }
+
+  when started {
+    // Simulate receiving a question (in production: from webhook/HTTP)
+    question = "Can my employer withhold my end-of-service gratuity in the UAE?"
+
+    observe {
+      input: question
+    }
+
+    log("=== Legal Assistant ===")
+    log("Question: {input}")
+
+    // Classify the question into a legal domain
+    category = spawn agent "classifier" with { question: input }
+    log("Category: {category}")
+
+    // Research the answer using the specialist
+    answer = spawn agent "researcher" with { question: input, category: category }
+
+    // Format the final response
+    response = spawn agent "formatter" with { question: input, answer: answer, category: category }
+    log(response)
+
+    memory.questions_handled += 1
+    log("Total questions handled: {memory.questions_handled}")
+  }
+}
+
+// ── Multi-question pipeline demo ──────────────────────────────────────────────
+
+agent "pipeline_demo" {
+  goal: "Show pipeline chaining for legal queries"
+
+  when started {
+    log("")
+    log("=== Pipeline Demo ===")
+
+    // Chain: classify → research → format in one pipeline expression
+    q = "What are the working hours limits under UAE Labour Law?"
+
+    result = { question: q } |> spawn agent "classifier_pipe" |> spawn agent "responder_pipe"
+    log(result)
+  }
+}
+
+// ── Inlined pipeline agents ───────────────────────────────────────────────────
+
+helper "classifier_pipe" {
+  brain {
+    plan { }
+    execute {
+      q = input.question
+      category = "labour_law"
+    }
+    remember { }
+    communicate { { question: q, category: category } }
+  }
+}
+
+helper "responder_pipe" {
+  brain {
+    plan { }
+    execute {
+      answer = "Under UAE Labour Law (Federal Decree-Law No. 33 of 2021), the standard working hours are 8 hours per day or 48 hours per week. During Ramadan, working hours for Muslim employees are reduced by 2 hours per day."
+      formatted = "[{input.category}] {answer}"
+    }
+    remember { }
+    communicate { formatted }
+  }
+}

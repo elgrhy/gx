@@ -119,6 +119,18 @@ impl Parser {
             TokenKind::To => "to".into(),
             TokenKind::Message => "message".into(),
             TokenKind::Call => "call".into(),
+            TokenKind::Goal => "goal".into(),
+            TokenKind::Think => "think".into(),
+            TokenKind::Act => "act".into(),
+            TokenKind::Observe => "observe".into(),
+            TokenKind::Loop => "loop".into(),
+            TokenKind::Until => "until".into(),
+            TokenKind::Repeat => "repeat".into(),
+            TokenKind::Times => "times".into(),
+            TokenKind::Parallel => "parallel".into(),
+            TokenKind::Retry => "retry".into(),
+            TokenKind::Timeout => "timeout".into(),
+            TokenKind::OnError => "on_error".into(),
             other => {
                 return Err(format!(
                     "Line {}: expected identifier, got {:?}",
@@ -288,6 +300,7 @@ impl Parser {
         let name = self.expect_string()?;
         self.expect(&TokenKind::LBrace)?;
 
+        let mut goal = None;
         let mut can_do = Vec::new();
         let mut memory = Vec::new();
         let mut receive_block = Vec::new();
@@ -295,6 +308,9 @@ impl Parser {
         let mut recipes = Vec::new();
         let mut objectives = Vec::new();
         let mut when_blocks = Vec::new();
+        let mut retry = None;
+        let mut timeout_ms = None;
+        let mut on_error = None;
 
         loop {
             self.skip_newlines();
@@ -358,6 +374,85 @@ impl Parser {
                     when_blocks.push(self.parse_when_block()?);
                 }
 
+                // v0.2.0: goal: "..."
+                TokenKind::Goal => {
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
+                    goal = Some(self.expect_string()?);
+                }
+
+                // v0.2.0: observe { key: expr, ... } as a when-started block
+                TokenKind::Observe => {
+                    let obs_line = self.line();
+                    self.advance();
+                    let bindings = self.parse_kv_block()?;
+                    when_blocks.push(WhenBlock {
+                        trigger: WhenTrigger::Started,
+                        body: vec![Stmt::Observe {
+                            bindings,
+                            line: obs_line,
+                        }],
+                        line: obs_line,
+                    });
+                }
+
+                // v0.2.0: think { ... } as a when-started block
+                TokenKind::Think => {
+                    let think_line = self.line();
+                    let stmt = self.parse_think()?;
+                    when_blocks.push(WhenBlock {
+                        trigger: WhenTrigger::Started,
+                        body: vec![stmt],
+                        line: think_line,
+                    });
+                }
+
+                // v0.2.0: act { ... } as a when-started block
+                TokenKind::Act => {
+                    let act_line = self.line();
+                    let stmt = self.parse_act()?;
+                    when_blocks.push(WhenBlock {
+                        trigger: WhenTrigger::Started,
+                        body: vec![stmt],
+                        line: act_line,
+                    });
+                }
+
+                // v0.2.0: retry: N
+                TokenKind::Retry => {
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
+                    if let TokenKind::NumberLit(n) = self.peek_kind().clone() {
+                        self.advance();
+                        retry = Some(n as u32);
+                    }
+                }
+
+                // v0.2.0: timeout: 30s or 30000
+                TokenKind::Timeout => {
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
+                    if let TokenKind::NumberLit(n) = self.peek_kind().clone() {
+                        self.advance();
+                        // check for 's' suffix identifier
+                        let ms = if matches!(self.peek_kind(), TokenKind::Ident(s) if s == "s") {
+                            self.advance();
+                            (n * 1000.0) as u64
+                        } else {
+                            n as u64
+                        };
+                        timeout_ms = Some(ms);
+                    }
+                }
+
+                // v0.2.0: on_error: continue | escalate | retry
+                TokenKind::OnError => {
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
+                    let policy = self.expect_ident()?;
+                    on_error = Some(policy);
+                }
+
                 // `message` blocks — skip (Phase 2)
                 TokenKind::Ident(ref s) if s == "message" => {
                     self.advance();
@@ -378,6 +473,7 @@ impl Parser {
 
         Ok(HelperDef {
             name,
+            goal,
             can_do,
             memory,
             receive_block,
@@ -385,6 +481,9 @@ impl Parser {
             recipes,
             objectives,
             when_blocks,
+            retry,
+            timeout_ms,
+            on_error,
             line,
         })
     }
@@ -778,6 +877,17 @@ impl Parser {
             TokenKind::Respond => self.parse_respond(),
             // Phase 5: send "event" to "agent" with { key: val }
             TokenKind::Spawn | TokenKind::Call => self.parse_send_or_expr(line),
+            // v0.2.0: opinionated sugar
+            TokenKind::Think => self.parse_think(),
+            TokenKind::Act => self.parse_act(),
+            TokenKind::Observe => {
+                self.advance();
+                let bindings = self.parse_kv_block()?;
+                Ok(Stmt::Observe { bindings, line })
+            }
+            TokenKind::Loop => self.parse_loop_until(),
+            TokenKind::Repeat => self.parse_repeat_times(),
+            TokenKind::Parallel => self.parse_parallel(),
             _ => {
                 let expr = self.parse_expr()?;
                 self.skip_newlines();
@@ -824,6 +934,138 @@ impl Parser {
                 Ok(Stmt::Expr { expr, line })
             }
         }
+    }
+
+    // ── v0.2.0 sugar parsers ──────────────────────────────────────────────────
+
+    /// think { prompt: "...", model: "openai", temperature: 0.7, min_confidence: 0.8 }
+    fn parse_think(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.advance(); // consume `think`
+        self.expect(&TokenKind::LBrace)?;
+        let mut prompt_expr = Expr::Str(String::new());
+        let mut model: Option<String> = None;
+        let mut temperature: Option<Expr> = None;
+        let mut min_confidence: Option<Expr> = None;
+        let mut into_var = "result".to_string();
+        loop {
+            self.skip_newlines();
+            if self.eat(&TokenKind::RBrace) {
+                break;
+            }
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            match key.as_str() {
+                "prompt" => {
+                    prompt_expr = self.parse_expr()?;
+                }
+                "model" => {
+                    model = Some(self.expect_string()?);
+                }
+                "temperature" => {
+                    temperature = Some(self.parse_expr()?);
+                }
+                "min_confidence" => {
+                    min_confidence = Some(self.parse_expr()?);
+                }
+                "into" => {
+                    into_var = self.expect_ident()?;
+                }
+                _ => {
+                    let _ = self.parse_expr();
+                } // ignore unknown keys
+            }
+            self.eat(&TokenKind::Comma);
+        }
+        Ok(Stmt::Think {
+            prompt: prompt_expr,
+            model,
+            temperature,
+            min_confidence,
+            into_var,
+            line,
+        })
+    }
+
+    /// act { ... }
+    fn parse_act(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.advance(); // consume `act`
+        self.expect(&TokenKind::LBrace)?;
+        let body = self.parse_stmts()?;
+        Ok(Stmt::Act { body, line })
+    }
+
+    /// loop until condition { ... }
+    fn parse_loop_until(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.advance(); // consume `loop`
+        self.eat(&TokenKind::Until);
+        let condition = self.parse_expr()?;
+        self.expect(&TokenKind::LBrace)?;
+        let body = self.parse_stmts()?;
+        Ok(Stmt::LoopUntil {
+            condition,
+            body,
+            line,
+        })
+    }
+
+    /// repeat N times { ... }  or  repeat N times as i { ... }
+    fn parse_repeat_times(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.advance(); // consume `repeat`
+        let count = self.parse_expr()?;
+        self.eat(&TokenKind::Times);
+        let var = if self.eat(&TokenKind::As) {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::LBrace)?;
+        let body = self.parse_stmts()?;
+        Ok(Stmt::RepeatTimes {
+            count,
+            var,
+            body,
+            line,
+        })
+    }
+
+    /// parallel { stmt; stmt; ... }  — each top-level statement is a branch
+    fn parse_parallel(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.advance(); // consume `parallel`
+        self.expect(&TokenKind::LBrace)?;
+        let mut branches: Vec<Vec<Stmt>> = Vec::new();
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek_kind(), TokenKind::RBrace | TokenKind::Eof) {
+                break;
+            }
+            let stmt = self.parse_stmt()?;
+            branches.push(vec![stmt]);
+        }
+        self.expect(&TokenKind::RBrace)?;
+        Ok(Stmt::Parallel { branches, line })
+    }
+
+    /// parse { key: expr, key: expr } → Vec<(String, Expr)>
+    fn parse_kv_block(&mut self) -> Result<Vec<(String, Expr)>, String> {
+        self.expect(&TokenKind::LBrace)?;
+        let mut pairs = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.eat(&TokenKind::RBrace) {
+                break;
+            }
+            let key = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let val = self.parse_expr()?;
+            pairs.push((key, val));
+            self.eat(&TokenKind::Comma);
+        }
+        Ok(pairs)
     }
 
     fn parse_while(&mut self) -> Result<Stmt, String> {

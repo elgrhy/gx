@@ -194,6 +194,11 @@ impl Interpreter {
         let mut memory: HashMap<String, Value> = HashMap::new();
         memory.insert("ai_trace".into(), Value::Array(Vec::new()));
 
+        // v0.2.0: store goal in memory if declared
+        if let Some(ref goal) = helper.goal {
+            memory.insert("goal".into(), Value::Str(goal.clone()));
+        }
+
         let mut env = Env::new();
         for entry in &helper.memory {
             let val = self.eval_expr(&entry.value, &mut env)?;
@@ -241,11 +246,14 @@ impl Interpreter {
             }
         }
 
-        // Brain cycle
+        // Brain cycle (with v0.2.0 retry/on_error support)
         if let Some(brain) = &helper.brain.clone() {
+            let max_retries = helper.retry.unwrap_or(0) as usize;
+            let on_error_policy = helper.on_error.as_deref().unwrap_or("escalate");
+            let mut retry_count = 0;
             let mut cycles = 0;
             const MAX_CYCLES: usize = 100;
-            loop {
+            'outer: loop {
                 env.set_memory(memory.clone());
                 env.set("plan", Value::Null);
                 env.set("result", Value::Null);
@@ -255,7 +263,7 @@ impl Interpreter {
                     Err(Signal::ReRun) if cycles < MAX_CYCLES => {
                         cycles += 1;
                         memory = env.get_memory();
-                        continue;
+                        continue 'outer;
                     }
                     Err(Signal::ReRun) => {
                         return Err(Signal::Error(format!(
@@ -263,6 +271,23 @@ impl Interpreter {
                             helper.name, MAX_CYCLES
                         )));
                     }
+                    Err(Signal::Error(ref msg)) if retry_count < max_retries => {
+                        retry_count += 1;
+                        eprintln!(
+                            "[gx] Helper '{}' error (retry {}/{}): {}",
+                            helper.name, retry_count, max_retries, msg
+                        );
+                        continue 'outer;
+                    }
+                    Err(e @ Signal::Error(_)) => match on_error_policy {
+                        "continue" => {
+                            eprintln!(
+                                "[gx] on_error: continue — ignoring error in '{}'",
+                                helper.name
+                            );
+                        }
+                        _ => return Err(e),
+                    },
                     Err(e) => return Err(e),
                 }
                 memory = env.get_memory();
@@ -698,6 +723,128 @@ impl Interpreter {
                         "HTTP server not available in playground".into(),
                     ));
                 }
+            }
+
+            // ── v0.2.0 opinionated sugar ──────────────────────────────────────
+            Stmt::Think {
+                prompt,
+                model,
+                temperature,
+                min_confidence,
+                into_var,
+                ..
+            } => {
+                let prompt_val = self.eval_expr(prompt, env)?;
+                let provider = model.as_deref().unwrap_or("openai");
+                let temp_val = match temperature {
+                    Some(t) => self.eval_expr(t, env)?,
+                    None => Value::Number(0.7),
+                };
+                let min_conf = match min_confidence {
+                    Some(mc) => self.eval_expr(mc, env)?.as_number().unwrap_or(0.0),
+                    None => 0.0,
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let mut params: HashMap<String, Value> = HashMap::new();
+                    params.insert("prompt".into(), prompt_val);
+                    params.insert("temperature".into(), temp_val);
+                    let result = ai::ask_ai(provider, None, &params);
+                    if min_conf > 0.0 {
+                        let conf = if let Value::Object(ref m) = result {
+                            m.get("confidence")
+                                .and_then(|v| v.as_number())
+                                .unwrap_or(1.0)
+                        } else {
+                            1.0
+                        };
+                        if conf < min_conf {
+                            eprintln!(
+                                "[gx think] confidence {:.2} below threshold {:.2} — escalating",
+                                conf, min_conf
+                            );
+                            self.events.push(("escalate_to_human".into(), Vec::new()));
+                            return Err(Signal::EscalateToHuman);
+                        }
+                    }
+                    env.set(into_var, result);
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = (temp_val, min_conf);
+                    let mut m = HashMap::new();
+                    m.insert(
+                        "text".into(),
+                        Value::Str("[AI not available in playground]".into()),
+                    );
+                    m.insert("confidence".into(), Value::Number(1.0));
+                    m.insert("ok".into(), Value::Bool(false));
+                    env.set(into_var, Value::Object(m));
+                }
+                Ok(Value::Null)
+            }
+
+            Stmt::Observe { bindings, .. } => {
+                for (key, val_expr) in bindings {
+                    let v = self.eval_expr(val_expr, env)?;
+                    env.set(key, v);
+                }
+                Ok(Value::Null)
+            }
+
+            Stmt::Act { body, .. } => self.run_stmts(body, env),
+
+            Stmt::LoopUntil {
+                condition, body, ..
+            } => {
+                let mut iterations = 0usize;
+                loop {
+                    if iterations > 10_000 {
+                        return Err(Signal::Error("loop until exceeded 10000 iterations".into()));
+                    }
+                    let cond_val = self.eval_expr(condition, env)?;
+                    if cond_val.is_truthy() {
+                        break;
+                    }
+                    match self.run_stmts(body, env) {
+                        Ok(_) => {}
+                        Err(Signal::Break) => break,
+                        Err(Signal::Continue) => {}
+                        Err(e) => return Err(e),
+                    }
+                    iterations += 1;
+                }
+                Ok(Value::Null)
+            }
+
+            Stmt::RepeatTimes {
+                count, var, body, ..
+            } => {
+                let n = self.eval_expr(count, env)?.as_number().unwrap_or(0.0) as usize;
+                for i in 0..n {
+                    if let Some(v) = var {
+                        env.set(v, Value::Number(i as f64));
+                    }
+                    match self.run_stmts(body, env) {
+                        Ok(_) => {}
+                        Err(Signal::Break) => break,
+                        Err(Signal::Continue) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Value::Null)
+            }
+
+            Stmt::Parallel { branches, .. } => {
+                // Sequential fallback — true parallelism deferred to Phase 8
+                for branch in branches {
+                    match self.run_stmts(branch, env) {
+                        Ok(_) => {}
+                        Err(Signal::Break) => break,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Value::Null)
             }
 
             Stmt::Expr { expr, .. } => {
@@ -1672,6 +1819,70 @@ impl Interpreter {
             }
 
             // ── Math ──────────────────────────────────────────────────────────
+            // Character primitives for self-hosting
+            "ord" => {
+                let c = args
+                    .first()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                Ok(Value::Number(
+                    c.chars().next().map(|ch| ch as u32 as f64).unwrap_or(0.0),
+                ))
+            }
+            "chr" => {
+                let n = args.first().and_then(|v| v.as_number()).unwrap_or(0.0) as u32;
+                Ok(char::from_u32(n)
+                    .map(|c| Value::Str(c.to_string()))
+                    .unwrap_or(Value::Null))
+            }
+            "is_digit" => {
+                let c = args
+                    .first()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                Ok(Value::Bool(
+                    c.chars()
+                        .next()
+                        .map(|ch| ch.is_ascii_digit())
+                        .unwrap_or(false),
+                ))
+            }
+            "is_alpha" => {
+                let c = args
+                    .first()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                Ok(Value::Bool(
+                    c.chars()
+                        .next()
+                        .map(|ch| ch.is_ascii_alphabetic())
+                        .unwrap_or(false),
+                ))
+            }
+            "is_alnum" => {
+                let c = args
+                    .first()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                Ok(Value::Bool(
+                    c.chars()
+                        .next()
+                        .map(|ch| ch.is_ascii_alphanumeric())
+                        .unwrap_or(false),
+                ))
+            }
+            "is_whitespace" => {
+                let c = args
+                    .first()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                Ok(Value::Bool(
+                    c.chars()
+                        .next()
+                        .map(|ch| ch.is_whitespace())
+                        .unwrap_or(false),
+                ))
+            }
             "floor" => Ok(Value::Number(
                 args.first()
                     .and_then(|v| v.as_number())
@@ -1835,6 +2046,217 @@ impl Interpreter {
             // ── HTTP client ───────────────────────────────────────────────────
             "http_get" | "fetch" | "http_post" | "http_put" | "http_delete" => {
                 http_builtin(name, &args)
+            }
+
+            // http_request { url, method, body, headers } — unified form
+            "http_request" => {
+                let opts = args.first().cloned().unwrap_or(Value::Null);
+                let url = match &opts {
+                    Value::Object(m) => m
+                        .get("url")
+                        .and_then(|v| v.as_str().map(String::from))
+                        .unwrap_or_default(),
+                    Value::Str(s) => s.clone(),
+                    _ => {
+                        return Err(Signal::Error(
+                            "http_request: expected object with url field".into(),
+                        ))
+                    }
+                };
+                let method = match &opts {
+                    Value::Object(m) => m
+                        .get("method")
+                        .and_then(|v| v.as_str().map(String::from))
+                        .unwrap_or_else(|| "GET".into()),
+                    _ => "GET".into(),
+                };
+                let body_val = match &opts {
+                    Value::Object(m) => m.get("body").cloned().unwrap_or(Value::Null),
+                    _ => Value::Null,
+                };
+                let _headers: Vec<(String, String)> = match &opts {
+                    Value::Object(m) => match m.get("headers") {
+                        Some(Value::Object(hm)) => hm
+                            .iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect(),
+                        _ => vec![],
+                    },
+                    _ => vec![],
+                };
+                // Delegate to http_builtin with synthesised args
+                let method_name = match method.to_uppercase().as_str() {
+                    "POST" => "http_post",
+                    "PUT" => "http_put",
+                    "DELETE" => "http_delete",
+                    _ => "http_get",
+                };
+                let mut builtin_args = vec![Value::Str(url)];
+                if !matches!(body_val, Value::Null) {
+                    builtin_args.push(body_val);
+                }
+                http_builtin(method_name, &builtin_args)
+            }
+
+            // send_email { to, subject, body, smtp_host?, smtp_port?, from?, username?, password? }
+            "send_email" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let opts = args.first().cloned().unwrap_or(Value::Null);
+                    let get_str = |key: &str| match &opts {
+                        Value::Object(m) => m
+                            .get(key)
+                            .and_then(|v| v.as_str().map(String::from))
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    let to = get_str("to");
+                    let subject = get_str("subject");
+                    let body_s = get_str("body");
+                    let from = get_str("from");
+                    let smtp_host = get_str("smtp_host");
+                    let smtp_port = match &opts {
+                        Value::Object(m) => m
+                            .get("smtp_port")
+                            .and_then(|v| v.as_number())
+                            .unwrap_or(587.0) as u16,
+                        _ => 587,
+                    };
+                    let username = get_str("username");
+                    let password = get_str("password");
+
+                    // Use SMTP env vars as fallback
+                    let smtp_host = if smtp_host.is_empty() {
+                        std::env::var("SMTP_HOST").unwrap_or_else(|_| "localhost".into())
+                    } else {
+                        smtp_host
+                    };
+                    let from = if from.is_empty() {
+                        std::env::var("SMTP_FROM").unwrap_or_else(|_| "gx@localhost".into())
+                    } else {
+                        from
+                    };
+                    let username = if username.is_empty() {
+                        std::env::var("SMTP_USER").unwrap_or_default()
+                    } else {
+                        username
+                    };
+                    let password = if password.is_empty() {
+                        std::env::var("SMTP_PASS").unwrap_or_default()
+                    } else {
+                        password
+                    };
+
+                    let raw = format!(
+                        "From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body_s}"
+                    );
+
+                    use std::io::{BufRead, BufReader, Write};
+                    use std::net::TcpStream;
+                    let stream = TcpStream::connect(format!("{}:{}", smtp_host, smtp_port))
+                        .map_err(|e| Signal::Error(format!("send_email: connect failed: {}", e)))?;
+                    let mut w = std::io::BufWriter::new(stream.try_clone().unwrap());
+                    let mut r = BufReader::new(stream);
+                    let mut line = String::new();
+                    let smtp_read =
+                        |r: &mut BufReader<TcpStream>, line: &mut String| -> Result<(), Signal> {
+                            line.clear();
+                            r.read_line(line)
+                                .map_err(|e| Signal::Error(format!("send_email: read: {}", e)))?;
+                            Ok(())
+                        };
+                    smtp_read(&mut r, &mut line)?;
+                    let cmd =
+                        |w: &mut std::io::BufWriter<TcpStream>, s: &str| -> Result<(), Signal> {
+                            w.write_all(format!("{}\r\n", s).as_bytes())
+                                .map_err(|e| Signal::Error(format!("send_email: write: {}", e)))?;
+                            w.flush()
+                                .map_err(|e| Signal::Error(format!("send_email: flush: {}", e)))
+                        };
+                    cmd(&mut w, "EHLO localhost")?;
+                    smtp_read(&mut r, &mut line)?;
+                    while line.contains('-') {
+                        smtp_read(&mut r, &mut line)?;
+                    }
+                    if !username.is_empty() {
+                        cmd(&mut w, "AUTH LOGIN")?;
+                        smtp_read(&mut r, &mut line)?;
+                        cmd(&mut w, &base64_encode(username.as_bytes()))?;
+                        smtp_read(&mut r, &mut line)?;
+                        cmd(&mut w, &base64_encode(password.as_bytes()))?;
+                        smtp_read(&mut r, &mut line)?;
+                    }
+                    cmd(&mut w, &format!("MAIL FROM:<{}>", from))?;
+                    smtp_read(&mut r, &mut line)?;
+                    cmd(&mut w, &format!("RCPT TO:<{}>", to))?;
+                    smtp_read(&mut r, &mut line)?;
+                    cmd(&mut w, "DATA")?;
+                    smtp_read(&mut r, &mut line)?;
+                    cmd(&mut w, &format!("{}\r\n.", raw))?;
+                    smtp_read(&mut r, &mut line)?;
+                    cmd(&mut w, "QUIT")?;
+                    Ok(Value::Bool(true))
+                }
+                #[cfg(target_arch = "wasm32")]
+                Err(Signal::Error(
+                    "send_email not available in playground".into(),
+                ))
+            }
+
+            // scrape "url" → cleaned plain text
+            "scrape" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let url = args
+                        .first()
+                        .and_then(|v| v.as_str().map(String::from))
+                        .unwrap_or_default();
+                    let html = ureq::get(&url)
+                        .call()
+                        .map_err(|e| Signal::Error(format!("scrape: fetch failed: {}", e)))?
+                        .into_string()
+                        .map_err(|e| Signal::Error(format!("scrape: read failed: {}", e)))?;
+                    // Strip HTML tags naively
+                    let text = strip_html_tags(&html);
+                    Ok(Value::Str(text))
+                }
+                #[cfg(target_arch = "wasm32")]
+                Err(Signal::Error("scrape not available in playground".into()))
+            }
+
+            // notify { channel: "slack"|"webhook", url, message }
+            "notify" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let opts = args.first().cloned().unwrap_or(Value::Null);
+                    let get_str = |key: &str| match &opts {
+                        Value::Object(m) => m
+                            .get(key)
+                            .and_then(|v| v.as_str().map(String::from))
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    let channel = get_str("channel");
+                    let message = get_str("message");
+                    let url = if channel == "slack" {
+                        std::env::var("SLACK_WEBHOOK_URL").unwrap_or_else(|_| get_str("url"))
+                    } else {
+                        get_str("url")
+                    };
+                    if url.is_empty() {
+                        return Err(Signal::Error(
+                            "notify: url or SLACK_WEBHOOK_URL required".into(),
+                        ));
+                    }
+                    let payload = format!("{{\"text\":\"{}\"}}", message.replace('"', "\\\""));
+                    ureq::post(&url)
+                        .set("Content-Type", "application/json")
+                        .send_string(&payload)
+                        .map_err(|e| Signal::Error(format!("notify: failed: {}", e)))?;
+                    Ok(Value::Bool(true))
+                }
+                #[cfg(target_arch = "wasm32")]
+                Err(Signal::Error("notify not available in playground".into()))
             }
 
             // ── File I/O ──────────────────────────────────────────────────────
@@ -2765,6 +3187,46 @@ fn value_to_json(v: &Value) -> String {
     serde_json::to_string(&gx_value_to_json(v)).unwrap_or_else(|_| "null".into())
 }
 
+/// Strip HTML tags, decode common entities, collapse whitespace
+fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    // Decode common HTML entities
+    let out = out
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    // Collapse whitespace
+    let mut result = String::new();
+    let mut prev_ws = false;
+    for ch in out.chars() {
+        if ch.is_whitespace() {
+            if !prev_ws {
+                result.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            result.push(ch);
+            prev_ws = false;
+        }
+    }
+    result.trim().to_string()
+}
+
 // ── Callable-agent detector ───────────────────────────────────────────────────
 
 /// Returns true if the helper's brain accesses `input`, meaning it's designed
@@ -2821,6 +3283,23 @@ fn stmt_uses_input(stmt: &Stmt) -> bool {
         }
         | Stmt::Wait { ms: value, .. } => expr_uses_input(value),
         Stmt::Expr { expr, .. } => expr_uses_input(expr),
+        Stmt::Think {
+            prompt,
+            temperature,
+            min_confidence,
+            ..
+        } => {
+            expr_uses_input(prompt)
+                || temperature.as_ref().is_some_and(expr_uses_input)
+                || min_confidence.as_ref().is_some_and(expr_uses_input)
+        }
+        Stmt::Observe { bindings, .. } => bindings.iter().any(|(_, v)| expr_uses_input(v)),
+        Stmt::Act { body, .. } => stmts_use_input(body),
+        Stmt::LoopUntil {
+            condition, body, ..
+        } => expr_uses_input(condition) || stmts_use_input(body),
+        Stmt::RepeatTimes { count, body, .. } => expr_uses_input(count) || stmts_use_input(body),
+        Stmt::Parallel { branches, .. } => branches.iter().any(|b| stmts_use_input(b)),
         _ => false,
     }
 }

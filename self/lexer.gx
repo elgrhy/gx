@@ -1,0 +1,204 @@
+// GX Lexer — written in GX
+// Tokenizes a GX source string into a flat array of token objects:
+//   { kind: "...", value: "...", line: N }
+
+function is_ident_start(c) {
+  return is_alpha(c) or c == "_"
+}
+
+function is_ident_cont(c) {
+  return is_alnum(c) or c == "_"
+}
+
+function make_token(kind, value, line) {
+  return { kind: kind, value: value, line: line }
+}
+
+function tokenize(src) {
+  tokens = []
+  i = 0
+  line = 1
+  n = len(src)
+
+  while i < n {
+    c = src[i]
+
+    // Newline
+    if c == "\n" {
+      line = line + 1
+      i = i + 1
+      continue
+    }
+
+    // Whitespace
+    if is_whitespace(c) {
+      i = i + 1
+      continue
+    }
+
+    // Single-line comment
+    if c == "/" and i + 1 < n and src[i + 1] == "/" {
+      while i < n and src[i] != "\n" {
+        i = i + 1
+      }
+      continue
+    }
+
+    // String literal
+    if c == "\"" {
+      i = i + 1
+      start = i
+      buf = ""
+      while i < n and src[i] != "\"" {
+        if src[i] == "\\" and i + 1 < n {
+          next = src[i + 1]
+          if next == "n" {
+            buf = buf + "\n"
+          } else if next == "t" {
+            buf = buf + "\t"
+          } else if next == "r" {
+            buf = buf + "\r"
+          } else if next == "\\" {
+            buf = buf + "\\"
+          } else if next == "\"" {
+            buf = buf + "\""
+          } else {
+            buf = buf + "\\" + next
+          }
+          i = i + 2
+        } else {
+          buf = buf + src[i]
+          i = i + 1
+        }
+      }
+      i = i + 1
+      tokens = tokens.push(make_token("Str", buf, line))
+      continue
+    }
+
+    // Number literal
+    if is_digit(c) or (c == "-" and i + 1 < n and is_digit(src[i + 1])) {
+      start = i
+      buf = ""
+      if c == "-" {
+        buf = buf + c
+        i = i + 1
+      }
+      while i < n and is_digit(src[i]) {
+        buf = buf + src[i]
+        i = i + 1
+      }
+      if i < n and src[i] == "." and i + 1 < n and is_digit(src[i + 1]) {
+        buf = buf + "."
+        i = i + 1
+        while i < n and is_digit(src[i]) {
+          buf = buf + src[i]
+          i = i + 1
+        }
+      }
+      tokens = tokens.push(make_token("Num", buf, line))
+      continue
+    }
+
+    // Identifier or keyword
+    if is_ident_start(c) {
+      buf = ""
+      while i < n and is_ident_cont(src[i]) {
+        buf = buf + src[i]
+        i = i + 1
+      }
+      kind = ident_kind(buf)
+      tokens = tokens.push(make_token(kind, buf, line))
+      continue
+    }
+
+    // Two-char operators
+    if i + 1 < n {
+      two = src[i] + src[i + 1]
+      if two == "==" { tokens = tokens.push(make_token("EqEq",    two, line)) i = i + 2 continue }
+      if two == "!=" { tokens = tokens.push(make_token("NotEq",   two, line)) i = i + 2 continue }
+      if two == "<=" { tokens = tokens.push(make_token("LtEq",    two, line)) i = i + 2 continue }
+      if two == ">=" { tokens = tokens.push(make_token("GtEq",    two, line)) i = i + 2 continue }
+      if two == "+=" { tokens = tokens.push(make_token("PlusEq",  two, line)) i = i + 2 continue }
+      if two == "-=" { tokens = tokens.push(make_token("MinusEq", two, line)) i = i + 2 continue }
+      if two == "*=" { tokens = tokens.push(make_token("MulEq",   two, line)) i = i + 2 continue }
+      if two == "/=" { tokens = tokens.push(make_token("DivEq",   two, line)) i = i + 2 continue }
+      if two == "|>" { tokens = tokens.push(make_token("Pipe",    two, line)) i = i + 2 continue }
+      if two == "??" { tokens = tokens.push(make_token("NullCoal",two, line)) i = i + 2 continue }
+      if two == "&&" { tokens = tokens.push(make_token("And",     two, line)) i = i + 2 continue }
+      if two == "||" { tokens = tokens.push(make_token("Or",      two, line)) i = i + 2 continue }
+    }
+
+    // Single-char operators and punctuation
+    if c == "=" { tokens = tokens.push(make_token("Eq",     c, line)) i = i + 1 continue }
+    if c == "+" { tokens = tokens.push(make_token("Plus",   c, line)) i = i + 1 continue }
+    if c == "-" { tokens = tokens.push(make_token("Minus",  c, line)) i = i + 1 continue }
+    if c == "*" { tokens = tokens.push(make_token("Star",   c, line)) i = i + 1 continue }
+    if c == "/" { tokens = tokens.push(make_token("Slash",  c, line)) i = i + 1 continue }
+    if c == "%" { tokens = tokens.push(make_token("Percent",c, line)) i = i + 1 continue }
+    if c == "<" { tokens = tokens.push(make_token("Lt",     c, line)) i = i + 1 continue }
+    if c == ">" { tokens = tokens.push(make_token("Gt",     c, line)) i = i + 1 continue }
+    if c == "!" { tokens = tokens.push(make_token("Bang",   c, line)) i = i + 1 continue }
+    if c == "(" { tokens = tokens.push(make_token("LParen", c, line)) i = i + 1 continue }
+    if c == ")" { tokens = tokens.push(make_token("RParen", c, line)) i = i + 1 continue }
+    if c == "{" { tokens = tokens.push(make_token("LBrace", c, line)) i = i + 1 continue }
+    if c == "}" { tokens = tokens.push(make_token("RBrace", c, line)) i = i + 1 continue }
+    if c == "[" { tokens = tokens.push(make_token("LBrack", c, line)) i = i + 1 continue }
+    if c == "]" { tokens = tokens.push(make_token("RBrack", c, line)) i = i + 1 continue }
+    if c == "," { tokens = tokens.push(make_token("Comma",  c, line)) i = i + 1 continue }
+    if c == "." { tokens = tokens.push(make_token("Dot",    c, line)) i = i + 1 continue }
+    if c == ":" { tokens = tokens.push(make_token("Colon",  c, line)) i = i + 1 continue }
+    if c == ";" { i = i + 1 continue }
+
+    // Unknown — skip
+    i = i + 1
+  }
+
+  tokens = tokens.push(make_token("EOF", "", line))
+  return tokens
+}
+
+function ident_kind(word) {
+  if word == "if"       { return "If" }
+  if word == "else"     { return "Else" }
+  if word == "while"    { return "While" }
+  if word == "for"      { return "For" }
+  if word == "each"     { return "Each" }
+  if word == "in"       { return "In" }
+  if word == "return"   { return "Return" }
+  if word == "function" { return "Function" }
+  if word == "true"     { return "True" }
+  if word == "false"    { return "False" }
+  if word == "null"     { return "Null" }
+  if word == "and"      { return "And" }
+  if word == "or"       { return "Or" }
+  if word == "not"      { return "Not" }
+  if word == "log"      { return "Log" }
+  if word == "say"      { return "Say" }
+  if word == "assert"   { return "Assert" }
+  if word == "break"    { return "Break" }
+  if word == "continue" { return "Continue" }
+  if word == "try"      { return "Try" }
+  if word == "catch"    { return "Catch" }
+  if word == "import"   { return "Import" }
+  if word == "agent"    { return "Agent" }
+  if word == "helper"   { return "Helper" }
+  if word == "when"     { return "When" }
+  if word == "started"  { return "Started" }
+  if word == "changes"  { return "Changes" }
+  if word == "brain"    { return "Brain" }
+  if word == "plan"     { return "Plan" }
+  if word == "execute"  { return "Execute" }
+  if word == "remember" { return "Remember" }
+  if word == "communicate" { return "Communicate" }
+  if word == "memory"   { return "Memory" }
+  if word == "re"       { return "Re" }
+  if word == "run"      { return "Run" }
+  if word == "escalate" { return "Escalate" }
+  if word == "to"       { return "To" }
+  if word == "human"    { return "Human" }
+  if word == "spawn"    { return "Spawn" }
+  if word == "with"     { return "With" }
+  if word == "message"  { return "Message" }
+  return "Ident"
+}

@@ -1,0 +1,32 @@
+// Classifier agent — routes questions to legal domains
+
+helper "classifier" {
+  brain {
+    plan { }
+    execute {
+      q = input.question.to_lower()
+      category = "general"
+
+      if q.contains("gratuity") or q.contains("end of service") or q.contains("termination") or q.contains("resign") {
+        category = "employment_law"
+      }
+      if q.contains("labour") or q.contains("working hours") or q.contains("overtime") or q.contains("leave") {
+        category = "labour_law"
+      }
+      if q.contains("visa") or q.contains("residence") or q.contains("sponsor") or q.contains("permit") {
+        category = "immigration_law"
+      }
+      if q.contains("company") or q.contains("trade license") or q.contains("freezone") or q.contains("llc") {
+        category = "commercial_law"
+      }
+      if q.contains("rent") or q.contains("tenant") or q.contains("landlord") or q.contains("ejari") {
+        category = "property_law"
+      }
+      if q.contains("divorce") or q.contains("custody") or q.contains("marriage") or q.contains("inheritance") {
+        category = "family_law"
+      }
+    }
+    remember { }
+    communicate { category }
+  }
+}

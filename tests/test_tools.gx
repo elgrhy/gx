@@ -1,0 +1,87 @@
+// v0.2.0 native tools tests
+
+// ── Test: http_request unified form ──────────────────────────────────────────
+
+helper "test_http_request" {
+  when started {
+    result = http_request({ url: "https://httpbin.org/get", method: "GET" })
+    assert result.ok "http_request failed"
+    log("http_request GET: ok")
+
+    result2 = http_request({ url: "https://httpbin.org/post", method: "POST", body: "{\"x\": 1}" })
+    assert result2.ok "http_request POST failed"
+    log("http_request POST: ok")
+  }
+}
+
+// ── Test: scrape ──────────────────────────────────────────────────────────────
+
+helper "test_scrape" {
+  when started {
+    text = scrape("https://example.com")
+    assert len(text) > 0 "scrape returned empty"
+    assert not text.contains("<html") "scrape still has HTML tags"
+    log("scrape: ok")
+  }
+}
+
+// ── Test: json_parse / json_stringify ────────────────────────────────────────
+
+helper "test_json" {
+  when started {
+    // Write a JSON file then parse it
+    write_file("/tmp/gx_test.json", "[1, 2, 3]")
+    raw = read_file("/tmp/gx_test.json")
+    arr = json_parse(raw)
+    assert arr[0] == 1 "json_parse arr[0] failed"
+    assert arr[2] == 3 "json_parse arr[2] failed"
+    log("json_parse: ok")
+
+    back = json_stringify(arr)
+    assert len(back) > 0 "json_stringify empty"
+    log("json_stringify: ok")
+    delete_file("/tmp/gx_test.json")
+  }
+}
+
+// ── Test: read_file / write_file / file_exists / list_dir ────────────────────
+
+helper "test_fileio" {
+  when started {
+    write_file("/tmp/gx_test_tools.txt", "hello gx")
+    assert file_exists("/tmp/gx_test_tools.txt") "file not created"
+    content = read_file("/tmp/gx_test_tools.txt")
+    assert content == "hello gx" "file content wrong"
+    log("read/write file: ok")
+
+    entries = list_dir("/tmp")
+    assert len(entries) > 0 "list_dir empty"
+    log("list_dir: ok")
+
+    delete_file("/tmp/gx_test_tools.txt")
+    assert not file_exists("/tmp/gx_test_tools.txt") "file not deleted"
+    log("delete_file: ok")
+  }
+}
+
+// ── Test: ord / chr / is_digit / is_alpha / is_whitespace ────────────────────
+
+helper "test_char_primitives" {
+  when started {
+    assert ord("A") == 65 "ord A failed"
+    assert ord("a") == 97 "ord a failed"
+    assert ord("0") == 48 "ord 0 failed"
+    assert chr(65) == "A" "chr 65 failed"
+    assert chr(97) == "a" "chr 97 failed"
+    assert is_digit("5") "is_digit 5 failed"
+    assert not is_digit("a") "is_digit a wrong"
+    assert is_alpha("z") "is_alpha z failed"
+    assert not is_alpha("5") "is_alpha 5 wrong"
+    assert is_whitespace(" ") "is_whitespace space failed"
+    assert not is_whitespace("x") "is_whitespace x wrong"
+    assert is_alnum("a") "is_alnum a failed"
+    assert is_alnum("5") "is_alnum 5 failed"
+    assert not is_alnum("!") "is_alnum ! wrong"
+    log("char primitives: ok")
+  }
+}

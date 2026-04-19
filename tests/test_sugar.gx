@@ -1,0 +1,109 @@
+// v0.2.0 sugar primitives test
+
+// ── Test: loop until ─────────────────────────────────────────────────────────
+
+helper "test_loop" {
+  when started {
+    count = 0
+    loop until count >= 5 {
+      count += 1
+    }
+    assert count == 5 "loop until failed"
+    log("loop until: ok")
+  }
+}
+
+// ── Test: repeat N times ─────────────────────────────────────────────────────
+
+helper "test_repeat" {
+  when started {
+    total = 0
+    repeat 10 times {
+      total += 1
+    }
+    assert total == 10 "repeat times failed"
+    log("repeat times: ok")
+
+    // repeat with iteration variable
+    last = 0
+    repeat 5 times as i {
+      last = i
+    }
+    assert last == 4 "repeat as i failed"
+    log("repeat as i: ok")
+  }
+}
+
+// ── Test: observe block ───────────────────────────────────────────────────────
+
+helper "test_observe" {
+  when started {
+    observe {
+      greeting: "hello"
+      count: 42
+    }
+    assert greeting == "hello" "observe greeting failed"
+    assert count == 42 "observe count failed"
+    log("observe: ok")
+  }
+}
+
+// ── Test: act block ───────────────────────────────────────────────────────────
+
+helper "test_act" {
+  when started {
+    x = 0
+    act {
+      x = 99
+      x += 1
+    }
+    assert x == 100 "act block failed"
+    log("act: ok")
+  }
+}
+
+// ── Test: goal stored in memory ───────────────────────────────────────────────
+
+helper "test_goal" {
+  goal: "Prove goal metadata works"
+
+  when started {
+    assert memory.goal == "Prove goal metadata works" "goal not in memory"
+    log("goal: ok")
+  }
+}
+
+// ── Test: retry attribute ─────────────────────────────────────────────────────
+
+helper "test_retry" {
+  retry: 2
+  on_error: continue
+
+  brain {
+    plan { }
+    execute {
+      // This will succeed — just testing that retry attr is parsed correctly
+      x = 1 + 1
+    }
+    remember { }
+    communicate {
+      assert x == 2 "retry helper execute failed"
+      log("retry/on_error attrs: ok")
+    }
+  }
+}
+
+// ── Test: parallel block ──────────────────────────────────────────────────────
+
+helper "test_parallel" {
+  when started {
+    results = []
+    parallel {
+      results = results.push("a")
+      results = results.push("b")
+      results = results.push("c")
+    }
+    assert len(results) == 3 "parallel failed"
+    log("parallel: ok")
+  }
+}

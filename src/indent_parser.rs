@@ -727,6 +727,7 @@ fn parse_agent(
     Ok((
         HelperDef {
             name: name_raw,
+            goal: None,
             can_do: Vec::new(),
             memory,
             receive_block: Vec::new(),
@@ -734,6 +735,9 @@ fn parse_agent(
             recipes: Vec::new(),
             objectives: Vec::new(),
             when_blocks,
+            retry: None,
+            timeout_ms: None,
+            on_error: None,
             line: header.no,
         },
         extracted_fns,
