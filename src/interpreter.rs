@@ -2576,7 +2576,10 @@ fn value_to_json(v: &Value) -> String {
 fn http_builtin(name: &str, _args: &[Value]) -> Result<Value, Signal> {
     let mut map = HashMap::new();
     map.insert("ok".into(), Value::Bool(false));
-    map.insert("error".into(), Value::Str(format!("{} not available in playground", name)));
+    map.insert(
+        "error".into(),
+        Value::Str(format!("{} not available in playground", name)),
+    );
     Ok(Value::Object(map))
 }
 

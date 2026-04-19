@@ -32,7 +32,10 @@ pub fn ask_ai(provider: &str, _model: Option<&str>, params: &HashMap<String, Val
 pub fn embed_text(_text: &str) -> Value {
     let mut map = HashMap::new();
     map.insert("text".into(), Value::Str(String::new()));
-    map.insert("error".into(), Value::Str("embed not available in playground".into()));
+    map.insert(
+        "error".into(),
+        Value::Str("embed not available in playground".into()),
+    );
     map.insert("confidence".into(), Value::Number(0.0));
     map.insert("tokens_used".into(), Value::Number(0.0));
     map.insert("provider".into(), Value::Str("openai".into()));
@@ -44,7 +47,10 @@ pub fn embed_text(_text: &str) -> Value {
 pub fn infer_classifier(_input: &str, _classes: &[String], _provider: &str) -> Value {
     let mut map = HashMap::new();
     map.insert("text".into(), Value::Str(String::new()));
-    map.insert("error".into(), Value::Str("infer not available in playground".into()));
+    map.insert(
+        "error".into(),
+        Value::Str("infer not available in playground".into()),
+    );
     map.insert("confidence".into(), Value::Number(0.0));
     map.insert("tokens_used".into(), Value::Number(0.0));
     map.insert("provider".into(), Value::Str("openai".into()));
