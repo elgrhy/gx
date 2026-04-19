@@ -1,0 +1,69 @@
+// Basic test for the self-hosted interpreter
+
+// Arithmetic
+x = 10
+y = 3
+assert x + y == 13 "addition"
+assert x - y == 7  "subtraction"
+assert x * y == 30 "multiplication"
+assert x % y == 1  "modulo"
+
+// Strings
+greeting = "Hello"
+name = "GX"
+full = greeting + ", " + name + "!"
+assert full == "Hello, GX!" "string concat"
+
+// Boolean logic
+assert true and true  "and true"
+assert not false      "not false"
+assert true or false  "or"
+
+// Control flow — for loop
+sum = 0
+for i in range(0, 5) {
+  sum = sum + 1
+}
+assert sum == 5 "for range"
+
+// While loop
+count = 0
+while count < 3 {
+  count = count + 1
+}
+assert count == 3 "while"
+
+// Functions
+function add(a, b) {
+  return a + b
+}
+assert add(4, 5) == 9 "function call"
+
+function factorial(n) {
+  if n <= 1 { return 1 }
+  return n * factorial(n - 1)
+}
+assert factorial(5) == 120 "recursion"
+
+// Arrays
+arr = [1, 2, 3]
+assert len(arr) == 3 "array len"
+arr = arr.push(4)
+assert len(arr) == 4 "array push"
+assert arr[3] == 4   "array index"
+
+// Null coalescing
+val = null
+result = val ?? "default"
+assert result == "default" "null coalescing"
+
+// Try-catch
+caught = false
+try {
+  x = 1
+} catch e {
+  caught = true
+}
+assert caught == false "try no error"
+
+log("All self-interpreter tests passed!")

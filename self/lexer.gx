@@ -15,6 +15,9 @@ function make_token(kind, value, line) {
 }
 
 function tokenize(src) {
+  // GX string literals treat { as interpolation start, so we use chr() for braces
+  LBRACE = chr(123)
+  RBRACE = chr(125)
   tokens = []
   i = 0
   line = 1
@@ -141,8 +144,8 @@ function tokenize(src) {
     if c == "!" { tokens = tokens.push(make_token("Bang",   c, line)) i = i + 1 continue }
     if c == "(" { tokens = tokens.push(make_token("LParen", c, line)) i = i + 1 continue }
     if c == ")" { tokens = tokens.push(make_token("RParen", c, line)) i = i + 1 continue }
-    if c == "{" { tokens = tokens.push(make_token("LBrace", c, line)) i = i + 1 continue }
-    if c == "}" { tokens = tokens.push(make_token("RBrace", c, line)) i = i + 1 continue }
+    if c == LBRACE { tokens = tokens.push(make_token("LBrace", c, line)) i = i + 1 continue }
+    if c == RBRACE { tokens = tokens.push(make_token("RBrace", c, line)) i = i + 1 continue }
     if c == "[" { tokens = tokens.push(make_token("LBrack", c, line)) i = i + 1 continue }
     if c == "]" { tokens = tokens.push(make_token("RBrack", c, line)) i = i + 1 continue }
     if c == "," { tokens = tokens.push(make_token("Comma",  c, line)) i = i + 1 continue }
