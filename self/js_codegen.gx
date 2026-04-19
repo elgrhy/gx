@@ -1,0 +1,371 @@
+// GX → JavaScript Transpiler — written in GX
+// Input:  AST from parser.gx
+// Output: JavaScript source string
+//
+// Usage (via self/jsc.gx entry point):
+//   GX_FILE=hello.gx gx run self/jsc.gx > hello.js && node hello.js
+
+// ── Indentation helpers ───────────────────────────────────────────────────────
+
+function indent(depth) {
+  s = ""
+  i = 0
+  while i < depth {
+    s = s + "  "
+    i = i + 1
+  }
+  return s
+}
+
+// ── Program ───────────────────────────────────────────────────────────────────
+
+function codegen_program(ast) {
+  lines = []
+
+  i = 0
+  while i < len(ast.stmts) {
+    s = ast.stmts[i]
+    out = codegen_stmt(s, 0)
+    lines = lines.push(out)
+    i = i + 1
+  }
+
+  return lines.join("\n")
+}
+
+// ── Statement codegen ─────────────────────────────────────────────────────────
+
+function codegen_stmt(s, depth) {
+  d = indent(depth)
+  tag = s.tag
+
+  if tag == "Assign" {
+    lhs = codegen_lhs(s.target)
+    rhs = codegen_expr(s.value)
+    return d + "var " + lhs + " = " + rhs + ";"
+  }
+
+  if tag == "PlusEq" {
+    lhs = codegen_lhs(s.target)
+    rhs = codegen_expr(s.value)
+    return d + lhs + " += " + rhs + ";"
+  }
+
+  if tag == "MinusEq" {
+    lhs = codegen_lhs(s.target)
+    rhs = codegen_expr(s.value)
+    return d + lhs + " -= " + rhs + ";"
+  }
+
+  if tag == "MulEq" {
+    lhs = codegen_lhs(s.target)
+    rhs = codegen_expr(s.value)
+    return d + lhs + " *= " + rhs + ";"
+  }
+
+  if tag == "DivEq" {
+    lhs = codegen_lhs(s.target)
+    rhs = codegen_expr(s.value)
+    return d + lhs + " /= " + rhs + ";"
+  }
+
+  if tag == "If" {
+    return codegen_if(s, depth)
+  }
+
+  if tag == "While" {
+    cond = codegen_expr(s.cond)
+    body = codegen_block(s.body, depth + 1)
+    return d + "while (" + cond + ") " + body
+  }
+
+  if tag == "For" {
+    iter = codegen_expr(s.iter)
+    body = codegen_block(s.body, depth + 1)
+    return d + "for (const " + s.var + " of " + iter + ") " + body
+  }
+
+  if tag == "Return" {
+    if s.value == null { return d + "return;" }
+    return d + "return " + codegen_expr(s.value) + ";"
+  }
+
+  if tag == "Break"    { return d + "break;" }
+  if tag == "Continue" { return d + "continue;" }
+
+  if tag == "Log" or tag == "Say" {
+    return d + "console.log(gx_str(" + codegen_expr(s.value) + "));"
+  }
+
+  if tag == "Assert" {
+    cond = codegen_expr(s.cond)
+    msg = "Assertion failed"
+    if s.msg != null { msg = codegen_expr(s.msg) }
+    return d + "if (!(" + cond + ")) throw new Error(" + msg + ");"
+  }
+
+  if tag == "TryCatch" {
+    try_body = codegen_block(s.try_body, depth + 1)
+    catch_body = codegen_block(s.catch_body, depth + 1)
+    return d + "try " + try_body + " catch (" + s.catch_var + ") " + catch_body
+  }
+
+  if tag == "FuncDef" {
+    return codegen_funcdef(s, depth)
+  }
+
+  if tag == "ExprStmt" {
+    return d + codegen_expr(s.expr) + ";"
+  }
+
+  return d + "/* unknown stmt: " + tag + " */"
+}
+
+function codegen_if(s, depth) {
+  d = indent(depth)
+  parts = []
+  i = 0
+  while i < len(s.branches) {
+    br = s.branches[i]
+    cond = codegen_expr(br.cond)
+    body = codegen_block(br.body, depth + 1)
+    if i == 0 {
+      parts = parts.push(d + "if (" + cond + ") " + body)
+    } else {
+      parts = parts.push(" else if (" + cond + ") " + body)
+    }
+    i = i + 1
+  }
+  if s.else_body != null {
+    eb = codegen_block(s.else_body, depth + 1)
+    parts = parts.push(" else " + eb)
+  }
+  return parts.join("")
+}
+
+function codegen_funcdef(s, depth) {
+  d = indent(depth)
+  params = s.params.join(", ")
+  body = codegen_block(s.body, depth + 1)
+  return d + "function " + s.name + "(" + params + ") " + body
+}
+
+function codegen_block(stmts, depth) {
+  LBRACE = chr(123)
+  RBRACE = chr(125)
+  d0 = indent(depth - 1)
+  lines = [d0 + LBRACE]
+  i = 0
+  while i < len(stmts) {
+    lines = lines.push(codegen_stmt(stmts[i], depth))
+    i = i + 1
+  }
+  lines = lines.push(d0 + RBRACE)
+  return lines.join("\n")
+}
+
+// ── Expression codegen ────────────────────────────────────────────────────────
+
+function codegen_expr(node) {
+  tag = node.tag
+
+  if tag == "Num"  { return to_string(node.value) }
+  if tag == "Bool" {
+    if node.value { return "true" }
+    return "false"
+  }
+  if tag == "Null" { return "null" }
+
+  if tag == "Str" {
+    return codegen_str_lit(node.value)
+  }
+
+  if tag == "Interp" {
+    return codegen_interp(node)
+  }
+
+  if tag == "Ident" { return node.name }
+
+  if tag == "BinOp" {
+    lv = codegen_expr(node.left)
+    rv = codegen_expr(node.right)
+    op = node.op
+    if op == "and" { return "(" + lv + " && " + rv + ")" }
+    if op == "or"  { return "(" + lv + " || " + rv + ")" }
+    if op == "+"   { return "gx_add(" + lv + ", " + rv + ")" }
+    return "(" + lv + " " + op + " " + rv + ")"
+  }
+
+  if tag == "Unary" {
+    v = codegen_expr(node.expr)
+    if node.op == "not" { return "(!" + v + ")" }
+    if node.op == "-"   { return "(-" + v + ")" }
+  }
+
+  if tag == "NullCoal" {
+    lv = codegen_expr(node.left)
+    rv = codegen_expr(node.right)
+    return "(" + lv + " ?? " + rv + ")"
+  }
+
+  if tag == "Array" {
+    items = []
+    i = 0
+    while i < len(node.items) {
+      items = items.push(codegen_expr(node.items[i]))
+      i = i + 1
+    }
+    return "[" + items.join(", ") + "]"
+  }
+
+  if tag == "Object" {
+    pairs = []
+    i = 0
+    while i < len(node.pairs) {
+      pair = node.pairs[i]
+      pairs = pairs.push(codegen_str_lit(pair.key) + ": " + codegen_expr(pair.value))
+      i = i + 1
+    }
+    LBRACE = chr(123)
+    RBRACE = chr(125)
+    return LBRACE + pairs.join(", ") + RBRACE
+  }
+
+  if tag == "Field" {
+    obj = codegen_expr(node.obj)
+    return obj + "." + node.field
+  }
+
+  if tag == "Index" {
+    obj = codegen_expr(node.obj)
+    idx = codegen_expr(node.idx)
+    return obj + "[" + idx + "]"
+  }
+
+  if tag == "Call" {
+    return codegen_call(node)
+  }
+
+  if tag == "MethodCall" {
+    return codegen_method_call(node)
+  }
+
+  return "null /* unknown expr: " + tag + " */"
+}
+
+function codegen_lhs(target) {
+  if target.tag == "Ident" { return target.name }
+  if target.tag == "Field" {
+    return codegen_expr(target.obj) + "." + target.field
+  }
+  if target.tag == "Index" {
+    return codegen_expr(target.obj) + "[" + codegen_expr(target.idx) + "]"
+  }
+  return "/* unknown lhs */"
+}
+
+function codegen_call(node) {
+  fname = node.callee.name
+  args = []
+  i = 0
+  while i < len(node.args) {
+    args = args.push(codegen_expr(node.args[i]))
+    i = i + 1
+  }
+  a = args.join(", ")
+
+  // Map GX builtins to JS equivalents
+  if fname == "log" or fname == "print" or fname == "say" {
+    return "console.log(gx_str(" + a + "))"
+  }
+  if fname == "len"           { return "gx_len(" + a + ")" }
+  if fname == "to_string"     { return "gx_str(" + a + ")" }
+  if fname == "to_number"     { return "Number(" + a + ")" }
+  if fname == "range"         { return "gx_range(" + a + ")" }
+  if fname == "ord"           { return "(" + args[0] + ").charCodeAt(0)" }
+  if fname == "chr"           { return "String.fromCharCode(" + a + ")" }
+  if fname == "is_digit"      { return "gx_is_digit(" + a + ")" }
+  if fname == "is_alpha"      { return "gx_is_alpha(" + a + ")" }
+  if fname == "is_alnum"      { return "gx_is_alnum(" + a + ")" }
+  if fname == "is_whitespace" { return "gx_is_whitespace(" + a + ")" }
+  if fname == "floor"         { return "Math.floor(" + a + ")" }
+  if fname == "ceil"          { return "Math.ceil(" + a + ")" }
+  if fname == "abs"           { return "Math.abs(" + a + ")" }
+  if fname == "sqrt"          { return "Math.sqrt(" + a + ")" }
+  if fname == "get_timestamp" { return "Date.now()" }
+  if fname == "push"          { return "gx_push(" + a + ")" }
+  if fname == "json_parse"    { return "JSON.parse(" + a + ")" }
+  if fname == "json_stringify" { return "JSON.stringify(" + a + ")" }
+  if fname == "set_key"       { return "gx_set_key(" + a + ")" }
+  if fname == "type_of"       { return "typeof " + args[0] }
+  if fname == "assert" {
+    msg = "\"\""
+    if len(args) > 1 { msg = args[1] }
+    return "if (!(" + args[0] + ")) throw new Error(" + msg + ")"
+  }
+
+  return fname + "(" + a + ")"
+}
+
+function codegen_method_call(node) {
+  obj = codegen_expr(node.obj)
+  m = node.method
+  args = []
+  i = 0
+  while i < len(node.args) {
+    args = args.push(codegen_expr(node.args[i]))
+    i = i + 1
+  }
+  a = args.join(", ")
+
+  if m == "push"        { return "gx_push(" + obj + ", " + a + ")" }
+  if m == "pop"         { return "((..._a) => { const _t = [..._a[0]]; _t.pop(); return _t; })([" + obj + "])" }
+  if m == "join"        { return obj + ".join(" + a + ")" }
+  if m == "split"       { return obj + ".split(" + a + ")" }
+  if m == "trim"        { return obj + ".trim()" }
+  if m == "to_upper"    { return obj + ".toUpperCase()" }
+  if m == "to_lower"    { return obj + ".toLowerCase()" }
+  if m == "contains"    { return obj + ".includes(" + a + ")" }
+  if m == "starts_with" { return obj + ".startsWith(" + a + ")" }
+  if m == "ends_with"   { return obj + ".endsWith(" + a + ")" }
+  if m == "replace"     { return obj + ".replaceAll(" + a + ")" }
+  if m == "to_number" or m == "parse_number" { return "Number(" + obj + ")" }
+  if m == "has" or m == "has_key" { return "Object.hasOwn(" + obj + ", " + a + ")" }
+  if m == "keys"        { return "Object.keys(" + obj + ")" }
+  if m == "values"      { return "Object.values(" + obj + ")" }
+  if m == "len" or m == "length" { return "gx_len(" + obj + ")" }
+  if m == "slice" or m == "substring" { return obj + ".slice(" + a + ")" }
+  if m == "repeat"      { return obj + ".repeat(" + a + ")" }
+  if m == "index_of"    { return obj + ".indexOf(" + a + ")" }
+  if m == "reverse"     { return "[..." + obj + "].reverse()" }
+  if m == "first"       { return obj + "[0]" }
+  if m == "last"        { return obj + "[" + obj + ".length - 1]" }
+
+  return obj + "." + m + "(" + a + ")"
+}
+
+// ── String literal helpers ────────────────────────────────────────────────────
+
+function codegen_str_lit(s) {
+  // Escape backslashes and double quotes
+  result = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\t", "\\t")
+  return "\"" + result + "\""
+}
+
+function codegen_interp(node) {
+  // Template literal: `Hello ${name}!`
+  BACKTICK = chr(96)
+  parts = []
+  i = 0
+  while i < len(node.parts) {
+    p = node.parts[i]
+    if p.tag == "Lit" {
+      parts = parts.push(p.v)
+    } else {
+      parts = parts.push("${gx_str(" + codegen_expr(p.e) + ")}")
+    }
+    i = i + 1
+  }
+  return BACKTICK + parts.join("") + BACKTICK
+}
+
