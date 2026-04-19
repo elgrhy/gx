@@ -325,5 +325,168 @@
       "  Greet"
     ],
     "description": "Progressive syntax agent (no braces needed)"
+  },
+  "Opinionated Agent (v0.2.0)": {
+    "prefix": "agent-full",
+    "body": [
+      "agent \"${1:name}\" {",
+      "  goal: \"${2:What this agent does}\"",
+      "",
+      "  retry: ${3:2}",
+      "  on_error: ${4|escalate,continue|}",
+      "",
+      "  when started {",
+      "    observe {",
+      "      ${5:input}: ${6:memory.data}",
+      "    }",
+      "",
+      "    think {",
+      "      prompt: \"${7:Your prompt using {$5}}\",",
+      "      model: \"${8|openai,anthropic,ollama|}\",",
+      "      min_confidence: ${9:0.8}",
+      "    }",
+      "",
+      "    act {",
+      "      ${10:log(result.text)}",
+      "    }",
+      "",
+      "    remember {",
+      "      memory.last_run = get_timestamp()",
+      "    }",
+      "",
+      "    communicate {",
+      "      say \"Done: {result.text}\"",
+      "    }",
+      "  }",
+      "}"
+    ],
+    "description": "Full opinionated v0.2.0 agent with goal/think/act/observe"
+  },
+  "Think block": {
+    "prefix": "think",
+    "body": [
+      "think {",
+      "  prompt: \"${1:Your prompt here}\",",
+      "  model: \"${2|openai,anthropic,ollama|}\",",
+      "  min_confidence: ${3:0.8}",
+      "}"
+    ],
+    "description": "AI call with automatic confidence gate"
+  },
+  "Observe block": {
+    "prefix": "observe",
+    "body": [
+      "observe {",
+      "  ${1:input}: ${2:memory.data}",
+      "}"
+    ],
+    "description": "Declare agent inputs"
+  },
+  "Act block": {
+    "prefix": "act",
+    "body": [
+      "act {",
+      "  ${1:// your execution logic}",
+      "}"
+    ],
+    "description": "Labeled execution block"
+  },
+  "Loop until": {
+    "prefix": "loop",
+    "body": [
+      "loop until ${1:condition} {",
+      "  ${2:// body}",
+      "}"
+    ],
+    "description": "Loop until condition is true"
+  },
+  "Repeat N times": {
+    "prefix": "repeat",
+    "body": [
+      "repeat ${1:10} times as ${2:i} {",
+      "  ${3:log(i)}",
+      "}"
+    ],
+    "description": "Repeat a block N times"
+  },
+  "Parallel block": {
+    "prefix": "parallel",
+    "body": [
+      "parallel {",
+      "  ${1:step_a()}",
+      "  ${2:step_b()}",
+      "  ${3:step_c()}",
+      "}"
+    ],
+    "description": "Run multiple steps in parallel"
+  },
+  "Spawn agent": {
+    "prefix": "spawn",
+    "body": [
+      "${1:result} = spawn agent \"${2:agent_name}\" with { ${3:key}: ${4:value} }"
+    ],
+    "description": "Call another agent and get its result"
+  },
+  "Pipeline": {
+    "prefix": "pipeline",
+    "body": [
+      "${1:result} = { ${2:key}: ${3:value} } |> spawn agent \"${4:agent1}\" |> spawn agent \"${5:agent2}\""
+    ],
+    "description": "Multi-agent pipeline"
+  },
+  "When message": {
+    "prefix": "when message",
+    "body": [
+      "when message \"${1:event_name}\" {",
+      "  ${2:log(message.data)}",
+      "}"
+    ],
+    "description": "Handle incoming agent message"
+  },
+  "Send message": {
+    "prefix": "send",
+    "body": [
+      "spawn \"${1:event}\" to \"${2:agent_name}\" with { ${3:key}: ${4:value} }"
+    ],
+    "description": "Send a message to another agent"
+  },
+  "HTTP Request": {
+    "prefix": "http_request",
+    "body": [
+      "result = http_request({",
+      "  url: \"${1:https://api.example.com/endpoint}\",",
+      "  method: \"${2|GET,POST,PUT,DELETE|}\",",
+      "  body: ${3:null}",
+      "})"
+    ],
+    "description": "Unified HTTP request"
+  },
+  "Send email": {
+    "prefix": "send_email",
+    "body": [
+      "send_email({",
+      "  to: \"${1:recipient@example.com}\",",
+      "  subject: \"${2:Subject}\",",
+      "  body: \"${3:Message body}\"",
+      "})"
+    ],
+    "description": "Send an email via SMTP"
+  },
+  "Scrape": {
+    "prefix": "scrape",
+    "body": [
+      "${1:text} = scrape(\"${2:https://example.com}\")"
+    ],
+    "description": "Fetch a URL and return clean text"
+  },
+  "Notify": {
+    "prefix": "notify",
+    "body": [
+      "notify({",
+      "  channel: \"${1|slack,webhook|}\",",
+      "  message: \"${2:Notification message}\"",
+      "})"
+    ],
+    "description": "Send a webhook notification"
   }
 }

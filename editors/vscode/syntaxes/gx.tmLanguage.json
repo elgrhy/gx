@@ -41,7 +41,7 @@
     },
     "keyword": {
       "name": "keyword.control.gx",
-      "match": "\\b(agent|helper|brain|plan|execute|remember|communicate|receive|channel|when|started|changes|if|else|for|each|in|while|break|continue|assert|try|catch|return|re-run|escalate|to|human|wait|emit|broadcast|use|import|function|memory|serve|route|respond|port|on)\\b"
+      "match": "\\b(agent|helper|brain|plan|execute|remember|communicate|receive|channel|when|started|changes|if|else|for|each|in|while|break|continue|assert|try|catch|return|re-run|escalate|to|human|wait|emit|broadcast|use|import|function|memory|serve|route|respond|port|on|spawn|with|message|goal|think|act|observe|loop|until|repeat|times|parallel|retry|timeout|on_error)\\b"
     },
     "type-keyword": {
       "name": "keyword.declaration.gx",
@@ -53,7 +53,7 @@
     },
     "builtin-function": {
       "name": "support.function.builtin.gx",
-      "match": "\\b(log|say|print|output|get_timestamp|to_string|to_number|str|num|len|count|type_of|is_null|is_empty|is_array|is_object|is_bool|keys|values|entries|range|zip|flatten|push|pop|first|last|join|split|trim|trim_start|trim_end|replace|contains|starts_with|ends_with|upper|lower|to_upper|to_lower|has|set_key|delete_key|merge|floor|ceil|round|abs|sqrt|pow|max|min|clamp|random|pi|e|json_parse|json_stringify|http_get|http_post|http_put|http_delete|read_file|write_file|append_file|file_exists|list_dir|env|shell|exec|input|exit|base64_encode|base64_decode|html_escape|url_encode|get_timestamp|sleep|now)\\b"
+      "match": "\\b(log|say|print|output|get_timestamp|to_string|to_number|str|num|len|count|type_of|is_null|is_empty|is_array|is_object|is_bool|keys|values|entries|range|zip|flatten|push|pop|first|last|join|split|trim|trim_start|trim_end|replace|contains|starts_with|ends_with|upper|lower|to_upper|to_lower|has|set_key|delete_key|merge|floor|ceil|round|abs|sqrt|pow|max|min|clamp|random|pi|e|json_parse|json_stringify|http_get|http_post|http_put|http_delete|http_request|send_email|scrape|notify|read_file|write_file|append_file|read_file_lines|file_exists|list_dir|delete_file|env|shell|exec|input|exit|base64_encode|base64_decode|html_escape|url_encode|sleep|now|ord|chr|is_digit|is_alpha|is_alnum|is_whitespace|substr|substring)\\b"
     },
     "boolean-null": {
       "name": "constant.language.gx",

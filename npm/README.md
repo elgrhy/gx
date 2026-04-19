@@ -8,20 +8,20 @@
 
 Every AI assistant today is a black box. GX makes it a glass box — every decision explicit, every AI call logged, every agent fully auditable. Built in Rust. No cloud lock-in.
 
-## What's New in v0.1.2
+## What's New in v0.2.0
 
-- **`while` / `break` / `continue`** — full loop control
-- **`assert`** — built-in test assertions (`gx test` counts them)
-- **`??` null coalescing** — `value ?? default`
-- **`input(prompt)`** — read from stdin for interactive programs
-- **`shell(cmd)`** — run shell commands, get stdout/stderr/exit_code
-- **HTTP client** — `http_get`, `http_post`, `http_put`, `http_delete`
-- **File I/O** — `read_file`, `write_file`, `append_file`, `file_exists`, `list_dir`
-- **50+ new built-in functions** — `trim`, `replace`, `split`, `join`, `contains`, `starts_with`, `ends_with`, `push`, `pop`, `set_key`, `has`, `merge`, `json_parse`, `json_stringify`, `base64_encode`, and more
-- **OpenClaw example** — full personal AI assistant (`gx run docs/examples/openclaw.gx`)
-- **REPL** — `gx repl` for interactive exploration
-- **`gx fmt`** — correctly formats both brace and progressive syntax
-- **Import path fix** — `import` now resolves paths relative to the importing file
+- **Opinionated agent style** — `goal`, `think`, `act`, `observe` make every agent self-documenting
+- **`think { prompt, model, min_confidence }`** — AI call with automatic confidence gate and escalation
+- **`loop until condition`** / **`repeat N times`** — clean loop sugar
+- **`parallel { ... }`** — run multiple steps concurrently
+- **`retry: N`** / **`on_error: continue|escalate`** — declarative error handling on any agent
+- **`http_request { url, method, body, headers }`** — unified HTTP client
+- **`send_email { to, subject, body }`** — native SMTP (no library needed)
+- **`scrape "url"`** — fetch + strip HTML → clean plain text
+- **`notify { channel: "slack", message }`** — webhook notifications
+- **`ord(c)`** / **`chr(n)`** / **`is_digit`** / **`is_alpha`** / **`is_whitespace`** — character primitives
+- **Multi-agent orchestration** — `spawn agent`, `|>` pipelines, `when message`
+- **Production example** — full UAE Legal Assistant in `examples/legal_assistant/`
 
 ---
 
@@ -31,7 +31,7 @@ Every AI assistant today is a black box. GX makes it a glass box — every decis
 npm install -g gxlang
 ```
 
-That's it. The installer downloads the correct pre-built binary for your platform (macOS, Linux, or Windows).
+Downloads the correct pre-built binary for your platform (macOS arm64/x64, Linux x64/arm64, Windows x64).
 
 Verify:
 
@@ -41,81 +41,102 @@ gx version
 
 ---
 
-## Quick Start
+## The Official GX Style
 
-```bash
-gx init my-agent
-cd my-agent
-gx run main.gx
+GX is opinionated. Every agent follows a clear structure — **goal → observe → think → act → remember → communicate**. Anyone can read it without running it.
+
+```gx
+agent "lead_generator" {
+  goal: "Find and contact 10 qualified real-estate leads this week"
+
+  retry: 3
+  on_error: escalate
+
+  when started {
+    observe {
+      context: "Dubai Marina, 2BR, AED 120k budget"
+    }
+
+    think {
+      prompt: "Extract 10 qualified leads matching: {context}",
+      model: "openai",
+      min_confidence: 0.82
+    }
+
+    act {
+      for each lead in result.leads {
+        log("Lead: {lead.name} — {lead.email}")
+      }
+    }
+
+    remember {
+      memory.total_leads += 1
+      memory.last_run = get_timestamp()
+    }
+
+    communicate {
+      say "Processed leads for: {context}"
+    }
+  }
+}
 ```
 
 ---
 
-## The Language
+## Multi-Agent Orchestration
 
-GX has **three syntax levels** — all run on the same interpreter. Pick the level that fits what you're building.
-
-### Level 1 — Pure intent (3 lines, no ceremony)
+Agents can call each other, chain through pipelines, and exchange messages.
 
 ```gx
+// Call an agent and get its result
+category = spawn agent "classifier" with { question: input }
+
+// Pipeline: output of one agent becomes input of the next
+result = { question: input } |> spawn agent "classifier" |> spawn agent "researcher"
+
+// Send a message to another agent
+spawn "task" to "worker" with { payload: data }
+```
+
+---
+
+## Three Syntax Levels
+
+All three compile to the same runtime.
+
+### Level 1 — Pure intent
+```gx
 Agent greeter
-
 name = "World"
-
 "Hello {name}"
 ```
 
-Variables become memory automatically. Strings auto-print. GX infers everything else.
-
 ### Level 2 — Named behaviors
-
 ```gx
 Agent assistant
-
 user = "Ahmed"
 
 Greet:
   say "Hello {user}!"
 
-CheckIn:
-  result = ask openai { prompt: "What should {user} focus on today?" }
-  say result.text
-
 On start:
   Greet
-  CheckIn
 ```
-
-Behaviors are reusable labeled blocks. Memory is shared between all of them.
 
 ### Level 3 — Explicit brain cycle
-
 ```gx
 Agent analyzer
-
-input = "quarterly revenue data"
-
 Plan:
   action = "analyze"
-
 Execute:
-  If action == "analyze"
-    result = ask anthropic { prompt: "Analyze this: {input}" }
-
+  result = ask openai { prompt: "Analyze this: {input}" }
 Remember:
-  memory.last_result = result.text
-
+  memory.last = result.text
 Communicate:
-  If result.confidence > 0.8
-    say result.text
-  Else
-    escalate to human
+  say result.text
 ```
 
-Full control over Plan → Execute → Remember → Communicate.
-
-### Classic brace syntax (also supported)
-
+### Classic brace syntax
 ```gx
 agent "greeter" {
   remember { name = "World" }
@@ -127,97 +148,91 @@ agent "greeter" {
 
 ## AI Primitives
 
-AI is built into the language — not a library, not a wrapper. Every call is automatically logged.
-
 ```gx
-agent "assistant" {
-  when started {
-    result = ask openai {
-      prompt: "Summarize this in one sentence: {memory.text}",
-      max_tokens: 100
-    }
+// Ask any provider — every call auto-logged
+result = ask openai    { prompt: "Summarize: {text}", max_tokens: 100 }
+result = ask anthropic { prompt: "Translate to Arabic: {text}" }
+result = ask ollama    { prompt: "What is recursion?" }  // local, no API key
 
-    if result.confidence > 0.8 {
-      say result.text
-    } else {
-      say "Not confident enough — escalating"
-      escalate to human
-    }
-  }
+// result.text        — the response
+// result.confidence  — 0.0–1.0, auto-adjusted for hedging language
+// result.tokens_used — for cost tracking
+// result.ok          — false if request failed
+
+// Embed text
+vector = embed "semantic search query"
+
+// Classify
+label = infer classifier {
+  input: user_message,
+  classes: ["support", "billing", "sales", "spam"]
 }
 ```
 
-**Every `ask` returns:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `result.text` | String | The model's response |
-| `result.confidence` | Number | 0.0–1.0, adjusted for hedging language |
-| `result.tokens_used` | Number | Tokens consumed (for cost tracking) |
-| `result.model` | String | Model name used |
-| `result.provider` | String | `openai`, `anthropic`, or `ollama` |
-
-**Supported providers:**
-
-```gx
-result = ask openai    { prompt: "..." }   // GPT-4o-mini
-result = ask anthropic { prompt: "..." }   // Claude Haiku
-result = ask ollama    { prompt: "..." }   // Local Llama 3 (no API key)
-```
-
-**Set your API keys:**
-
+Set API keys:
 ```bash
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
-# For ollama: brew install ollama && ollama serve
+# ollama: brew install ollama && ollama serve
 ```
 
 ---
 
-## Use Any npm or Python Package
+## Native Tools
+
+All work out of the box — no npm install required.
+
+```gx
+// HTTP
+result  = http_get("https://api.example.com/data")
+result  = http_request({ url: "https://api.example.com", method: "POST", body: payload })
+
+// Files
+content = read_file("data.txt")
+write_file("output.txt", content)
+lines   = read_file_lines("log.txt")
+exists  = file_exists("config.json")
+entries = list_dir("./agents")
+
+// Email (uses SMTP_HOST, SMTP_USER, SMTP_PASS env vars)
+send_email({ to: "user@example.com", subject: "Alert", body: "Agent completed." })
+
+// Scrape
+text = scrape("https://example.com")
+
+// Notify (Slack/webhook)
+notify({ channel: "slack", message: "Agent done" })
+
+// JSON
+obj  = json_parse(read_file("data.json"))
+raw  = json_stringify(obj)
+
+// Character
+code = ord("A")    // 65
+ch   = chr(65)     // "A"
+is_digit("5")      // true
+```
+
+---
+
+## Package Interop
 
 ```gx
 use js.axios
-use js.path
 use py.pandas
-use py.os
 
-agent "fetcher" {
+agent "analyst" {
   when started {
-    data   = js.axios.get("https://api.example.com/data")
-    joined = js.path.join("/output", "results.json")
-    cwd    = py.os.getcwd()
-    say "Fetched data, saving to {joined} from {cwd}"
+    data = js.axios.get("https://api.example.com/data")
+    cwd  = py.os.getcwd()
   }
 }
 ```
 
-Install packages:
-
+Install:
 ```bash
-gx install js.axios       # runs: npm install axios
-gx install py.requests    # runs: pip install requests
-```
-
----
-
-## Functions and Imports
-
-```gx
-// math.gx
-function square(n) {
-  return n * n
-}
-
-// main.gx
-import "math.gx"
-
-agent "calc" {
-  when started {
-    say square(9)    // 81
-  }
-}
+gx install js.axios
+gx install py.requests
 ```
 
 ---
@@ -231,47 +246,34 @@ agent "calc" {
 | `gx check file.gx` | Syntax check without running |
 | `gx init my-project` | Scaffold a new project |
 | `gx build file.gx` | Build a standalone launcher |
-| `gx install js.axios` | Install an npm package for use in GX |
-| `gx install py.requests` | Install a Python package for use in GX |
+| `gx install js.axios` | Install npm package for GX |
+| `gx install py.requests` | Install Python package for GX |
 | `gx fmt file.gx` | Format GX source |
 | `gx test` | Run all files in `tests/` |
 | `gx make "a weather bot"` | AI-generate GX code |
-| `gx repl` | Interactive REPL |
 | `gx version` | Print version |
-| `gx help` | Print help |
 
 ---
 
-## Project Structure
+## Control Flow
 
-```
-my-agent/
-├── gx.json          # Project manifest
-├── main.gx          # Entry point
-├── agents/          # Additional agent files
-├── tests/           # Test files (run with gx test)
-└── .gitignore
-```
+```gx
+// Standard
+if x > 10 { log("big") } else { log("small") }
+for each item in list { log(item) }
+while running { check() }
+try { risky() } catch e { log(e) }
 
-`gx.json`:
-```json
-{
-  "name": "my-agent",
-  "version": "0.1.0",
-  "entry": "main.gx",
-  "dependencies": {
-    "js": [],
-    "py": [],
-    "gx": []
-  }
-}
+// v0.2.0 sugar
+loop until done { process() }
+repeat 5 times { tick() }
+repeat 10 times as i { log("step {i}") }
+parallel { step_a() step_b() step_c() }
 ```
 
 ---
 
-## Memory — Fully Auditable State
-
-Every agent has a flat `memory` scope. All AI calls are automatically appended to `memory.ai_trace`.
+## Memory
 
 ```gx
 agent "tracker" {
@@ -279,11 +281,10 @@ agent "tracker" {
     count = 0
     history = []
   }
-
   when started {
     memory.count += 1
-    memory.history = push(memory.history, "run " + memory.count)
-    log(memory.ai_trace)    // see every AI call ever made
+    memory.history = memory.history.push("run {memory.count}")
+    log(memory.ai_trace)   // every AI call ever made, auto-logged
   }
 }
 ```
@@ -293,27 +294,10 @@ agent "tracker" {
 ## When Blocks
 
 ```gx
-when started {
-  // runs once on startup
-}
-
-when memory.count > 10 {
-  // runs when condition is true after each brain cycle
-}
-
-when memory.status changes {
-  re-run    // restart the brain cycle
-}
-```
-
----
-
-## Escalation
-
-```gx
-if result.confidence < 0.6 {
-  escalate to human    // stops the agent, surfaces for human review
-}
+when started        { /* runs once on startup */ }
+when memory.x > 10  { /* runs when condition is true */ }
+when memory.status changes { re-run }
+when message "task" { log("received: {message.task}") }
 ```
 
 ---
@@ -322,11 +306,11 @@ if result.confidence < 0.6 {
 
 | Platform | Architecture | Status |
 |----------|-------------|--------|
-| macOS | arm64 (Apple Silicon) | Supported |
-| macOS | x86_64 (Intel) | Supported |
-| Linux | x86_64 | Supported |
-| Linux | arm64 | Supported |
-| Windows | x86_64 | Supported |
+| macOS | arm64 (Apple Silicon) | ✅ |
+| macOS | x86_64 (Intel) | ✅ |
+| Linux | x86_64 | ✅ |
+| Linux | arm64 | ✅ |
+| Windows | x86_64 | ✅ |
 
 ---
 
@@ -334,12 +318,12 @@ if result.confidence < 0.6 {
 
 - **GitHub:** https://github.com/elgrhy/gx
 - **Language Reference:** https://github.com/elgrhy/gx/blob/main/docs/language_reference.md
-- **Examples:** https://github.com/elgrhy/gx/tree/main/docs/examples
+- **Examples:** https://github.com/elgrhy/gx/tree/main/examples
 - **Getting Started:** https://github.com/elgrhy/gx/blob/main/docs/getting_started.md
-- **GX vs Python/JS/Rust:** https://github.com/elgrhy/gx/blob/main/docs/compare.md
+- **Playground:** https://elgrhy.github.io/gx/playground/
 
 ---
 
 ## License
 
-MIT — © 2025 [DEVJSX LIMITED](https://devjsx.com) · Ahmed Elgarhy
+MIT — © 2026 [DEVJSX LIMITED](https://devjsx.com) · Ahmed Elgarhy
