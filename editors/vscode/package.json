@@ -2,7 +2,7 @@
   "name": "gx-language",
   "displayName": "GX Language",
   "description": "Syntax highlighting, snippets, and code intelligence for the GX brain-first programming language",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "devjsx",
   "repository": {
     "type": "git",
