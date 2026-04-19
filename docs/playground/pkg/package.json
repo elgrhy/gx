@@ -1,0 +1,19 @@
+{
+  "name": "gx",
+  "type": "module",
+  "collaborators": [
+    "Ahmed Elgarhy <ahmed@devjsx.com>"
+  ],
+  "description": "GX — brain-first programming language for building transparent AI assistants",
+  "version": "0.1.4",
+  "files": [
+    "gx_runtime_bg.wasm",
+    "gx_runtime.js",
+    "gx_runtime.d.ts"
+  ],
+  "main": "gx_runtime.js",
+  "types": "gx_runtime.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

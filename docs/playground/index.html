@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GX Playground — brain-first AI language</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 20px;
+      background: #1a1d27;
+      border-bottom: 1px solid #2d3148;
+      flex-shrink: 0;
+    }
+
+    .logo {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #7c6ef9;
+      letter-spacing: -0.5px;
+    }
+
+    .logo span { color: #e2e8f0; }
+
+    .tagline {
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+
+    .header-right {
+      margin-left: auto;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    a.link {
+      color: #7c6ef9;
+      text-decoration: none;
+      font-size: 0.85rem;
+    }
+    a.link:hover { text-decoration: underline; }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 20px;
+      background: #15182b;
+      border-bottom: 1px solid #2d3148;
+      flex-shrink: 0;
+    }
+
+    select {
+      background: #1e2235;
+      color: #e2e8f0;
+      border: 1px solid #3d4266;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    button#run-btn {
+      background: #7c6ef9;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 20px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button#run-btn:hover { background: #6a5de8; }
+    button#run-btn:active { background: #5a4dd8; }
+    button#run-btn:disabled { background: #4a4a6a; cursor: not-allowed; }
+
+    button#clear-btn {
+      background: transparent;
+      color: #94a3b8;
+      border: 1px solid #3d4266;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    button#clear-btn:hover { background: #1e2235; }
+
+    .status {
+      margin-left: auto;
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+
+    .editor-area {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .pane {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .pane-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #64748b;
+      padding: 6px 16px;
+      background: #13162a;
+      border-bottom: 1px solid #2d3148;
+      flex-shrink: 0;
+    }
+
+    textarea#editor {
+      flex: 1;
+      background: #0d1021;
+      color: #e2e8f0;
+      border: none;
+      border-right: 1px solid #2d3148;
+      padding: 16px;
+      font-family: "Fira Code", "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.9rem;
+      line-height: 1.6;
+      resize: none;
+      outline: none;
+      tab-size: 2;
+    }
+
+    textarea#editor::selection { background: #3d3d6e; }
+
+    #output {
+      flex: 1;
+      background: #0a0c1a;
+      color: #a8f0c6;
+      font-family: "Fira Code", "Cascadia Code", ui-monospace, monospace;
+      font-size: 0.88rem;
+      line-height: 1.6;
+      padding: 16px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    #output.has-error { color: #f87171; }
+    #output.empty { color: #4a5568; font-style: italic; }
+
+    .divider {
+      width: 4px;
+      background: #2d3148;
+      cursor: col-resize;
+      flex-shrink: 0;
+      transition: background 0.1s;
+    }
+    .divider:hover { background: #7c6ef9; }
+
+    footer {
+      padding: 6px 20px;
+      background: #1a1d27;
+      border-top: 1px solid #2d3148;
+      font-size: 0.75rem;
+      color: #4a5568;
+      flex-shrink: 0;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+
+    footer a { color: #7c6ef9; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    .kbd {
+      background: #1e2235;
+      border: 1px solid #3d4266;
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 0.75rem;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">GX<span> Playground</span></div>
+  <div class="tagline">brain-first AI programming language</div>
+  <div class="header-right">
+    <a class="link" href="https://github.com/devjsx/gx" target="_blank">GitHub</a>
+    <a class="link" href="../" target="_blank">Docs</a>
+    <a class="link" href="https://www.npmjs.com/package/@devjsx/gx" target="_blank">npm</a>
+  </div>
+</header>
+
+<div class="toolbar">
+  <select id="examples">
+    <option value="">— Load Example —</option>
+    <option value="hello">Hello World</option>
+    <option value="counter">Counter Agent</option>
+    <option value="chat">Chat Assistant</option>
+    <option value="calculator">Calculator</option>
+    <option value="classifier">AI Classifier (needs API key)</option>
+  </select>
+  <button id="run-btn">▶ Run</button>
+  <button id="clear-btn">Clear Output</button>
+  <span class="status" id="status">Ready — running GX v0.1.4 in WASM</span>
+</div>
+
+<div class="editor-area">
+  <div class="pane">
+    <div class="pane-label">Editor — GX</div>
+    <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">Agent greeter
+  name = "World"
+  "Hello, {name}!"
+  "GX is running in your browser via WebAssembly."
+</textarea>
+  </div>
+  <div class="divider" id="divider"></div>
+  <div class="pane">
+    <div class="pane-label">Output</div>
+    <div id="output" class="empty">Press ▶ Run or Ctrl+Enter to execute...</div>
+  </div>
+</div>
+
+<footer>
+  <span>GX v0.1.4</span>
+  <span><span class="kbd">Ctrl+Enter</span> to run</span>
+  <span>AI calls (ask openai/anthropic) need local API keys — not available in playground</span>
+  <span style="margin-left:auto"><a href="https://github.com/devjsx/gx/issues" target="_blank">Report a bug</a></span>
+</footer>
+
+<script type="module">
+import init, { gx_run, gx_check } from './pkg/gx_runtime.js';
+
+const EXAMPLES = {
+  hello: `Agent greeter
+  name = "World"
+  "Hello, {name}!"
+  "GX is running in your browser via WebAssembly."
+`,
+  counter: `Agent counter
+  count = 0
+
+  Plan:
+    action = "increment"
+
+  Execute:
+    If action == "increment"
+      count = count + 1
+    "Count is now: {count}"
+
+  Remember:
+    count = count
+`,
+  chat: `helper "chat_bot" {
+  brain {
+    plan {
+      topic = "AI programming"
+    }
+    execute {
+      log "Welcome to the GX chat demo!"
+      log "Topic: {topic}"
+      log "GX makes AI logic explicit, auditable, and debuggable."
+      log "Every AI decision is traceable — no hidden magic."
+    }
+    remember { }
+    communicate {
+      "Chat bot ready. Run locally with an API key to use real AI."
+    }
+  }
+}
+`,
+  calculator: `helper "calc" {
+  brain {
+    plan {
+      a = 42
+      b = 7
+    }
+    execute {
+      sum = a + b
+      diff = a - b
+      prod = a * b
+      div = a / b
+      log "a = {a}, b = {b}"
+      log "sum     = {sum}"
+      log "diff    = {diff}"
+      log "product = {prod}"
+      log "quotient = {div}"
+      log "sqrt(a) = {sqrt(a)}"
+      log "pow(b, 3) = {pow(b, 3)}"
+    }
+    remember { }
+    communicate { }
+  }
+}
+`,
+  classifier: `helper "classifier_demo" {
+  brain {
+    plan {
+      text = "I love this product, it's amazing!"
+      classes = ["positive", "negative", "neutral"]
+    }
+    execute {
+      log "Text: {text}"
+      log "Classes: {classes}"
+      log ""
+      log "Note: infer classifier requires ANTHROPIC_API_KEY or OPENAI_API_KEY."
+      log "In the playground, AI calls return a placeholder response."
+      result = infer classifier text into classes using "anthropic"
+      log "Result: {result}"
+    }
+    remember { }
+    communicate { result }
+  }
+}
+`,
+};
+
+let wasmReady = false;
+
+async function loadWasm() {
+  try {
+    await init();
+    wasmReady = true;
+    document.getElementById('status').textContent = 'Ready — GX v0.1.4 running in WASM';
+  } catch (e) {
+    document.getElementById('status').textContent = 'WASM load failed: ' + e;
+  }
+}
+
+function setOutput(text, isError) {
+  const el = document.getElementById('output');
+  el.textContent = text;
+  el.className = text === '' ? 'empty' : (isError ? 'has-error' : '');
+  if (text === '') el.textContent = 'Press ▶ Run or Ctrl+Enter to execute...';
+}
+
+function runCode() {
+  if (!wasmReady) { setOutput('WASM not ready yet — please wait...', true); return; }
+  const code = document.getElementById('editor').value;
+  if (!code.trim()) { setOutput('', false); return; }
+
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  document.getElementById('status').textContent = 'Running...';
+
+  try {
+    const result = gx_run(code);
+    const isErr = result.startsWith('Error:') || result.startsWith('Parse error:');
+    setOutput(result || '(no output)', isErr);
+    document.getElementById('status').textContent = isErr ? 'Error' : 'Done';
+  } catch (e) {
+    setOutput('Runtime exception: ' + e, true);
+    document.getElementById('status').textContent = 'Error';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('run-btn').addEventListener('click', runCode);
+
+document.getElementById('clear-btn').addEventListener('click', () => {
+  setOutput('', false);
+});
+
+document.getElementById('editor').addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    runCode();
+  }
+  // Tab inserts 2 spaces
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const ta = e.target;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    ta.value = ta.value.substring(0, start) + '  ' + ta.value.substring(end);
+    ta.selectionStart = ta.selectionEnd = start + 2;
+  }
+});
+
+document.getElementById('examples').addEventListener('change', (e) => {
+  const key = e.target.value;
+  if (key && EXAMPLES[key]) {
+    document.getElementById('editor').value = EXAMPLES[key];
+    setOutput('', false);
+    e.target.value = '';
+  }
+});
+
+// Draggable divider
+const divider = document.getElementById('divider');
+let dragging = false;
+divider.addEventListener('mousedown', () => { dragging = true; });
+document.addEventListener('mouseup', () => { dragging = false; });
+document.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const area = document.querySelector('.editor-area');
+  const rect = area.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const pct = Math.max(20, Math.min(80, (x / rect.width) * 100));
+  const [left, right] = area.querySelectorAll('.pane');
+  left.style.flex = 'none';
+  left.style.width = pct + '%';
+  right.style.flex = '1';
+});
+
+loadWasm();
+</script>
+</body>
+</html>

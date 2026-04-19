@@ -2,11 +2,57 @@
 //! JS (Node.js) and Python bridges via subprocess JSON IPC.
 
 use crate::value::Value;
+
+// ── WASM stub — no subprocess support in browser ──────────────────────────────
+
+#[cfg(target_arch = "wasm32")]
+pub struct Bridge;
+
+#[cfg(target_arch = "wasm32")]
+impl Bridge {
+    pub fn new_js() -> Result<Self, String> {
+        Err("JS bridge not available in playground".into())
+    }
+    pub fn new_python() -> Result<Self, String> {
+        Err("Python bridge not available in playground".into())
+    }
+    pub fn call(&mut self, _module: &str, _method: &str, _args: &[Value]) -> Result<Value, String> {
+        Err("Bridge not available in playground".into())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn value_to_json(v: &Value) -> serde_json::Value {
+    match v {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Number(n) => serde_json::json!(n),
+        Value::Str(s) => serde_json::Value::String(s.clone()),
+        _ => serde_json::Value::Null,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn json_to_value(v: &serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => Value::Number(n.as_f64().unwrap_or(0.0)),
+        serde_json::Value::String(s) => Value::Str(s.clone()),
+        _ => Value::Null,
+    }
+}
+
+// ── Native implementation ─────────────────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-// ── JS Shim (embedded) ────────────────────────────────────────────────────────
+// ── Native JS/Python bridge implementation ────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 const JS_SHIM: &str = r#"
 const readline = require('readline');
 const rl = readline.createInterface({ input: process.stdin, terminal: false });
@@ -62,6 +108,7 @@ function respond(obj) {
 
 // ── Python Shim (embedded) ────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 const PY_SHIM: &str = r#"
 import sys
 import json
@@ -120,6 +167,7 @@ for line in sys.stdin:
 
 // ── Bridge ────────────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Bridge {
     pub kind: BridgeKind,
     _child: Child,
@@ -127,12 +175,14 @@ pub struct Bridge {
     stdout: BufReader<ChildStdout>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeKind {
     Js,
     Python,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Bridge {
     pub fn new_js() -> Result<Self, String> {
         // Check node is available
@@ -224,6 +274,7 @@ impl Bridge {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Bridge {
     fn drop(&mut self) {
         let _ = writeln!(self.stdin, r#"{{"type":"exit"}}"#);
@@ -232,6 +283,7 @@ impl Drop for Bridge {
 
 // ── Conversion: Value ↔ JSON ──────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn value_to_json(v: &Value) -> serde_json::Value {
     match v {
         Value::Null => serde_json::Value::Null,
@@ -249,6 +301,7 @@ pub fn value_to_json(v: &Value) -> serde_json::Value {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn json_to_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
@@ -268,6 +321,7 @@ pub fn json_to_value(v: &serde_json::Value) -> Value {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 fn command_exists(cmd: &str) -> bool {
     Command::new(if cfg!(windows) { "where" } else { "which" })
         .arg(cmd)
@@ -276,6 +330,7 @@ fn command_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn find_python() -> Option<String> {
     for candidate in &["python3", "python"] {
         if command_exists(candidate) {

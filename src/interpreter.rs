@@ -61,16 +61,15 @@ pub struct Interpreter {
     functions: HashMap<String, FunctionDef>,
     imports: Vec<ImportDecl>,
     pub events: Vec<(String, Vec<(String, Value)>)>,
-    // Shared event bus for inter-agent communication
     event_bus: HashMap<String, Vec<Value>>,
     #[allow(dead_code)]
     js_bridge: Option<Bridge>,
     py_bridge: Option<Bridge>,
-    // Track import base path for relative imports
     pub base_path: Option<String>,
-    // Assertion tracking for gx test
     pub assert_count: usize,
     pub assert_failures: Vec<String>,
+    /// When set, output goes here instead of stdout (used by WASM playground)
+    pub output_capture: Option<Vec<String>>,
 }
 
 impl Default for Interpreter {
@@ -92,6 +91,28 @@ impl Interpreter {
             base_path: None,
             assert_count: 0,
             assert_failures: Vec::new(),
+            output_capture: None,
+        }
+    }
+
+    /// Route output to a capture buffer instead of stdout.
+    pub fn enable_capture(&mut self) {
+        self.output_capture = Some(Vec::new());
+    }
+
+    /// Flush captured output as a single string.
+    pub fn captured_output(&self) -> String {
+        self.output_capture
+            .as_ref()
+            .map(|v| v.join("\n"))
+            .unwrap_or_default()
+    }
+
+    fn emit_output(&mut self, line: &str) {
+        if let Some(buf) = &mut self.output_capture {
+            buf.push(line.to_string());
+        } else {
+            println!("{}", line);
         }
     }
 
@@ -489,7 +510,7 @@ impl Interpreter {
 
             Stmt::Log { value, .. } | Stmt::Output { value, .. } | Stmt::Say { value, .. } => {
                 let v = self.eval_expr(value, env)?;
-                println!("{}", v);
+                self.emit_output(&v.to_string());
                 Ok(Value::Null)
             }
 
@@ -535,7 +556,17 @@ impl Interpreter {
                 Err(Signal::Respond(content_type, body, *status))
             }
 
-            Stmt::Serve { port, routes, .. } => self.run_serve(port, routes, env),
+            Stmt::Serve { port, routes, .. } => {
+                #[cfg(not(target_arch = "wasm32"))]
+                return self.run_serve(port, routes, env);
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = (port, routes);
+                    return Err(Signal::Error(
+                        "HTTP server not available in playground".into(),
+                    ));
+                }
+            }
 
             Stmt::Expr { expr, .. } => {
                 // Auto-mutate: arr.push(x), arr.pop(), arr.sort(), arr.reverse() as statements
@@ -842,8 +873,18 @@ impl Interpreter {
                     .iter()
                     .map(|a| self.eval_expr(a, env))
                     .collect::<Result<Vec<_>, _>>()?;
-                let (ns, mo, me) = (namespace.clone(), module.clone(), method.clone());
-                self.bridge_call(&ns, &mo, &me, &resolved)
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let (ns, mo, me) = (namespace.clone(), module.clone(), method.clone());
+                    self.bridge_call(&ns, &mo, &me, &resolved)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = (namespace, module, method, resolved);
+                    Err(Signal::Error(
+                        "JS/Python bridge not available in playground".into(),
+                    ))
+                }
             }
         }
     }
@@ -1025,7 +1066,7 @@ impl Interpreter {
             // ── Output ────────────────────────────────────────────────────────
             "log" | "output" | "print" | "say" => {
                 let parts: Vec<String> = args.iter().map(|v| v.to_string()).collect();
-                println!("{}", parts.join(" "));
+                self.emit_output(&parts.join(" "));
                 Ok(Value::Null)
             }
             "eprint" | "elog" => {
@@ -1597,142 +1638,8 @@ impl Interpreter {
             }
 
             // ── HTTP client ───────────────────────────────────────────────────
-            "http_get" | "fetch" => {
-                let url = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("http_get requires a URL string".into()))?;
-                let headers_val = args.get(1).cloned().unwrap_or(Value::Null);
-                let mut req = ureq::get(&url);
-                if let Value::Object(headers) = headers_val {
-                    for (k, v) in &headers {
-                        req = req.set(k, &v.to_string());
-                    }
-                }
-                match req.call() {
-                    Ok(resp) => {
-                        let status = resp.status() as f64;
-                        let body = resp.into_string().unwrap_or_default();
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(status < 400.0));
-                        map.insert("status".into(), Value::Number(status));
-                        map.insert("body".into(), Value::Str(body.clone()));
-                        // Auto-parse JSON if content is JSON
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                            map.insert("data".into(), json_to_gx_value(&json));
-                        }
-                        Ok(Value::Object(map))
-                    }
-                    Err(ureq::Error::Status(code, resp)) => {
-                        let body = resp.into_string().unwrap_or_default();
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(false));
-                        map.insert("status".into(), Value::Number(code as f64));
-                        map.insert("body".into(), Value::Str(body));
-                        map.insert("error".into(), Value::Str(format!("HTTP {}", code)));
-                        Ok(Value::Object(map))
-                    }
-                    Err(e) => {
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(false));
-                        map.insert("status".into(), Value::Number(0.0));
-                        map.insert("error".into(), Value::Str(e.to_string()));
-                        Ok(Value::Object(map))
-                    }
-                }
-            }
-            "http_post" => {
-                let url = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("http_post requires a URL string".into()))?;
-                let body_val = args.get(1).cloned().unwrap_or(Value::Null);
-                let headers_val = args.get(2).cloned().unwrap_or(Value::Null);
-                let mut req = ureq::post(&url).set("Content-Type", "application/json");
-                if let Value::Object(headers) = headers_val {
-                    for (k, v) in &headers {
-                        req = req.set(k, &v.to_string());
-                    }
-                }
-                let json_body = gx_value_to_json(&body_val);
-                match req.send_json(&json_body) {
-                    Ok(resp) => {
-                        let status = resp.status() as f64;
-                        let body = resp.into_string().unwrap_or_default();
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(status < 400.0));
-                        map.insert("status".into(), Value::Number(status));
-                        map.insert("body".into(), Value::Str(body.clone()));
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                            map.insert("data".into(), json_to_gx_value(&json));
-                        }
-                        Ok(Value::Object(map))
-                    }
-                    Err(ureq::Error::Status(code, resp)) => {
-                        let body = resp.into_string().unwrap_or_default();
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(false));
-                        map.insert("status".into(), Value::Number(code as f64));
-                        map.insert("body".into(), Value::Str(body));
-                        map.insert("error".into(), Value::Str(format!("HTTP {}", code)));
-                        Ok(Value::Object(map))
-                    }
-                    Err(e) => {
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(false));
-                        map.insert("error".into(), Value::Str(e.to_string()));
-                        Ok(Value::Object(map))
-                    }
-                }
-            }
-            "http_put" => {
-                let url = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("http_put requires a URL string".into()))?;
-                let body_val = args.get(1).cloned().unwrap_or(Value::Null);
-                let json_body = gx_value_to_json(&body_val);
-                match ureq::put(&url)
-                    .set("Content-Type", "application/json")
-                    .send_json(&json_body)
-                {
-                    Ok(resp) => {
-                        let status = resp.status() as f64;
-                        let body = resp.into_string().unwrap_or_default();
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(status < 400.0));
-                        map.insert("status".into(), Value::Number(status));
-                        map.insert("body".into(), Value::Str(body));
-                        Ok(Value::Object(map))
-                    }
-                    Err(e) => {
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(false));
-                        map.insert("error".into(), Value::Str(e.to_string()));
-                        Ok(Value::Object(map))
-                    }
-                }
-            }
-            "http_delete" => {
-                let url = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("http_delete requires a URL string".into()))?;
-                match ureq::delete(&url).call() {
-                    Ok(resp) => {
-                        let status = resp.status() as f64;
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(status < 400.0));
-                        map.insert("status".into(), Value::Number(status));
-                        Ok(Value::Object(map))
-                    }
-                    Err(e) => {
-                        let mut map = HashMap::new();
-                        map.insert("ok".into(), Value::Bool(false));
-                        map.insert("error".into(), Value::Str(e.to_string()));
-                        Ok(Value::Object(map))
-                    }
-                }
+            "http_get" | "fetch" | "http_post" | "http_put" | "http_delete" => {
+                http_builtin(name, &args)
             }
 
             // ── File I/O ──────────────────────────────────────────────────────
@@ -2504,6 +2411,7 @@ impl Interpreter {
 
 // ── Bridge calls ──────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Interpreter {
     pub fn call_js(&mut self, module: &str, method: &str, args: &[Value]) -> Result<Value, Signal> {
         use crate::bridge::{json_to_value, value_to_json};
@@ -2592,6 +2500,7 @@ impl Interpreter {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn run_serve(&mut self, port_expr: &Expr, routes: &[RouteDecl], env: &mut Env) -> IResult {
         let port = self
             .eval_expr(port_expr, env)?
@@ -2659,6 +2568,159 @@ impl Interpreter {
 
 fn value_to_json(v: &Value) -> String {
     serde_json::to_string(&gx_value_to_json(v)).unwrap_or_else(|_| "null".into())
+}
+
+// ── HTTP builtins (native only) ───────────────────────────────────────────────
+
+#[cfg(target_arch = "wasm32")]
+fn http_builtin(name: &str, _args: &[Value]) -> Result<Value, Signal> {
+    let mut map = HashMap::new();
+    map.insert("ok".into(), Value::Bool(false));
+    map.insert("error".into(), Value::Str(format!("{} not available in playground", name)));
+    Ok(Value::Object(map))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_builtin(name: &str, args: &[Value]) -> Result<Value, Signal> {
+    match name {
+        "http_get" | "fetch" => {
+            let url = args
+                .first()
+                .and_then(|v| v.as_str().map(String::from))
+                .ok_or_else(|| Signal::Error("http_get requires a URL string".into()))?;
+            let headers_val = args.get(1).cloned().unwrap_or(Value::Null);
+            let mut req = ureq::get(&url);
+            if let Value::Object(headers) = headers_val {
+                for (k, v) in &headers {
+                    req = req.set(k, &v.to_string());
+                }
+            }
+            match req.call() {
+                Ok(resp) => {
+                    let status = resp.status() as f64;
+                    let body = resp.into_string().unwrap_or_default();
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(status < 400.0));
+                    map.insert("status".into(), Value::Number(status));
+                    map.insert("body".into(), Value::Str(body.clone()));
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                        map.insert("data".into(), json_to_gx_value(&json));
+                    }
+                    Ok(Value::Object(map))
+                }
+                Err(ureq::Error::Status(code, resp)) => {
+                    let body = resp.into_string().unwrap_or_default();
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(false));
+                    map.insert("status".into(), Value::Number(code as f64));
+                    map.insert("body".into(), Value::Str(body));
+                    map.insert("error".into(), Value::Str(format!("HTTP {}", code)));
+                    Ok(Value::Object(map))
+                }
+                Err(e) => {
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(false));
+                    map.insert("status".into(), Value::Number(0.0));
+                    map.insert("error".into(), Value::Str(e.to_string()));
+                    Ok(Value::Object(map))
+                }
+            }
+        }
+        "http_post" => {
+            let url = args
+                .first()
+                .and_then(|v| v.as_str().map(String::from))
+                .ok_or_else(|| Signal::Error("http_post requires a URL string".into()))?;
+            let body_val = args.get(1).cloned().unwrap_or(Value::Null);
+            let headers_val = args.get(2).cloned().unwrap_or(Value::Null);
+            let mut req = ureq::post(&url).set("Content-Type", "application/json");
+            if let Value::Object(headers) = headers_val {
+                for (k, v) in &headers {
+                    req = req.set(k, &v.to_string());
+                }
+            }
+            let json_body = gx_value_to_json(&body_val);
+            match req.send_json(&json_body) {
+                Ok(resp) => {
+                    let status = resp.status() as f64;
+                    let body = resp.into_string().unwrap_or_default();
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(status < 400.0));
+                    map.insert("status".into(), Value::Number(status));
+                    map.insert("body".into(), Value::Str(body.clone()));
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                        map.insert("data".into(), json_to_gx_value(&json));
+                    }
+                    Ok(Value::Object(map))
+                }
+                Err(ureq::Error::Status(code, resp)) => {
+                    let body = resp.into_string().unwrap_or_default();
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(false));
+                    map.insert("status".into(), Value::Number(code as f64));
+                    map.insert("body".into(), Value::Str(body));
+                    map.insert("error".into(), Value::Str(format!("HTTP {}", code)));
+                    Ok(Value::Object(map))
+                }
+                Err(e) => {
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(false));
+                    map.insert("error".into(), Value::Str(e.to_string()));
+                    Ok(Value::Object(map))
+                }
+            }
+        }
+        "http_put" => {
+            let url = args
+                .first()
+                .and_then(|v| v.as_str().map(String::from))
+                .ok_or_else(|| Signal::Error("http_put requires a URL string".into()))?;
+            let body_val = args.get(1).cloned().unwrap_or(Value::Null);
+            let json_body = gx_value_to_json(&body_val);
+            match ureq::put(&url)
+                .set("Content-Type", "application/json")
+                .send_json(&json_body)
+            {
+                Ok(resp) => {
+                    let status = resp.status() as f64;
+                    let body = resp.into_string().unwrap_or_default();
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(status < 400.0));
+                    map.insert("status".into(), Value::Number(status));
+                    map.insert("body".into(), Value::Str(body));
+                    Ok(Value::Object(map))
+                }
+                Err(e) => {
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(false));
+                    map.insert("error".into(), Value::Str(e.to_string()));
+                    Ok(Value::Object(map))
+                }
+            }
+        }
+        "http_delete" => {
+            let url = args
+                .first()
+                .and_then(|v| v.as_str().map(String::from))
+                .ok_or_else(|| Signal::Error("http_delete requires a URL string".into()))?;
+            match ureq::delete(&url).call() {
+                Ok(resp) => {
+                    let status = resp.status() as f64;
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(status < 400.0));
+                    map.insert("status".into(), Value::Number(status));
+                    Ok(Value::Object(map))
+                }
+                Err(e) => {
+                    let mut map = HashMap::new();
+                    map.insert("ok".into(), Value::Bool(false));
+                    map.insert("error".into(), Value::Str(e.to_string()));
+                    Ok(Value::Object(map))
+                }
+            }
+        }
+        _ => Err(Signal::Error(format!("Unknown HTTP builtin: {}", name))),
+    }
 }
 
 // ── Internal parse helper ─────────────────────────────────────────────────────

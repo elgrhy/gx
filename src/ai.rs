@@ -4,8 +4,57 @@
 use crate::value::Value;
 use std::collections::HashMap;
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── WASM stubs (no HTTP in browser) ──────────────────────────────────────────
 
+#[cfg(target_arch = "wasm32")]
+pub fn ask_ai(provider: &str, _model: Option<&str>, params: &HashMap<String, Value>) -> Value {
+    let prompt = params
+        .get("prompt")
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+    let mut map = HashMap::new();
+    map.insert("ok".into(), Value::Bool(true));
+    map.insert(
+        "text".into(),
+        Value::Str(format!(
+            "[Playground] AI call to {} received prompt: \"{}\"\nTo use real AI, run GX locally with your API key.",
+            provider,
+            &prompt[..prompt.len().min(80)]
+        )),
+    );
+    map.insert("confidence".into(), Value::Number(1.0));
+    map.insert("tokens_used".into(), Value::Number(0.0));
+    map.insert("provider".into(), Value::Str(provider.to_string()));
+    Value::Object(map)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn embed_text(_text: &str) -> Value {
+    let mut map = HashMap::new();
+    map.insert("text".into(), Value::Str(String::new()));
+    map.insert("error".into(), Value::Str("embed not available in playground".into()));
+    map.insert("confidence".into(), Value::Number(0.0));
+    map.insert("tokens_used".into(), Value::Number(0.0));
+    map.insert("provider".into(), Value::Str("openai".into()));
+    map.insert("ok".into(), Value::Bool(false));
+    Value::Object(map)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn infer_classifier(_input: &str, _classes: &[String], _provider: &str) -> Value {
+    let mut map = HashMap::new();
+    map.insert("text".into(), Value::Str(String::new()));
+    map.insert("error".into(), Value::Str("infer not available in playground".into()));
+    map.insert("confidence".into(), Value::Number(0.0));
+    map.insert("tokens_used".into(), Value::Number(0.0));
+    map.insert("provider".into(), Value::Str("openai".into()));
+    map.insert("ok".into(), Value::Bool(false));
+    Value::Object(map)
+}
+
+// ── Native implementation ─────────────────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
 pub struct AiResponse {
     pub text: String,
     pub confidence: f64,
@@ -14,6 +63,7 @@ pub struct AiResponse {
     pub provider: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl AiResponse {
     pub fn into_value(self) -> Value {
         let mut map = HashMap::new();
@@ -39,6 +89,7 @@ impl AiResponse {
 }
 
 /// Call an AI model. Returns a Value::Object with text, confidence, tokens_used, model, provider, ok.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn ask_ai(provider: &str, model: Option<&str>, params: &HashMap<String, Value>) -> Value {
     let prompt = params
         .get("prompt")
@@ -86,6 +137,7 @@ pub fn ask_ai(provider: &str, model: Option<&str>, params: &HashMap<String, Valu
 }
 
 /// Embed text — returns an array of floats (vector embedding).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn embed_text(text: &str) -> Value {
     let api_key = match std::env::var("OPENAI_API_KEY") {
         Ok(k) => k,
@@ -121,6 +173,7 @@ pub fn embed_text(text: &str) -> Value {
 }
 
 /// Classify input into one of the provided classes.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn infer_classifier(input: &str, classes: &[String], provider: &str) -> Value {
     let classes_str = classes.join(", ");
     let prompt = format!(
@@ -140,7 +193,6 @@ pub fn infer_classifier(input: &str, classes: &[String], provider: &str) -> Valu
 
     if let Value::Object(ref map) = response {
         if let Some(Value::Str(text)) = map.get("text") {
-            // Try to parse JSON from response
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.trim()) {
                 let label = json["label"].as_str().unwrap_or("unknown").to_string();
                 let confidence = json["confidence"].as_f64().unwrap_or(0.5);
@@ -153,12 +205,12 @@ pub fn infer_classifier(input: &str, classes: &[String], provider: &str) -> Valu
         }
     }
 
-    // Fallback: return the raw response
     response
 }
 
 // ── OpenAI ────────────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 fn ask_openai(
     model: &str,
     prompt: &str,
@@ -198,6 +250,7 @@ fn ask_openai(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_openai_response(resp: ureq::Response, model: &str) -> Value {
     match resp.into_json::<serde_json::Value>() {
         Ok(json) => {
@@ -206,13 +259,11 @@ fn parse_openai_response(resp: ureq::Response, model: &str) -> Value {
                 .unwrap_or("")
                 .to_string();
             let tokens = json["usage"]["total_tokens"].as_u64().unwrap_or(0);
-            // Estimate confidence from finish_reason
             let confidence = match json["choices"][0]["finish_reason"].as_str() {
                 Some("stop") => 0.9,
-                Some("length") => 0.7, // truncated — less confident
+                Some("length") => 0.7,
                 _ => 0.8,
             };
-            // Reduce confidence if response contains hedging language
             let confidence = adjust_confidence_for_hedging(confidence, &text);
             AiResponse {
                 text,
@@ -229,6 +280,7 @@ fn parse_openai_response(resp: ureq::Response, model: &str) -> Value {
 
 // ── Anthropic ─────────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 fn ask_anthropic(
     model: &str,
     prompt: &str,
@@ -269,6 +321,7 @@ fn ask_anthropic(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_anthropic_response(resp: ureq::Response, model: &str) -> Value {
     match resp.into_json::<serde_json::Value>() {
         Ok(json) => {
@@ -294,6 +347,7 @@ fn parse_anthropic_response(resp: ureq::Response, model: &str) -> Value {
 
 // ── Ollama (local) ────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 fn ask_ollama(model: &str, prompt: &str, system: Option<&str>) -> Value {
     let base_url = std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
     let endpoint = format!("{}/api/generate", base_url);
@@ -329,7 +383,6 @@ fn ask_ollama(model: &str, prompt: &str, system: Option<&str>) -> Value {
         },
         Err(ureq::Error::Status(404, resp)) => {
             let body = resp.into_string().unwrap_or_default();
-            // 404 almost always means the model name is wrong
             AiResponse::error(
                 "ollama",
                 format!(
@@ -358,6 +411,7 @@ fn ask_ollama(model: &str, prompt: &str, system: Option<&str>) -> Value {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 fn adjust_confidence_for_hedging(base: f64, text: &str) -> f64 {
     let lower = text.to_lowercase();
     let hedges = [
@@ -376,6 +430,7 @@ fn adjust_confidence_for_hedging(base: f64, text: &str) -> f64 {
     (base - hedge_count as f64 * 0.05).clamp(0.1, 1.0)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()

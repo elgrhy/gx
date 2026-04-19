@@ -13,6 +13,7 @@ pub mod lexer;
 pub mod parser;
 pub mod toolchain;
 pub mod value;
+pub mod wasm;
 
 use indent_parser::is_indent_syntax;
 use interpreter::Interpreter;
