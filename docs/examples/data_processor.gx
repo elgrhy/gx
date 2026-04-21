@@ -18,13 +18,13 @@ helper "data_processor" {
     from "input" as "data_stream" {
       type: "raw_data"
       bind: memory.incoming_data
-      on_receive: brain.analyze_data
+      on_receive: "analyze_data"
     }
     
     from "analysis_request" as "analysis_request" {
       type: "statistical_analysis"
       bind: memory.analysis_request
-      on_receive: brain.perform_analysis
+      on_receive: "perform_analysis"
     }
   }
 
@@ -173,7 +173,8 @@ helper "data_processor" {
           variance_sum = 0
           for each point in data_points {
             if is_numeric(point) {
-              variance_sum += (point - mean) ** 2
+              diff = point - mean
+              variance_sum += diff * diff
             }
           }
           variance = variance_sum / count
