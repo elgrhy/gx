@@ -1,6 +1,6 @@
 [package]
 name = "gx"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "GX — brain-first programming language for building transparent AI assistants"
 authors = ["Ahmed Elgarhy <ahmed@devjsx.com>"]
