@@ -4746,7 +4746,7 @@ fn cron_field_matches(field: &str, value: u64, min: u64, max: u64) -> bool {
     }
     if let Some(step) = field.strip_prefix("*/") {
         let step: u64 = step.parse().unwrap_or(1);
-        return step > 0 && value % step == 0;
+        return step > 0 && value.is_multiple_of(step);
     }
     if field.contains('-') {
         let parts: Vec<&str> = field.splitn(2, '-').collect();
