@@ -1,5 +1,6 @@
 //! GX runtime values — what variables hold at runtime.
 
+use crate::ast::Stmt;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -11,6 +12,8 @@ pub enum Value {
     Str(String),
     Array(Vec<Value>),
     Object(HashMap<String, Value>),
+    /// Anonymous function / closure: (params, body)
+    Closure(Vec<String>, Vec<Stmt>),
 }
 
 impl Value {
@@ -22,6 +25,7 @@ impl Value {
             Value::Str(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
             Value::Object(o) => !o.is_empty(),
+            Value::Closure(..) => true,
         }
     }
 
@@ -33,6 +37,7 @@ impl Value {
             Value::Str(_) => "string",
             Value::Array(_) => "array",
             Value::Object(_) => "object",
+            Value::Closure(..) => "function",
         }
     }
 
@@ -172,6 +177,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Closure(params, _body) => write!(f, "<fn({})>", params.join(", ")),
         }
     }
 }
@@ -184,6 +190,7 @@ impl PartialEq for Value {
             (Value::Number(a), Value::Number(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => a == b,
+            (Value::Closure(..), _) | (_, Value::Closure(..)) => false,
             _ => false,
         }
     }

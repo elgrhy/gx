@@ -77,6 +77,7 @@ pub enum WhenTrigger {
     Expr(Expr),
     Changes(Expr),
     Message(String), // when message "event_name" { }
+    Cron(String),    // when cron "*/5 * * * *" { }
 }
 
 // ── Brain ─────────────────────────────────────────────────────────────────────
@@ -176,6 +177,7 @@ pub enum Stmt {
     },
     TryCatch {
         try_body: Vec<Stmt>,
+        catch_kind: Option<String>, // e.g. "NetworkError" — None means catch all
         catch_var: String,
         catch_body: Vec<Stmt>,
         line: usize,
@@ -336,11 +338,19 @@ pub enum Expr {
         method: String,
         args: Vec<Expr>,
     },
-    // Phase 5: spawn agent "name" with { key: val }
+    // Phase 5: spawn agent "name" with { key: val } [timeout Ns]
     CallAgent {
         name: Box<Expr>,
         input: Vec<(String, Expr)>,
+        timeout_ms: Option<Box<Expr>>, // optional timeout in milliseconds
     },
+    // Anonymous function: fn(params) { body }
+    Lambda {
+        params: Vec<String>,
+        body: Vec<Stmt>,
+    },
+    // Parallel named results: parallel { a: expr, b: expr }
+    ParallelMap(Vec<(String, Expr)>),
 }
 
 #[derive(Debug, Clone)]

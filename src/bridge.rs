@@ -298,6 +298,7 @@ pub fn value_to_json(v: &Value) -> serde_json::Value {
             }
             serde_json::Value::Object(map)
         }
+        Value::Closure(params, _) => serde_json::json!(format!("<fn({})>", params.join(", "))),
     }
 }
 

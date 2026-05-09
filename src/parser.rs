@@ -131,6 +131,7 @@ impl Parser {
             TokenKind::Retry => "retry".into(),
             TokenKind::Timeout => "timeout".into(),
             TokenKind::OnError => "on_error".into(),
+            TokenKind::Cron => "cron".into(),
             other => {
                 return Err(format!(
                     "Line {}: expected identifier, got {:?}",
@@ -741,6 +742,9 @@ impl Parser {
         } else if self.eat(&TokenKind::Message) {
             let event = self.expect_string()?;
             WhenTrigger::Message(event)
+        } else if self.eat(&TokenKind::Cron) {
+            let expr = self.expect_string()?;
+            WhenTrigger::Cron(expr)
         } else {
             let expr = self.parse_expr()?;
             self.skip_newlines();
@@ -1281,11 +1285,26 @@ impl Parser {
         self.expect(&TokenKind::LBrace)?;
         let try_body = self.parse_stmts()?;
         self.expect(&TokenKind::Catch)?;
-        let catch_var = self.expect_ident()?;
+        self.skip_newlines();
+        // Typed catch: `catch NetworkError e { }` vs plain `catch e { }`
+        // If the first ident starts with uppercase, it's the error kind; next ident is the var.
+        let first = self.expect_ident()?;
+        let (catch_kind, catch_var) = if first
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
+        {
+            let var = self.expect_ident()?;
+            (Some(first), var)
+        } else {
+            (None, first)
+        };
         self.expect(&TokenKind::LBrace)?;
         let catch_body = self.parse_stmts()?;
         Ok(Stmt::TryCatch {
             try_body,
+            catch_kind,
             catch_var,
             catch_body,
             line,
@@ -1714,10 +1733,108 @@ impl Parser {
                         self.eat(&TokenKind::Comma);
                     }
                 }
+                // Optional timeout: `timeout 30s` | `timeout 500ms` | `timeout 30`
+                let timeout_ms = if self.eat(&TokenKind::Timeout) {
+                    let n = match self.peek_kind().clone() {
+                        TokenKind::NumberLit(n) => {
+                            self.advance();
+                            n
+                        }
+                        _ => {
+                            return Err(format!(
+                                "Line {}: expected number after 'timeout'",
+                                self.line()
+                            ))
+                        }
+                    };
+                    // consume optional unit suffix: s, ms
+                    let ms = if matches!(self.peek_kind(), TokenKind::Ident(u) if u == "ms") {
+                        self.advance();
+                        n
+                    } else if matches!(self.peek_kind(), TokenKind::Ident(u) if u == "s") {
+                        self.advance();
+                        n * 1000.0
+                    } else {
+                        n // bare number → treat as milliseconds
+                    };
+                    Some(Box::new(Expr::Num(ms)))
+                } else {
+                    None
+                };
                 Ok(Expr::CallAgent {
                     name: Box::new(name),
                     input,
+                    timeout_ms,
                 })
+            }
+
+            // parallel { a: expr, b: expr } — named parallel branches → object result
+            TokenKind::Parallel => {
+                self.advance(); // consume `parallel`
+                self.skip_newlines();
+                self.expect(&TokenKind::LBrace)?;
+                // Peek: if next non-newline is `Ident :` it's a named-result map
+                let mut peek_pos = self.pos;
+                while matches!(self.tokens[peek_pos].kind, TokenKind::Newline) {
+                    peek_pos += 1;
+                }
+                let is_named = matches!(&self.tokens[peek_pos].kind, TokenKind::Ident(_))
+                    && matches!(
+                        self.tokens.get(peek_pos + 1).map(|t| &t.kind),
+                        Some(TokenKind::Colon)
+                    );
+                if is_named {
+                    let mut branches = Vec::new();
+                    loop {
+                        self.skip_newlines();
+                        if self.eat(&TokenKind::RBrace) {
+                            break;
+                        }
+                        let key = self.expect_ident()?;
+                        self.expect(&TokenKind::Colon)?;
+                        let val = self.parse_expr()?;
+                        branches.push((key, val));
+                        self.eat(&TokenKind::Comma);
+                    }
+                    Ok(Expr::ParallelMap(branches))
+                } else {
+                    // No name prefix — parse as unnamed parallel branches (all statements)
+                    // Collect stmts, wrap each in a branch, return first as expression (rare use)
+                    let stmts = self.parse_stmts()?;
+                    // Can't return Stmt from parse_primary; signal error for unnamed in expr pos
+                    let _ = stmts;
+                    Err(format!(
+                        "Line {}: unnamed 'parallel' cannot be used as an expression; use 'parallel {{ name: expr, ... }}'",
+                        self.line()
+                    ))
+                }
+            }
+
+            // fn(params) { body } — anonymous function / lambda
+            TokenKind::Function => {
+                self.advance(); // consume `fn` / `function`
+                if matches!(self.peek_kind(), TokenKind::LParen) {
+                    self.advance(); // consume '('
+                    let mut params = Vec::new();
+                    loop {
+                        self.skip_newlines();
+                        if self.eat(&TokenKind::RParen) {
+                            break;
+                        }
+                        params.push(self.expect_ident()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            self.skip_newlines();
+                            self.expect(&TokenKind::RParen)?;
+                            break;
+                        }
+                    }
+                    self.expect(&TokenKind::LBrace)?;
+                    let body = self.parse_stmts()?;
+                    Ok(Expr::Lambda { params, body })
+                } else {
+                    // bare `function` used as an identifier in an unusual context
+                    Ok(Expr::Ident("function".to_string()))
+                }
             }
 
             _ => {

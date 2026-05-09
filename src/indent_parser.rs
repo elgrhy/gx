@@ -395,6 +395,7 @@ fn parse_one_stmt(
                 return Ok((
                     Stmt::TryCatch {
                         try_body,
+                        catch_kind: None,
                         catch_var,
                         catch_body,
                         line: line.no,
@@ -406,6 +407,7 @@ fn parse_one_stmt(
         return Ok((
             Stmt::TryCatch {
                 try_body,
+                catch_kind: None,
                 catch_var: "err".to_string(),
                 catch_body: Vec::new(),
                 line: line.no,

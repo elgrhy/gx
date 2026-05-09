@@ -70,6 +70,12 @@ pub struct Interpreter {
     pub assert_failures: Vec<String>,
     /// When set, output goes here instead of stdout (used by WASM playground)
     pub output_capture: Option<Vec<String>>,
+    // #14 readiness: agents call ready() to signal they accept messages
+    ready_agents: std::collections::HashSet<String>,
+    // messages queued for not-yet-ready agents: agent_name -> [(event, payload)]
+    queued_messages: HashMap<String, Vec<(String, Value)>>,
+    // name of the currently-running helper (set by run_helper)
+    current_agent: Option<String>,
 }
 
 impl Default for Interpreter {
@@ -92,6 +98,9 @@ impl Interpreter {
             assert_count: 0,
             assert_failures: Vec::new(),
             output_capture: None,
+            ready_agents: std::collections::HashSet::new(),
+            queued_messages: HashMap::new(),
+            current_agent: None,
         }
     }
 
@@ -191,6 +200,7 @@ impl Interpreter {
     }
 
     fn run_helper(&mut self, helper: &HelperDef) -> Result<(), Signal> {
+        self.current_agent = Some(helper.name.clone());
         let mut memory: HashMap<String, Value> = HashMap::new();
         memory.insert("ai_trace".into(), Value::Array(Vec::new()));
 
@@ -241,7 +251,10 @@ impl Interpreter {
         for wb in &helper.when_blocks.clone() {
             if matches!(wb.trigger, WhenTrigger::Started) {
                 env.set_memory(memory.clone());
-                self.run_stmts(&wb.body, &mut env)?;
+                match self.run_stmts(&wb.body, &mut env) {
+                    Ok(_) | Err(Signal::Return(_)) => {}
+                    Err(e) => return Err(e),
+                }
                 memory = env.get_memory();
             }
         }
@@ -321,7 +334,7 @@ impl Interpreter {
                 .when_blocks
                 .clone()
                 .into_iter()
-                .filter(|wb| !matches!(wb.trigger, WhenTrigger::Started)),
+                .filter(|wb| !matches!(wb.trigger, WhenTrigger::Started | WhenTrigger::Cron(_))),
         );
         for wb in &extra_when {
             env.set_memory(memory.clone());
@@ -330,7 +343,10 @@ impl Interpreter {
                 WhenTrigger::Expr(cond) => {
                     let v = self.eval_expr(cond, &mut env)?;
                     if v.is_truthy() {
-                        self.run_stmts(&wb.body, &mut env)?;
+                        match self.run_stmts(&wb.body, &mut env) {
+                            Ok(_) | Err(Signal::Return(_)) => {}
+                            Err(e) => return Err(e),
+                        }
                         memory = env.get_memory();
                     }
                 }
@@ -343,7 +359,10 @@ impl Interpreter {
                     if current != prev {
                         memory.insert(key.clone(), current.clone());
                         env.set_memory(memory.clone());
-                        self.run_stmts(&wb.body, &mut env)?;
+                        match self.run_stmts(&wb.body, &mut env) {
+                            Ok(_) | Err(Signal::Return(_)) => {}
+                            Err(e) => return Err(e),
+                        }
                         memory = env.get_memory();
                     }
                 }
@@ -354,12 +373,31 @@ impl Interpreter {
                         for msg in messages {
                             env.set_memory(memory.clone());
                             env.set("message", msg);
-                            self.run_stmts(&wb.body, &mut env)?;
+                            match self.run_stmts(&wb.body, &mut env) {
+                                Ok(_) | Err(Signal::Return(_)) => {}
+                                Err(e) => return Err(e),
+                            }
                             memory = env.get_memory();
                         }
                     }
                 }
+                // when cron "*/5 * * * *" { ... } — fires if expr matches current time
+                WhenTrigger::Cron(_expr) => {
+                    // Cron agents are run via run_cron_helper; skip here
+                }
             }
+        }
+
+        // Cron daemon: if any when-cron blocks exist, enter blocking loop
+        let cron_blocks: Vec<_> = helper
+            .when_blocks
+            .iter()
+            .filter(|wb| matches!(&wb.trigger, WhenTrigger::Cron(_)))
+            .cloned()
+            .collect();
+        if !cron_blocks.is_empty() {
+            env.set_memory(memory.clone());
+            self.run_cron_daemon(&cron_blocks, &mut env)?;
         }
 
         Ok(())
@@ -388,16 +426,27 @@ impl Interpreter {
 
         // Run brain if present — collect communicate return value
         if let Some(brain) = &helper.brain.clone() {
-            self.run_stmts(&brain.plan, &mut env)?;
-            self.run_stmts(&brain.execute, &mut env)?;
-            self.run_stmts(&brain.remember, &mut env)?;
+            macro_rules! run_phase {
+                ($stmts:expr) => {
+                    match self.run_stmts($stmts, &mut env) {
+                        Ok(_) | Err(Signal::Return(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                };
+            }
+            run_phase!(&brain.plan);
+            run_phase!(&brain.execute);
+            run_phase!(&brain.remember);
             return self.eval_communicate(&brain.communicate, &mut env);
         }
 
         // Run when started block
         for wb in &helper.when_blocks.clone() {
             if matches!(wb.trigger, WhenTrigger::Started) {
-                self.run_stmts(&wb.body, &mut env)?;
+                match self.run_stmts(&wb.body, &mut env) {
+                    Ok(_) | Err(Signal::Return(_)) => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
 
@@ -434,10 +483,18 @@ impl Interpreter {
     }
 
     fn run_brain(&mut self, brain: &BrainBlock, env: &mut Env) -> IResult {
-        self.run_stmts(&brain.plan, env)?;
-        self.run_stmts(&brain.execute, env)?;
-        self.run_stmts(&brain.remember, env)?;
-        self.run_stmts(&brain.communicate, env)?;
+        macro_rules! run_phase {
+            ($stmts:expr) => {
+                match self.run_stmts($stmts, env) {
+                    Ok(_) | Err(Signal::Return(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            };
+        }
+        run_phase!(&brain.plan);
+        run_phase!(&brain.execute);
+        run_phase!(&brain.remember);
+        run_phase!(&brain.communicate);
         Ok(Value::Null)
     }
 
@@ -576,13 +633,26 @@ impl Interpreter {
 
             Stmt::TryCatch {
                 try_body,
+                catch_kind,
                 catch_var,
                 catch_body,
                 ..
             } => match self.run_stmts(try_body, env) {
                 Ok(v) => Ok(v),
                 Err(Signal::Error(msg)) | Err(Signal::AssertFail(msg)) => {
-                    env.set(catch_var, Value::Str(msg));
+                    // #18: build typed error object
+                    let kind = infer_error_kind(&msg);
+                    // If a type filter is set, only catch matching kinds
+                    if let Some(required_kind) = catch_kind {
+                        if required_kind != kind {
+                            return Err(Signal::Error(msg));
+                        }
+                    }
+                    let mut err_map = HashMap::new();
+                    err_map.insert("message".into(), Value::Str(msg));
+                    err_map.insert("kind".into(), Value::Str(kind.into()));
+                    err_map.insert("code".into(), Value::Null);
+                    env.set(catch_var, Value::Object(err_map));
                     self.run_stmts(catch_body, env)
                 }
                 Err(other) => Err(other),
@@ -1105,7 +1175,9 @@ impl Interpreter {
                     let input = self.eval_expr(left, env)?;
                     // RHS must resolve to a CallAgent expr
                     match right.as_ref() {
-                        Expr::CallAgent { name, input: extra } => {
+                        Expr::CallAgent {
+                            name, input: extra, ..
+                        } => {
                             let name_val = self.eval_expr(name, env)?;
                             let agent_name = match &name_val {
                                 Value::Str(s) => s.clone(),
@@ -1206,8 +1278,12 @@ impl Interpreter {
                 }
             }
 
-            // Phase 5: spawn agent "name" with { key: val }
-            Expr::CallAgent { name, input } => {
+            // Phase 5: spawn agent "name" with { key: val } [timeout Nms]
+            Expr::CallAgent {
+                name,
+                input,
+                timeout_ms,
+            } => {
                 let name_val = self.eval_expr(name, env)?;
                 let agent_name = match &name_val {
                     Value::Str(s) => s.clone(),
@@ -1223,7 +1299,23 @@ impl Interpreter {
                     map.insert(k.clone(), self.eval_expr(v, env)?);
                 }
                 let input_val = Value::Object(map);
-                self.call_agent(&agent_name, input_val)
+
+                if let Some(t_expr) = timeout_ms {
+                    let ms = self.eval_expr(t_expr, env)?.as_number().unwrap_or(5000.0) as u64;
+                    self.call_agent_with_timeout(&agent_name, input_val, ms)
+                } else {
+                    self.call_agent(&agent_name, input_val)
+                }
+            }
+
+            Expr::Lambda { params, body } => Ok(Value::Closure(params.clone(), body.clone())),
+
+            Expr::ParallelMap(branches) => {
+                let mut named_branches = Vec::new();
+                for (k, expr) in branches {
+                    named_branches.push((k.clone(), expr.clone()));
+                }
+                self.eval_parallel_map(named_branches, env)
             }
         }
     }
@@ -1340,15 +1432,243 @@ impl Interpreter {
             return self.eval_method(obj, field, args, env);
         }
 
+        // Direct lambda call: fn(x) { x + 1 }(5)
+        if let Expr::Lambda { params, body } = callee {
+            let func = FunctionDef {
+                name: "<lambda>".into(),
+                params: params.clone(),
+                body: body.clone(),
+                line: 0,
+            };
+            let mem = env.get_memory();
+            return self.call_user_function(&func, args, Some(mem));
+        }
+
         if let Expr::Ident(name) = callee {
-            if let Some(func) = self.functions.get(name).cloned() {
+            // Check if a closure value is stored under this name
+            let val = env.get(name);
+            if let Value::Closure(params, body) = val {
+                let func = FunctionDef {
+                    name: name.clone(),
+                    params,
+                    body,
+                    line: 0,
+                };
                 let mem = env.get_memory();
+                return self.call_user_function(&func, args, Some(mem));
+            }
+            // Also check memory
+            let mem = env.get_memory();
+            if let Some(Value::Closure(params, body)) = mem.get(name).cloned() {
+                let func = FunctionDef {
+                    name: name.clone(),
+                    params,
+                    body,
+                    line: 0,
+                };
+                return self.call_user_function(&func, args, Some(mem));
+            }
+            if let Some(func) = self.functions.get(name).cloned() {
                 return self.call_user_function(&func, args, Some(mem));
             }
             return self.eval_builtin(name, args, env);
         }
 
         Err(Signal::Error(format!("Cannot call {:?}", callee)))
+    }
+
+    // ── #6 spawn agent with timeout ───────────────────────────────────────────
+
+    fn call_agent_with_timeout(
+        &mut self,
+        agent_name: &str,
+        input_val: Value,
+        timeout_ms: u64,
+    ) -> IResult {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let helpers = self.helpers.clone();
+        let functions = self.functions.clone();
+        let agent = agent_name.to_string();
+        let input_json = crate::interpreter::gx_value_to_json(&input_val);
+
+        let (tx, rx) = mpsc::channel::<Result<serde_json::Value, String>>();
+
+        std::thread::spawn(move || {
+            let mut child = Interpreter::new();
+            child.helpers = helpers;
+            child.functions = functions;
+            let input = crate::interpreter::json_to_gx_value(&input_json);
+            let result = child
+                .call_agent(&agent, input)
+                .map(|v| crate::interpreter::gx_value_to_json(&v))
+                .map_err(|e| format!("{:?}", e));
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+            Ok(Ok(json)) => Ok(json_to_gx_value(&json)),
+            Ok(Err(e)) => Err(Signal::Error(e)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let mut map = HashMap::new();
+                map.insert("timed_out".into(), Value::Bool(true));
+                map.insert("agent".into(), Value::Str(agent_name.into()));
+                map.insert("timeout_ms".into(), Value::Number(timeout_ms as f64));
+                Ok(Value::Object(map))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(Signal::Error(format!(
+                "Agent '{}' thread panicked",
+                agent_name
+            ))),
+        }
+    }
+
+    // ── #7 parallel named results ─────────────────────────────────────────────
+
+    fn eval_parallel_map(&mut self, branches: Vec<(String, Expr)>, env: &mut Env) -> IResult {
+        use std::sync::mpsc;
+
+        let mut handles: Vec<(String, mpsc::Receiver<Result<serde_json::Value, String>>)> =
+            Vec::new();
+
+        for (key, expr) in &branches {
+            // Only parallelize CallAgent exprs; evaluate others synchronously
+            if let Expr::CallAgent {
+                name,
+                input,
+                timeout_ms,
+            } = expr
+            {
+                let name_val = self.eval_expr(name, env)?;
+                let agent_name = match &name_val {
+                    Value::Str(s) => s.clone(),
+                    _ => {
+                        return Err(Signal::Error(format!(
+                            "parallel: agent name must be string, got {}",
+                            name_val.type_name()
+                        )))
+                    }
+                };
+                let mut map = HashMap::new();
+                for (k, v) in input {
+                    map.insert(k.clone(), self.eval_expr(v, env)?);
+                }
+                let input_val = Value::Object(map);
+                let input_json = gx_value_to_json(&input_val);
+                let helpers = self.helpers.clone();
+                let functions = self.functions.clone();
+                let agent = agent_name.clone();
+                let timeout = timeout_ms
+                    .as_ref()
+                    .and_then(|e| self.eval_expr(e, env).ok())
+                    .and_then(|v| v.as_number())
+                    .map(|n| n as u64);
+
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let mut child = Interpreter::new();
+                    child.helpers = helpers;
+                    child.functions = functions;
+                    let input = json_to_gx_value(&input_json);
+                    let result = child
+                        .call_agent(&agent, input)
+                        .map(|v| gx_value_to_json(&v))
+                        .map_err(|e| format!("{:?}", e));
+                    if let Some(ms) = timeout {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
+                    let _ = tx.send(result);
+                });
+                handles.push((key.clone(), rx));
+            } else {
+                // Non-agent expr: evaluate synchronously, wrap in a pseudo-handle
+                let val = self.eval_expr(expr, env)?;
+                let json = gx_value_to_json(&val);
+                let (tx, rx) = mpsc::channel();
+                let _ = tx.send(Ok(json));
+                handles.push((key.clone(), rx));
+            }
+        }
+
+        let mut result_map = HashMap::new();
+        for (key, rx) in handles {
+            use std::time::Duration;
+            let entry = match rx.recv_timeout(Duration::from_secs(300)) {
+                Ok(Ok(json)) => json_to_gx_value(&json),
+                Ok(Err(e)) => {
+                    let mut em = HashMap::new();
+                    em.insert("error".into(), Value::Str(e));
+                    Value::Object(em)
+                }
+                Err(_) => {
+                    let mut em = HashMap::new();
+                    em.insert("timed_out".into(), Value::Bool(true));
+                    Value::Object(em)
+                }
+            };
+            result_map.insert(key, entry);
+        }
+        Ok(Value::Object(result_map))
+    }
+
+    // ── #15 cron daemon ───────────────────────────────────────────────────────
+
+    fn run_cron_daemon(&mut self, blocks: &[WhenBlock], env: &mut Env) -> Result<(), Signal> {
+        eprintln!("[gx] cron daemon started ({} schedule(s))", blocks.len());
+        loop {
+            let now = {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            };
+            for wb in blocks {
+                if let WhenTrigger::Cron(expr) = &wb.trigger {
+                    if cron_matches(expr, now) {
+                        match self.run_stmts(&wb.body, env) {
+                            Ok(_) | Err(Signal::Return(_)) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+            }
+            // Sleep until the start of the next minute
+            let secs_into_minute = now % 60;
+            let sleep_secs = 60 - secs_into_minute;
+            std::thread::sleep(std::time::Duration::from_secs(sleep_secs));
+        }
+    }
+
+    fn call_closure(&mut self, callee: &Value, args: Vec<Value>, env: &mut Env) -> IResult {
+        match callee {
+            Value::Closure(params, body) => {
+                let func = FunctionDef {
+                    name: "<closure>".into(),
+                    params: params.clone(),
+                    body: body.clone(),
+                    line: 0,
+                };
+                let mem = env.get_memory();
+                self.call_user_function(&func, args, Some(mem))
+            }
+            Value::Str(name) => {
+                let name = name.clone();
+                if let Some(func) = self.functions.get(&name).cloned() {
+                    let mem = env.get_memory();
+                    return self.call_user_function(&func, args, Some(mem));
+                }
+                Err(Signal::Error(format!(
+                    "'{}' is not a defined function",
+                    name
+                )))
+            }
+            _ => Err(Signal::Error(format!(
+                "Expected function, got {}",
+                callee.type_name()
+            ))),
+        }
     }
 
     fn call_behavior(&mut self, func: &FunctionDef, caller_env: &mut Env) -> IResult {
@@ -1403,7 +1723,7 @@ impl Interpreter {
         }
     }
 
-    fn eval_builtin(&mut self, name: &str, args: Vec<Value>, _env: &mut Env) -> IResult {
+    fn eval_builtin(&mut self, name: &str, args: Vec<Value>, env: &mut Env) -> IResult {
         match name {
             // ── Output ────────────────────────────────────────────────────────
             "log" | "output" | "print" | "say" => {
@@ -2098,6 +2418,12 @@ impl Interpreter {
                 http_builtin(method_name, &builtin_args)
             }
 
+            // ── #17 HTTP streaming ────────────────────────────────────────────
+            "http_stream" => http_stream_builtin(&args),
+
+            // ── #8 HTTP multipart upload ──────────────────────────────────────
+            "http_upload" => http_upload_builtin(&args),
+
             // send_email { to, subject, body, smtp_host?, smtp_port?, from?, username?, password? }
             "send_email" => {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -2566,6 +2892,215 @@ impl Interpreter {
                     .unwrap_or(Value::Str("unknown".into()));
                 eprintln!("[gx] spawning agent: {}", n);
                 Ok(Value::Str(format!("agent:{}", n)))
+            }
+
+            // ── Readiness (#14) ───────────────────────────────────────────────
+            "ready" => {
+                if let Some(name) = self.current_agent.clone() {
+                    self.ready_agents.insert(name.clone());
+                    // Flush any messages queued before ready() was called
+                    if let Some(queued) = self.queued_messages.remove(&name) {
+                        for (event, payload) in queued {
+                            let bus_key = format!("{}:{}", name, event);
+                            self.event_bus.entry(bus_key).or_default().push(payload);
+                        }
+                    }
+                }
+                Ok(Value::Null)
+            }
+
+            // ── Env ───────────────────────────────────────────────────────────
+            "env_require" => {
+                let key = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("env_require: expected string key".into()))?;
+                match std::env::var(&key) {
+                    Ok(val) => Ok(Value::Str(val)),
+                    Err(_) => Err(Signal::Error(format!(
+                        "Missing required environment variable: {}",
+                        key
+                    ))),
+                }
+            }
+
+            // ── Structured logging ────────────────────────────────────────────
+            "log_debug" | "log_info" | "log_warn" | "log_error" => {
+                let level = match name {
+                    "log_debug" => "DEBUG",
+                    "log_info" => "INFO",
+                    "log_warn" => "WARN",
+                    _ => "ERROR",
+                };
+                let min_level = std::env::var("GX_LOG_LEVEL")
+                    .unwrap_or_else(|_| "INFO".into())
+                    .to_uppercase();
+                let levels = ["DEBUG", "INFO", "WARN", "ERROR"];
+                let min_idx = levels
+                    .iter()
+                    .position(|&l| l == min_level.as_str())
+                    .unwrap_or(1);
+                let cur_idx = levels.iter().position(|&l| l == level).unwrap_or(1);
+                if cur_idx >= min_idx {
+                    let parts: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+                    eprintln!("[{}] {}", level, parts.join(" "));
+                }
+                Ok(Value::Null)
+            }
+
+            // ── Object utilities ──────────────────────────────────────────────
+            "object_merge" => {
+                let mut result: HashMap<String, Value> = HashMap::new();
+                for arg in &args {
+                    if let Value::Object(map) = arg {
+                        for (k, v) in map {
+                            result.insert(k.clone(), v.clone());
+                        }
+                    } else {
+                        return Err(Signal::Error(format!(
+                            "object_merge: expected object, got {}",
+                            arg.type_name()
+                        )));
+                    }
+                }
+                Ok(Value::Object(result))
+            }
+
+            // ── Regex ─────────────────────────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_match" => {
+                let pattern = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_match: expected pattern string".into()))?;
+                let text = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_match: expected text string".into()))?;
+                let re = regex::Regex::new(&pattern)
+                    .map_err(|e| Signal::Error(format!("regex_match: invalid pattern: {}", e)))?;
+                Ok(Value::Bool(re.is_match(&text)))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_find_all" => {
+                let pattern = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_find_all: expected pattern".into()))?;
+                let text = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_find_all: expected text".into()))?;
+                let re = regex::Regex::new(&pattern).map_err(|e| {
+                    Signal::Error(format!("regex_find_all: invalid pattern: {}", e))
+                })?;
+                let matches: Vec<Value> = re
+                    .find_iter(&text)
+                    .map(|m| Value::Str(m.as_str().to_string()))
+                    .collect();
+                Ok(Value::Array(matches))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_replace" => {
+                let pattern = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_replace: expected pattern".into()))?;
+                let replacement = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_replace: expected replacement".into()))?;
+                let text = args
+                    .get(2)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_replace: expected text".into()))?;
+                let re = regex::Regex::new(&pattern)
+                    .map_err(|e| Signal::Error(format!("regex_replace: invalid pattern: {}", e)))?;
+                Ok(Value::Str(
+                    re.replace_all(&text, replacement.as_str()).to_string(),
+                ))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_split" => {
+                let pattern = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_split: expected pattern".into()))?;
+                let text = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("regex_split: expected text".into()))?;
+                let re = regex::Regex::new(&pattern)
+                    .map_err(|e| Signal::Error(format!("regex_split: invalid pattern: {}", e)))?;
+                let parts: Vec<Value> =
+                    re.split(&text).map(|s| Value::Str(s.to_string())).collect();
+                Ok(Value::Array(parts))
+            }
+
+            // ── SQLite ────────────────────────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "db_query" => {
+                let path = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("db_query: expected db path".into()))?;
+                let sql = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("db_query: expected SQL string".into()))?;
+                let params: Vec<Value> = args.into_iter().skip(2).collect();
+                db_query_impl(&path, &sql, params)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "db_exec" => {
+                let path = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("db_exec: expected db path".into()))?;
+                let sql = args
+                    .get(1)
+                    .and_then(|v| v.as_str().map(String::from))
+                    .ok_or_else(|| Signal::Error("db_exec: expected SQL string".into()))?;
+                let params: Vec<Value> = args.into_iter().skip(2).collect();
+                db_exec_impl(&path, &sql, params)
+            }
+
+            // ── Functional: map / filter ──────────────────────────────────────
+            "map" => {
+                let arr = args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| Signal::Error("map: expected array".into()))?;
+                let func = args
+                    .get(1)
+                    .cloned()
+                    .ok_or_else(|| Signal::Error("map: expected function".into()))?;
+                let items = arr.iter().map_err(Signal::Error)?;
+                let mut result = Vec::new();
+                for item in items {
+                    let out = self.call_closure(&func, vec![item], env)?;
+                    result.push(out);
+                }
+                Ok(Value::Array(result))
+            }
+            "filter" => {
+                let arr = args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| Signal::Error("filter: expected array".into()))?;
+                let func = args
+                    .get(1)
+                    .cloned()
+                    .ok_or_else(|| Signal::Error("filter: expected function".into()))?;
+                let items = arr.iter().map_err(Signal::Error)?;
+                let mut result = Vec::new();
+                for item in items {
+                    let keep = self.call_closure(&func, vec![item.clone()], env)?;
+                    if keep.is_truthy() {
+                        result.push(item);
+                    }
+                }
+                Ok(Value::Array(result))
             }
 
             // ── Legacy stubs ──────────────────────────────────────────────────
@@ -3341,9 +3876,10 @@ fn expr_uses_input(expr: &Expr) -> bool {
             InterpolatedPart::Expr(e) => expr_uses_input(e),
             _ => false,
         }),
-        Expr::CallAgent { name, input } => {
+        Expr::CallAgent { name, input, .. } => {
             expr_uses_input(name) || input.iter().any(|(_, v)| expr_uses_input(v))
         }
+        Expr::ParallelMap(branches) => branches.iter().any(|(_, v)| expr_uses_input(v)),
         _ => false,
     }
 }
@@ -3504,6 +4040,169 @@ fn http_builtin(name: &str, args: &[Value]) -> Result<Value, Signal> {
     }
 }
 
+// ── #17 HTTP streaming (native only) ─────────────────────────────────────────
+
+#[cfg(target_arch = "wasm32")]
+fn http_stream_builtin(_args: &[Value]) -> Result<Value, Signal> {
+    Err(Signal::Error(
+        "http_stream not available in playground".into(),
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_stream_builtin(args: &[Value]) -> Result<Value, Signal> {
+    use std::io::{BufRead, BufReader};
+
+    let opts = args.first().cloned().unwrap_or(Value::Null);
+    let url = match &opts {
+        Value::Object(m) => m
+            .get("url")
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default(),
+        Value::Str(s) => s.clone(),
+        _ => {
+            return Err(Signal::Error(
+                "http_stream: expected {url, method?, body?}".into(),
+            ))
+        }
+    };
+    let method = match &opts {
+        Value::Object(m) => m
+            .get("method")
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "GET".into()),
+        _ => "GET".into(),
+    };
+    let body_val = match &opts {
+        Value::Object(m) => m.get("body").cloned().unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+
+    let resp = match method.to_uppercase().as_str() {
+        "POST" => {
+            let json_body = gx_value_to_json(&body_val);
+            ureq::post(&url)
+                .set("Content-Type", "application/json")
+                .send_json(&json_body)
+                .map_err(|e| Signal::Error(format!("http_stream POST failed: {}", e)))?
+        }
+        _ => ureq::get(&url)
+            .call()
+            .map_err(|e| Signal::Error(format!("http_stream GET failed: {}", e)))?,
+    };
+
+    let reader = BufReader::new(resp.into_reader());
+    let mut chunks: Vec<Value> = Vec::new();
+    for line in reader.lines() {
+        match line {
+            Ok(l) => chunks.push(Value::Str(l)),
+            Err(e) => return Err(Signal::Error(format!("http_stream read error: {}", e))),
+        }
+    }
+    Ok(Value::Array(chunks))
+}
+
+// ── #8 HTTP multipart upload (native only) ────────────────────────────────────
+
+#[cfg(target_arch = "wasm32")]
+fn http_upload_builtin(_args: &[Value]) -> Result<Value, Signal> {
+    Err(Signal::Error(
+        "http_upload not available in playground".into(),
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_upload_builtin(args: &[Value]) -> Result<Value, Signal> {
+    let opts = args
+        .first()
+        .ok_or_else(|| Signal::Error("http_upload: expected {url, fields?, files?}".into()))?;
+    let map = match opts {
+        Value::Object(m) => m,
+        _ => {
+            return Err(Signal::Error(
+                "http_upload: expected object argument".into(),
+            ))
+        }
+    };
+
+    let url = map
+        .get("url")
+        .and_then(|v| v.as_str().map(String::from))
+        .ok_or_else(|| Signal::Error("http_upload: 'url' field required".into()))?;
+
+    // Build multipart/form-data body manually
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let boundary = format!(
+        "GXBoundary{:016x}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+
+    let mut body: Vec<u8> = Vec::new();
+
+    // Text fields
+    if let Some(Value::Object(fields)) = map.get("fields") {
+        for (k, v) in fields {
+            body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{}\"\r\n\r\n", k).as_bytes(),
+            );
+            body.extend_from_slice(v.to_string().as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+    }
+
+    // File fields
+    if let Some(Value::Object(files)) = map.get("files") {
+        for (field_name, path_val) in files {
+            let path = path_val.as_str().ok_or_else(|| {
+                Signal::Error(format!(
+                    "http_upload: file path for '{}' must be a string",
+                    field_name
+                ))
+            })?;
+            let file_data = std::fs::read(path).map_err(|e| {
+                Signal::Error(format!("http_upload: cannot read '{}': {}", path, e))
+            })?;
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file".into());
+            body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+            body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
+                    field_name, filename
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(&file_data);
+            body.extend_from_slice(b"\r\n");
+        }
+    }
+
+    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+
+    let content_type = format!("multipart/form-data; boundary={}", boundary);
+    let resp = ureq::post(&url)
+        .set("Content-Type", &content_type)
+        .send_bytes(&body)
+        .map_err(|e| Signal::Error(format!("http_upload failed: {}", e)))?;
+
+    let status = resp.status() as f64;
+    let resp_body = resp.into_string().unwrap_or_default();
+    let mut result = HashMap::new();
+    result.insert("ok".into(), Value::Bool(status < 400.0));
+    result.insert("status".into(), Value::Number(status));
+    result.insert("body".into(), Value::Str(resp_body.clone()));
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp_body) {
+        result.insert("data".into(), json_to_gx_value(&json));
+    }
+    Ok(Value::Object(result))
+}
+
 // ── Internal parse helper ─────────────────────────────────────────────────────
 
 fn parse_gx_source(source: &str, path: &str) -> Result<crate::ast::Program, String> {
@@ -3549,6 +4248,9 @@ pub fn gx_value_to_json(val: &Value) -> serde_json::Value {
                 .map(|(k, v)| (k.clone(), gx_value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
+        }
+        Value::Closure(params, _) => {
+            serde_json::Value::String(format!("<fn({})>", params.join(", ")))
         }
     }
 }
@@ -3666,14 +4368,20 @@ fn gx_ast_to_value(program: &crate::ast::Program) -> Value {
             }
         }
     }
-    obj(&[("tag", Value::Str("Program".into())), ("stmts", Value::Array(stmts))])
+    obj(&[
+        ("tag", Value::Str("Program".into())),
+        ("stmts", Value::Array(stmts)),
+    ])
 }
 
 fn funcdef_to_value(name: &str, params: &[String], body: &[Stmt]) -> Value {
     obj(&[
         ("tag", Value::Str("FuncDef".into())),
         ("name", Value::Str(name.into())),
-        ("params", Value::Array(params.iter().map(|p| Value::Str(p.clone())).collect())),
+        (
+            "params",
+            Value::Array(params.iter().map(|p| Value::Str(p.clone())).collect()),
+        ),
         ("body", stmts_to_value(body)),
     ])
 }
@@ -3709,26 +4417,42 @@ fn stmt_to_value(s: &Stmt) -> Value {
             ("target", expr_to_value(target)),
             ("value", expr_to_value(value)),
         ]),
-        Stmt::If { branches, else_body, .. } => {
+        Stmt::If {
+            branches,
+            else_body,
+            ..
+        } => {
             let br_vals: Vec<Value> = branches
                 .iter()
-                .map(|(cond, body)| obj(&[
-                    ("cond", expr_to_value(cond)),
-                    ("body", stmts_to_value(body)),
-                ]))
+                .map(|(cond, body)| {
+                    obj(&[
+                        ("cond", expr_to_value(cond)),
+                        ("body", stmts_to_value(body)),
+                    ])
+                })
                 .collect();
             obj(&[
                 ("tag", Value::Str("If".into())),
                 ("branches", Value::Array(br_vals)),
-                ("else_body", else_body.as_ref().map(|b| stmts_to_value(b)).unwrap_or(Value::Null)),
+                (
+                    "else_body",
+                    else_body
+                        .as_ref()
+                        .map(|b| stmts_to_value(b))
+                        .unwrap_or(Value::Null),
+                ),
             ])
         }
-        Stmt::While { condition, body, .. } => obj(&[
+        Stmt::While {
+            condition, body, ..
+        } => obj(&[
             ("tag", Value::Str("While".into())),
             ("cond", expr_to_value(condition)),
             ("body", stmts_to_value(body)),
         ]),
-        Stmt::ForEach { var, iter, body, .. } => obj(&[
+        Stmt::ForEach {
+            var, iter, body, ..
+        } => obj(&[
             ("tag", Value::Str("For".into())),
             ("var", Value::Str(var.clone())),
             ("iter", expr_to_value(iter)),
@@ -3736,7 +4460,10 @@ fn stmt_to_value(s: &Stmt) -> Value {
         ]),
         Stmt::Return { value, .. } => obj(&[
             ("tag", Value::Str("Return".into())),
-            ("value", value.as_ref().map(expr_to_value).unwrap_or(Value::Null)),
+            (
+                "value",
+                value.as_ref().map(expr_to_value).unwrap_or(Value::Null),
+            ),
         ]),
         Stmt::Break { .. } => obj(&[("tag", Value::Str("Break".into()))]),
         Stmt::Continue { .. } => obj(&[("tag", Value::Str("Continue".into()))]),
@@ -3748,12 +4475,22 @@ fn stmt_to_value(s: &Stmt) -> Value {
             ("tag", Value::Str("Say".into())),
             ("value", expr_to_value(value)),
         ]),
-        Stmt::Assert { condition, message, .. } => obj(&[
+        Stmt::Assert {
+            condition, message, ..
+        } => obj(&[
             ("tag", Value::Str("Assert".into())),
             ("cond", expr_to_value(condition)),
-            ("msg", message.as_ref().map(expr_to_value).unwrap_or(Value::Null)),
+            (
+                "msg",
+                message.as_ref().map(expr_to_value).unwrap_or(Value::Null),
+            ),
         ]),
-        Stmt::TryCatch { try_body, catch_var, catch_body, .. } => obj(&[
+        Stmt::TryCatch {
+            try_body,
+            catch_var,
+            catch_body,
+            ..
+        } => obj(&[
             ("tag", Value::Str("TryCatch".into())),
             ("try_body", stmts_to_value(try_body)),
             ("catch_var", Value::Str(catch_var.clone())),
@@ -3763,17 +4500,32 @@ fn stmt_to_value(s: &Stmt) -> Value {
             ("tag", Value::Str("ExprStmt".into())),
             ("expr", expr_to_value(expr)),
         ]),
-        _ => obj(&[("tag", Value::Str("ExprStmt".into())), ("expr", Value::Null)]),
+        _ => obj(&[
+            ("tag", Value::Str("ExprStmt".into())),
+            ("expr", Value::Null),
+        ]),
     }
 }
 
 fn expr_to_value(e: &Expr) -> Value {
     match e {
-        Expr::Num(n) => obj(&[("tag", Value::Str("Num".into())), ("value", Value::Number(*n))]),
-        Expr::Str(s) => obj(&[("tag", Value::Str("Str".into())), ("value", Value::Str(s.clone()))]),
-        Expr::Bool(b) => obj(&[("tag", Value::Str("Bool".into())), ("value", Value::Bool(*b))]),
+        Expr::Num(n) => obj(&[
+            ("tag", Value::Str("Num".into())),
+            ("value", Value::Number(*n)),
+        ]),
+        Expr::Str(s) => obj(&[
+            ("tag", Value::Str("Str".into())),
+            ("value", Value::Str(s.clone())),
+        ]),
+        Expr::Bool(b) => obj(&[
+            ("tag", Value::Str("Bool".into())),
+            ("value", Value::Bool(*b)),
+        ]),
         Expr::Null => obj(&[("tag", Value::Str("Null".into()))]),
-        Expr::Ident(name) => obj(&[("tag", Value::Str("Ident".into())), ("name", Value::Str(name.clone()))]),
+        Expr::Ident(name) => obj(&[
+            ("tag", Value::Str("Ident".into())),
+            ("name", Value::Str(name.clone())),
+        ]),
         Expr::FieldAccess { object, field } => obj(&[
             ("tag", Value::Str("Field".into())),
             ("obj", expr_to_value(object)),
@@ -3804,14 +4556,20 @@ fn expr_to_value(e: &Expr) -> Value {
         }
         Expr::Array(items) => obj(&[
             ("tag", Value::Str("Array".into())),
-            ("items", Value::Array(items.iter().map(expr_to_value).collect())),
+            (
+                "items",
+                Value::Array(items.iter().map(expr_to_value).collect()),
+            ),
         ]),
         Expr::Object(pairs) => {
             let pair_vals: Vec<Value> = pairs
                 .iter()
                 .map(|(k, v)| obj(&[("key", Value::Str(k.clone())), ("value", expr_to_value(v))]))
                 .collect();
-            obj(&[("tag", Value::Str("Object".into())), ("pairs", Value::Array(pair_vals))])
+            obj(&[
+                ("tag", Value::Str("Object".into())),
+                ("pairs", Value::Array(pair_vals)),
+            ])
         }
         Expr::BinOp { left, op, right } => {
             if matches!(op, BinOp::NullCoalesce) {
@@ -3858,22 +4616,174 @@ fn expr_to_value(e: &Expr) -> Value {
                         ("tag", Value::Str("Lit".into())),
                         ("v", Value::Str(s.clone())),
                     ]),
-                    InterpolatedPart::Expr(e) => obj(&[
-                        ("tag", Value::Str("Expr".into())),
-                        ("e", expr_to_value(e)),
-                    ]),
+                    InterpolatedPart::Expr(e) => {
+                        obj(&[("tag", Value::Str("Expr".into())), ("e", expr_to_value(e))])
+                    }
                 })
                 .collect();
-            obj(&[("tag", Value::Str("Interp".into())), ("parts", Value::Array(part_vals))])
+            obj(&[
+                ("tag", Value::Str("Interp".into())),
+                ("parts", Value::Array(part_vals)),
+            ])
         }
         _ => obj(&[("tag", Value::Str("Null".into()))]),
     }
 }
 
 fn obj(pairs: &[(&str, Value)]) -> Value {
-    let map: std::collections::HashMap<String, Value> =
-        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+    let map: std::collections::HashMap<String, Value> = pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
     Value::Object(map)
+}
+
+// ── SQLite helpers (native only) ──────────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+fn gx_to_sqlite(val: &Value) -> rusqlite::types::ToSqlOutput<'static> {
+    use rusqlite::types::{ToSqlOutput, Value as SqlValue};
+    match val {
+        Value::Null => ToSqlOutput::Owned(SqlValue::Null),
+        Value::Bool(b) => ToSqlOutput::Owned(SqlValue::Integer(*b as i64)),
+        Value::Number(n) => {
+            if n.fract() == 0.0 {
+                ToSqlOutput::Owned(SqlValue::Integer(*n as i64))
+            } else {
+                ToSqlOutput::Owned(SqlValue::Real(*n))
+            }
+        }
+        Value::Str(s) => ToSqlOutput::Owned(SqlValue::Text(s.clone())),
+        other => ToSqlOutput::Owned(SqlValue::Text(other.to_string())),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sqlite_to_gx(val: rusqlite::types::ValueRef<'_>) -> Value {
+    use rusqlite::types::ValueRef;
+    match val {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::Number(i as f64),
+        ValueRef::Real(f) => Value::Number(f),
+        ValueRef::Text(s) => Value::Str(String::from_utf8_lossy(s).to_string()),
+        ValueRef::Blob(b) => Value::Str(base64_encode(b)),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn db_query_impl(path: &str, sql: &str, params: Vec<Value>) -> Result<Value, Signal> {
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|e| Signal::Error(format!("db_query: cannot open '{}': {}", path, e)))?;
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| Signal::Error(format!("db_query: SQL error: {}", e)))?;
+    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let sql_params: Vec<rusqlite::types::ToSqlOutput<'_>> =
+        params.iter().map(gx_to_sqlite).collect();
+    let rows_iter = stmt
+        .query(rusqlite::params_from_iter(sql_params.iter()))
+        .map_err(|e| Signal::Error(format!("db_query: query error: {}", e)))?;
+    let mut rows_iter = rows_iter;
+    let mut rows: Vec<Value> = Vec::new();
+    loop {
+        match rows_iter.next() {
+            Ok(Some(row)) => {
+                let mut map = HashMap::new();
+                for (i, col) in col_names.iter().enumerate() {
+                    let v = sqlite_to_gx(row.get_ref(i).unwrap_or(rusqlite::types::ValueRef::Null));
+                    map.insert(col.clone(), v);
+                }
+                rows.push(Value::Object(map));
+            }
+            Ok(None) => break,
+            Err(e) => return Err(Signal::Error(format!("db_query: row error: {}", e))),
+        }
+    }
+    Ok(Value::Array(rows))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn db_exec_impl(path: &str, sql: &str, params: Vec<Value>) -> Result<Value, Signal> {
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|e| Signal::Error(format!("db_exec: cannot open '{}': {}", path, e)))?;
+    let sql_params: Vec<rusqlite::types::ToSqlOutput<'_>> =
+        params.iter().map(gx_to_sqlite).collect();
+    let affected = conn
+        .execute(sql, rusqlite::params_from_iter(sql_params.iter()))
+        .map_err(|e| Signal::Error(format!("db_exec: SQL error: {}", e)))?;
+    Ok(Value::Number(affected as f64))
+}
+
+// ── #18 Typed error helpers ───────────────────────────────────────────────────
+
+fn infer_error_kind(msg: &str) -> &'static str {
+    let lower = msg.to_lowercase();
+    if lower.contains("json") || lower.contains("parse") || lower.contains("invalid") {
+        "JsonParseError"
+    } else if lower.contains("network")
+        || lower.contains("connection")
+        || lower.contains("timeout")
+        || lower.contains("http")
+    {
+        "NetworkError"
+    } else if lower.contains("permission") || lower.contains("access denied") {
+        "PermissionError"
+    } else if lower.contains("not found") || lower.contains("no such file") {
+        "NotFoundError"
+    } else if lower.contains("assert") {
+        "AssertionError"
+    } else {
+        "RuntimeError"
+    }
+}
+
+// ── Cron expression matcher ───────────────────────────────────────────────────
+// Supports: *, n, */n, n-m  for each of the 5 fields (min hour dom mon dow)
+
+fn cron_field_matches(field: &str, value: u64, min: u64, max: u64) -> bool {
+    if field == "*" {
+        return true;
+    }
+    if let Some(step) = field.strip_prefix("*/") {
+        let step: u64 = step.parse().unwrap_or(1);
+        return step > 0 && value % step == 0;
+    }
+    if field.contains('-') {
+        let parts: Vec<&str> = field.splitn(2, '-').collect();
+        if parts.len() == 2 {
+            let lo: u64 = parts[0].parse().unwrap_or(min);
+            let hi: u64 = parts[1].parse().unwrap_or(max);
+            return value >= lo && value <= hi;
+        }
+    }
+    field.parse::<u64>().map(|n| n == value).unwrap_or(false)
+}
+
+fn cron_matches(expr: &str, unix_secs: u64) -> bool {
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    if fields.len() < 5 {
+        return false;
+    }
+    // Convert unix_secs to calendar fields (UTC)
+    let total_minutes = unix_secs / 60;
+    let minute = total_minutes % 60;
+    let total_hours = total_minutes / 60;
+    let hour = total_hours % 24;
+    let total_days = total_hours / 24;
+    // Day of week: 1970-01-01 was a Thursday (4)
+    let dow = (total_days + 4) % 7;
+    // Rough month/dom (close enough for scheduling)
+    let year = 1970 + total_days / 365;
+    let day_of_year = total_days % 365;
+    let dom = day_of_year % 31 + 1;
+    let month = day_of_year / 31 + 1;
+    let _ = year;
+
+    cron_field_matches(fields[0], minute, 0, 59)
+        && cron_field_matches(fields[1], hour, 0, 23)
+        && cron_field_matches(fields[2], dom, 1, 31)
+        && cron_field_matches(fields[3], month, 1, 12)
+        && cron_field_matches(fields[4], dow, 0, 6)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

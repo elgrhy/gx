@@ -100,6 +100,7 @@ pub enum TokenKind {
     Retry,
     Timeout,
     OnError,
+    Cron, // when cron "expr" { }
 
     // Operators / punctuation
     LBrace,           // {
@@ -330,7 +331,7 @@ impl Lexer {
             "embed" => TokenKind::Embed,
             "infer" => TokenKind::Infer,
             "classifier" => TokenKind::Classifier,
-            "function" => TokenKind::Function,
+            "function" | "fn" => TokenKind::Function,
             "import" => TokenKind::Import,
             "while" => TokenKind::While,
             "break" => TokenKind::Break,
@@ -354,6 +355,7 @@ impl Lexer {
             "retry" => TokenKind::Retry,
             "timeout" => TokenKind::Timeout,
             "on_error" => TokenKind::OnError,
+            "cron" => TokenKind::Cron,
             "respond" => TokenKind::Respond,
             "port" => TokenKind::Port,
             "true" => TokenKind::BoolLit(true),
