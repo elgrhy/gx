@@ -639,9 +639,16 @@ impl Interpreter {
                 ..
             } => match self.run_stmts(try_body, env) {
                 Ok(v) => Ok(v),
-                Err(Signal::Error(msg)) | Err(Signal::AssertFail(msg)) => {
-                    // #18: build typed error object
-                    let kind = infer_error_kind(&msg);
+                Err(signal @ (Signal::Error(_) | Signal::AssertFail(_))) => {
+                    // #18: build typed error object — AssertFail always maps to AssertionError
+                    let (msg, kind) = match signal {
+                        Signal::AssertFail(m) => (m, "AssertionError"),
+                        Signal::Error(m) => {
+                            let k = infer_error_kind(&m);
+                            (m, k)
+                        }
+                        _ => unreachable!(),
+                    };
                     // If a type filter is set, only catch matching kinds
                     if let Some(required_kind) = catch_kind {
                         if required_kind != kind {
