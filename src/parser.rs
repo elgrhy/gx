@@ -59,6 +59,16 @@ impl Parser {
         }
     }
 
+    /// Like expect_ident but also accepts a quoted string literal — for object keys like "Content-Type".
+    fn parse_object_key(&mut self) -> Result<String, String> {
+        self.skip_newlines();
+        if let TokenKind::StringLit(s) = self.peek_kind().clone() {
+            self.advance();
+            return Ok(s);
+        }
+        self.expect_ident()
+    }
+
     fn expect_ident(&mut self) -> Result<String, String> {
         self.skip_newlines();
         let name = match self.peek_kind().clone() {
@@ -1063,7 +1073,7 @@ impl Parser {
             if self.eat(&TokenKind::RBrace) {
                 break;
             }
-            let key = self.expect_ident()?;
+            let key = self.parse_object_key()?;
             self.expect(&TokenKind::Colon)?;
             let val = self.parse_expr()?;
             pairs.push((key, val));
@@ -1635,7 +1645,7 @@ impl Parser {
                     if self.eat(&TokenKind::RBrace) {
                         break;
                     }
-                    let key = self.expect_ident()?;
+                    let key = self.parse_object_key()?;
                     self.expect(&TokenKind::Colon)?;
                     let val = self.parse_expr()?;
                     pairs.push((key, val));
@@ -1862,7 +1872,7 @@ impl Parser {
             if self.eat(&TokenKind::RBrace) {
                 break;
             }
-            let key = self.expect_ident()?;
+            let key = self.parse_object_key()?;
             self.expect(&TokenKind::Colon)?;
             let val = self.parse_expr()?;
             pairs.push((key, val));

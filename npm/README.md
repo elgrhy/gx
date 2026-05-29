@@ -8,7 +8,14 @@
 
 Every AI assistant today is a black box. GX makes it a glass box — every decision explicit, every AI call logged, every agent fully auditable. Built in Rust. No cloud lock-in.
 
-## What's New in v0.2.0
+## What's New in v0.2.5
+
+- **HTTPS fix** — `ask openai`, `http_post`, and all HTTP primitives now work reliably on every machine (switched from bundled rustls to the system's native TLS stack)
+- **`shell()` stdin** — child processes launched via `shell("...")` now inherit the parent's stdin, so `shell("cat")` with piped input works correctly
+- **String object keys** — object literals now accept quoted keys: `{ "Content-Type": "application/json" }` — required for building HTTP headers and JSON API payloads directly in GX
+
+<details>
+<summary>v0.2.0 — v0.2.4 highlights</summary>
 
 - **Opinionated agent style** — `goal`, `think`, `act`, `observe` make every agent self-documenting
 - **`think { prompt, model, min_confidence }`** — AI call with automatic confidence gate and escalation
@@ -19,9 +26,10 @@ Every AI assistant today is a black box. GX makes it a glass box — every decis
 - **`send_email { to, subject, body }`** — native SMTP (no library needed)
 - **`scrape "url"`** — fetch + strip HTML → clean plain text
 - **`notify { channel: "slack", message }`** — webhook notifications
-- **`ord(c)`** / **`chr(n)`** / **`is_digit`** / **`is_alpha`** / **`is_whitespace`** — character primitives
 - **Multi-agent orchestration** — `spawn agent`, `|>` pipelines, `when message`
-- **Production example** — full UAE Legal Assistant in `examples/legal_assistant/`
+- **Self-hosting** — GX interpreter + JS transpiler written in GX itself
+
+</details>
 
 ---
 

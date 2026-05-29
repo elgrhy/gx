@@ -34,6 +34,14 @@ gx run main.gx
 
 ---
 
+## What's New in v0.2.5
+
+- **HTTPS fix** — `ask openai`, `http_post`, and all HTTP primitives now work reliably on every machine (switched from bundled rustls to the system's native TLS stack)
+- **`shell()` stdin** — child processes launched via `shell("...")` now inherit the parent's stdin, so `shell("cat")` with piped input works correctly
+- **String object keys** — object literals now accept quoted keys: `{ "Content-Type": "application/json" }` — required for building HTTP headers and working with JSON APIs directly in GX
+
+---
+
 ## The Official GX Style (v0.2.0)
 
 GX is opinionated. Every agent follows a clear, readable structure — **goal → observe → think → act → remember → communicate**. You can see exactly what an agent does without running it.
@@ -346,7 +354,7 @@ my-agent/
 | Number | `42`, `3.14`, `-7` |
 | Bool | `true`, `false` |
 | Array | `[1, 2, 3]` |
-| Object | `{ key: "value", n: 42 }` |
+| Object | `{ key: "value", "Content-Type": "application/json" }` |
 | Null | `null` |
 
 ### Operators

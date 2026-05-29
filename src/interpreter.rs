@@ -2850,6 +2850,7 @@ impl Interpreter {
                 let output = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&cmd)
+                    .stdin(std::process::Stdio::inherit())
                     .output()
                     .map_err(|e| Signal::Error(format!("shell exec failed: {}", e)))?;
                 let mut map = HashMap::new();
