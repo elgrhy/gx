@@ -47,27 +47,49 @@ use crate::parser::Parser;
 // ── Detection ─────────────────────────────────────────────────────────────────
 
 /// Returns true if the source should be parsed with the indentation-based parser.
-/// Heuristic: first meaningful line uses `Agent Name` or `Helper Name`
-/// (no string literal, no opening brace on the same line).
+///
+/// Detection uses **positive indicators** rather than the absence of braces so
+/// that a valid brace-syntax file that happens to have no braces (e.g. only
+/// variable assignments) is never mis-detected as progressive syntax.
+///
+/// A file is progressive if **any** of the following are true:
+/// 1. It starts with an un-quoted `Agent Name` or `Helper Name` declaration
+///    (no `"`, no `{` on the same line as the keyword).
+/// 2. It contains a brain-cycle keyword alone on a line followed by a colon:
+///    `Plan:`, `Execute:`, `Remember:`, `Communicate:`.
+/// 3. It contains an `On start:` or `On <expr>:` block header.
 pub fn is_indent_syntax(source: &str) -> bool {
+    let brain_keywords = ["plan:", "execute:", "remember:", "communicate:"];
     for raw in source.lines() {
         let t = raw.trim();
         if t.is_empty() || t.starts_with("//") {
             continue;
         }
         let lower = t.to_lowercase();
+
+        // Positive indicator 1: unquoted Agent/Helper declaration
         if lower.starts_with("agent ") || lower.starts_with("helper ") {
-            // Old syntax: agent "name" {  or  agent "name"\n{
-            // New syntax: Agent Name  (no quotes, no braces on same line)
             let rest = t[t.find(' ').unwrap_or(0) + 1..].trim_start();
-            return !rest.starts_with('"') && !rest.starts_with('{');
+            if !rest.starts_with('"') && !rest.starts_with('{') {
+                return true;
+            }
         }
-        // Top-level import/use is compatible with both — keep scanning
-        if lower.starts_with("import ") || lower.starts_with("use ") {
-            continue;
+
+        // Positive indicator 2: brain-cycle section header alone on a line
+        if brain_keywords.iter().any(|kw| lower == *kw) {
+            return true;
         }
-        // Anything else at indent 0 that isn't a brace-style block → new syntax
-        return !t.contains('{');
+
+        // Positive indicator 3: On start: / On <expr>: event header
+        if lower.starts_with("on ") && lower.ends_with(':') {
+            return true;
+        }
+
+        // Positive indicator 4: bare `Agent` / `Helper` keyword with no name
+        // (level-1 minimal syntax where agent block has no body header)
+        if (lower == "agent" || lower == "helper") && !t.contains('{') {
+            return true;
+        }
     }
     false
 }

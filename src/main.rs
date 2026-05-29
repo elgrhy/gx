@@ -33,7 +33,10 @@ fn main() {
         "run" => {
             let file = require_arg(&args, 2, "gx run <file.gx>");
             let debug = args.contains(&"--debug".to_string());
-            cmd_run(file, debug)
+            let allow_shell = args.contains(&"--allow-shell".to_string());
+            let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
+            let no_sandbox = args.contains(&"--no-sandbox".to_string());
+            cmd_run(file, debug, allow_shell, allow_internal_http, no_sandbox)
         }
         "check" => {
             let file = require_arg(&args, 2, "gx check <file.gx>");
@@ -85,7 +88,10 @@ fn main() {
         // Shorthand: gx file.gx
         file if file.ends_with(".gx") => {
             let debug = args.contains(&"--debug".to_string());
-            cmd_run(file, debug)
+            let allow_shell = args.contains(&"--allow-shell".to_string());
+            let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
+            let no_sandbox = args.contains(&"--no-sandbox".to_string());
+            cmd_run(file, debug, allow_shell, allow_internal_http, no_sandbox)
         }
         cmd => {
             eprintln!("gx: unknown command '{}'\n", cmd);
@@ -115,8 +121,24 @@ fn parse_file(source: &str, path: &str) -> Result<crate::ast::Program, String> {
     }
 }
 
-fn cmd_run(path: &str, debug: bool) -> Result<(), String> {
-    let source = read_file(path)?;
+fn cmd_run(
+    path: &str,
+    debug: bool,
+    allow_shell: bool,
+    allow_internal_http: bool,
+    no_sandbox: bool,
+) -> Result<(), String> {
+    // Support `gx run -` to read source from stdin (used by `gx build` launchers).
+    let source = if path == "-" {
+        use std::io::Read;
+        let mut s = String::new();
+        std::io::stdin()
+            .read_to_string(&mut s)
+            .map_err(|e| format!("cannot read from stdin: {}", e))?;
+        s
+    } else {
+        read_file(path)?
+    };
     if debug {
         eprintln!("[gx] file: {}", path);
         eprintln!(
@@ -139,6 +161,51 @@ fn cmd_run(path: &str, debug: bool) -> Result<(), String> {
 
     let mut interp = Interpreter::new();
     interp.base_path = Some(path.to_string());
+    interp.allow_shell = allow_shell;
+    interp.allow_internal_http = allow_internal_http;
+
+    // Sandbox: restrict file I/O to the directory containing the script.
+    if !no_sandbox {
+        let script_path = if path == "-" {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        } else {
+            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path))
+        };
+        let sandbox = if path == "-" {
+            script_path.clone()
+        } else {
+            script_path
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        };
+        // Canonicalize the sandbox dir so it's always absolute.
+        let sandbox = std::fs::canonicalize(&sandbox).unwrap_or(sandbox);
+        interp.sandbox_dir = Some(sandbox.clone());
+
+        // Load gx.json from the sandbox directory (if present) to build the
+        // module allowlist for JS/Python bridge calls.
+        let manifest_path = sandbox.join("gx.json");
+        if manifest_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let js_modules = json["dependencies"]["js"].as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    });
+                    let py_modules = json["dependencies"]["py"].as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    });
+                    interp.allowed_js_modules = js_modules;
+                    interp.allowed_py_modules = py_modules;
+                }
+            }
+        }
+    }
+
     interp
         .run_program(&program)
         .map_err(|e| format!("{}: {}", path, e))
@@ -250,7 +317,12 @@ fn print_help() {
     println!("Brain-first programming language for building transparent AI assistants");
     println!();
     println!("USAGE:");
-    println!("  gx run <file.gx> [--debug]            Run a GX program");
+    println!("  gx run <file.gx> [--debug]                     Run a GX program");
+    println!("  gx run <file.gx> --allow-shell                 Enable shell()/exec() builtins");
+    println!(
+        "  gx run <file.gx> --allow-internal-http         Allow HTTP to private/localhost IPs"
+    );
+    println!("  gx run <file.gx> --no-sandbox                  Disable file-path sandboxing");
     println!("  gx check <file.gx>                     Check syntax without running");
     println!("  gx init <name>                         Create a new GX project");
     println!("  gx build <file.gx> [-o name]           Build standalone launcher");

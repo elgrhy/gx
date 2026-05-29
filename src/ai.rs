@@ -4,6 +4,16 @@
 use crate::value::Value;
 use std::collections::HashMap;
 
+/// Replace every occurrence of `key` in `s` with `[REDACTED]` so API keys
+/// never appear in error messages or logs.
+#[cfg(not(target_arch = "wasm32"))]
+fn redact(s: &str, key: &str) -> String {
+    if key.is_empty() {
+        return s.to_string();
+    }
+    s.replace(key, "[REDACTED]")
+}
+
 // ── WASM stubs (no HTTP in browser) ──────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
@@ -249,10 +259,13 @@ fn ask_openai(
     {
         Ok(resp) => parse_openai_response(resp, model),
         Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
+            let body = redact(&resp.into_string().unwrap_or_default(), &api_key);
             AiResponse::error("openai", format!("HTTP {}: {}", code, truncate(&body, 200)))
         }
-        Err(e) => AiResponse::error("openai", format!("Request failed: {}", e)),
+        Err(e) => AiResponse::error(
+            "openai",
+            redact(&format!("Request failed: {}", e), &api_key),
+        ),
     }
 }
 
@@ -317,13 +330,16 @@ fn ask_anthropic(
     {
         Ok(resp) => parse_anthropic_response(resp, model),
         Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
+            let body = redact(&resp.into_string().unwrap_or_default(), &api_key);
             AiResponse::error(
                 "anthropic",
                 format!("HTTP {}: {}", code, truncate(&body, 200)),
             )
         }
-        Err(e) => AiResponse::error("anthropic", format!("Request failed: {}", e)),
+        Err(e) => AiResponse::error(
+            "anthropic",
+            redact(&format!("Request failed: {}", e), &api_key),
+        ),
     }
 }
 

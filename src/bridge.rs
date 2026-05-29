@@ -197,8 +197,16 @@ impl Bridge {
             .spawn()
             .map_err(|e| format!("Failed to start Node.js: {}", e))?;
 
-        let mut stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or("Failed to get Node.js stdin pipe")?;
+        let stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or("Failed to get Node.js stdout pipe")?,
+        );
 
         // Send the shim code
         // Use CommonJS shim (avoid --input-type=module issues)
@@ -223,8 +231,16 @@ impl Bridge {
             .spawn()
             .map_err(|e| format!("Failed to start Python: {}", e))?;
 
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or("Failed to get Python stdin pipe")?;
+        let stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or("Failed to get Python stdout pipe")?,
+        );
 
         Ok(Bridge {
             kind: BridgeKind::Python,
