@@ -1,337 +1,125 @@
 # GX Language
 
-> A brain-first programming language for building transparent, auditable AI assistants.
+> Brain-first programming language for building transparent, auditable AI assistants.
 
 [![npm version](https://img.shields.io/npm/v/gxlang)](https://www.npmjs.com/package/gxlang)
+[![Crates.io](https://img.shields.io/crates/v/gx)](https://crates.io/crates/gx)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](https://github.com/elgrhy/gx)
 
 Every AI assistant today is a black box. GX makes it a glass box — every decision explicit, every AI call logged, every agent fully auditable. Built in Rust. No cloud lock-in.
 
-## What's New in v0.2.5
-
-- **HTTPS fix** — `ask openai`, `http_post`, and all HTTP primitives now work reliably on every machine (switched from bundled rustls to the system's native TLS stack)
-- **`shell()` stdin** — child processes launched via `shell("...")` now inherit the parent's stdin, so `shell("cat")` with piped input works correctly
-- **String object keys** — object literals now accept quoted keys: `{ "Content-Type": "application/json" }` — required for building HTTP headers and JSON API payloads directly in GX
-
-<details>
-<summary>v0.2.0 — v0.2.4 highlights</summary>
-
-- **Opinionated agent style** — `goal`, `think`, `act`, `observe` make every agent self-documenting
-- **`think { prompt, model, min_confidence }`** — AI call with automatic confidence gate and escalation
-- **`loop until condition`** / **`repeat N times`** — clean loop sugar
-- **`parallel { ... }`** — run multiple steps concurrently
-- **`retry: N`** / **`on_error: continue|escalate`** — declarative error handling on any agent
-- **`http_request { url, method, body, headers }`** — unified HTTP client
-- **`send_email { to, subject, body }`** — native SMTP (no library needed)
-- **`scrape "url"`** — fetch + strip HTML → clean plain text
-- **`notify { channel: "slack", message }`** — webhook notifications
-- **Multi-agent orchestration** — `spawn agent`, `|>` pipelines, `when message`
-- **Self-hosting** — GX interpreter + JS transpiler written in GX itself
-
-</details>
-
----
-
 ## Install
 
 ```bash
 npm install -g gxlang
+gx --version   # gx 0.4.0
 ```
 
-Downloads the correct pre-built binary for your platform (macOS arm64/x64, Linux x64/arm64, Windows x64).
+Downloads the correct native binary for your platform (macOS arm64/x64, Linux x64/arm64, Windows x64). No Rust required.
 
-Verify:
+## Quick Start
 
 ```bash
-gx version
+gx init my-agent
+cd my-agent
+gx run main.gx
 ```
 
----
+## What's New in v0.4.0
 
-## The Official GX Style
+The biggest GX release — now genuinely competitive with Python for agent-building.
 
-GX is opinionated. Every agent follows a clear structure — **goal → observe → think → act → remember → communicate**. Anyone can read it without running it.
+| Feature | Example |
+|---------|---------|
+| **Regex** | `regex_find(text, "\\$([0-9.]+)")` |
+| **Date/Time** | `date_diff(date_parse("2024-01-01"), date_now(), "days")` |
+| **CSV/YAML/TOML** | `csv_parse(read_file("data.csv"))` |
+| **.env loading** | `load_env(".env")` · `get_env("KEY", "default")` |
+| **TypeScript bridge** | `use ts.mylib` → calls ts-node/tsx automatically |
+| **Go/Binary bridge** | `use binary "./my_go_service"` |
+| **AI tool use** | `ask openai { prompt: "...", tools: [my_tool] }` |
+| **Streaming AI** | `ask openai { prompt: "...", stream: true }` |
+| **Persistent memory** | `persist_memory()` / `load_memory()` → SQLite |
+| **Vector store** | `vector_store_search(store, embed(query), 5)` |
+| **Schema validation** | `schema_validate(data, { name: "string" })` |
+| **Await block** | `await { a: http_get(url1), b: http_get(url2) } into results` |
+| **Retry backoff** | `retry(fn() { risky_call() }, 5, { backoff: "exponential" })` |
+| **Observability** | `trace_log("event", { data: value })` → JSONL to stderr |
+
+## Real Agent Example
 
 ```gx
-agent "lead_generator" {
-  goal: "Find and contact 10 qualified real-estate leads this week"
+import "utils/data.gx" as data
 
-  retry: 3
-  on_error: escalate
+tool "lookup_customer" {
+  description: "Look up customer by ID"
+  execute(customer_id) {
+    return http_get("https://api.example.com/customers/{customer_id}").data
+  }
+}
+
+agent "support_bot" {
+  remember { session_count = 0 }
 
   when started {
-    observe {
-      context: "Dubai Marina, 2BR, AED 120k budget"
+    load_env(".env")
+    load_memory()
+    memory.session_count += 1
+
+    // Validate incoming request
+    spec = { query: "string", customer_id: "number" }
+    check = schema_validate(input, spec)
+    if !check.ok {
+      say "Invalid request: " + check.errors[0]
+      return
     }
 
-    think {
-      prompt: "Extract 10 qualified leads matching: {context}",
-      model: "openai",
-      min_confidence: 0.82
+    // Ask AI with tool use
+    response = ask openai {
+      prompt:  input.query,
+      tools:   [lookup_customer],
+      model:   "gpt-4o",
+      stream:  true
     }
 
-    act {
-      for each lead in result.leads {
-        log("Lead: {lead.name} — {lead.email}")
-      }
-    }
-
-    remember {
-      memory.total_leads += 1
-      memory.last_run = get_timestamp()
-    }
-
-    communicate {
-      say "Processed leads for: {context}"
-    }
+    persist_memory()
+    say response.text
   }
 }
 ```
 
----
+## Language Interop
 
-## Multi-Agent Orchestration
-
-Agents can call each other, chain through pipelines, and exchange messages.
+GX can call into any language via subprocess bridges:
 
 ```gx
-// Call an agent and get its result
-category = spawn agent "classifier" with { question: input }
-
-// Pipeline: output of one agent becomes input of the next
-result = { question: input } |> spawn agent "classifier" |> spawn agent "researcher"
-
-// Send a message to another agent
-spawn "task" to "worker" with { payload: data }
+use js.axios          // Node.js
+use ts.analytics      // TypeScript (auto-detects tsx or ts-node)
+use py.pandas         // Python
+use binary "./svc"    // Any compiled binary (Go, Rust, Java, .NET)
+use go "./service"    // Go binary with JSON protocol
 ```
 
----
+## All Built-ins
 
-## Three Syntax Levels
+`ask` · `embed` · `http_get/post/put/delete` · `read_file` · `write_file` · `json_stringify/parse` · `csv_parse/stringify` · `yaml_parse/stringify` · `toml_parse/stringify` · `regex_test/find/find_all/replace/split/captures` · `date_now/parse/format/diff/add/parts` · `vector_store_new/add/search` · `cosine_similarity` · `schema_validate` · `persist_memory` · `load_memory` · `load_env` · `get_env` · `retry` · `trace_log` · `await {}` · `db_query/exec` · `base64_encode/decode` · `readline` · `shell` · and more
 
-All three compile to the same runtime.
+## v0.3.0 Features Still in v0.4.0
 
-### Level 1 — Pure intent
-```gx
-Agent greeter
-name = "World"
-"Hello {name}"
-```
+- Module system: `import "file.gx" as alias`
+- `!` (not) operator: `if !result.ok { ... }`
+- Range slicing: `text[0..5]`, `arr[1..4]`
+- Integer JSON: `json_stringify({n: 50})` → `"n":50` (not `50.0`)
+- Standalone `slice()` / `merge()`
+- `output` usable as a plain variable name
+- `readline()` for stdin
+- `{{ }}` brace escaping in strings
 
-### Level 2 — Named behaviors
-```gx
-Agent assistant
-user = "Ahmed"
+## Full Documentation
 
-Greet:
-  say "Hello {user}!"
-
-On start:
-  Greet
-```
-
-### Level 3 — Explicit brain cycle
-```gx
-Agent analyzer
-Plan:
-  action = "analyze"
-Execute:
-  result = ask openai { prompt: "Analyze this: {input}" }
-Remember:
-  memory.last = result.text
-Communicate:
-  say result.text
-```
-
-### Classic brace syntax
-```gx
-agent "greeter" {
-  remember { name = "World" }
-  when started { say "Hello, {memory.name}!" }
-}
-```
-
----
-
-## AI Primitives
-
-```gx
-// Ask any provider — every call auto-logged
-result = ask openai    { prompt: "Summarize: {text}", max_tokens: 100 }
-result = ask anthropic { prompt: "Translate to Arabic: {text}" }
-result = ask ollama    { prompt: "What is recursion?" }  // local, no API key
-
-// result.text        — the response
-// result.confidence  — 0.0–1.0, auto-adjusted for hedging language
-// result.tokens_used — for cost tracking
-// result.ok          — false if request failed
-
-// Embed text
-vector = embed "semantic search query"
-
-// Classify
-label = infer classifier {
-  input: user_message,
-  classes: ["support", "billing", "sales", "spam"]
-}
-```
-
-Set API keys:
-```bash
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-# ollama: brew install ollama && ollama serve
-```
-
----
-
-## Native Tools
-
-All work out of the box — no npm install required.
-
-```gx
-// HTTP
-result  = http_get("https://api.example.com/data")
-result  = http_request({ url: "https://api.example.com", method: "POST", body: payload })
-
-// Files
-content = read_file("data.txt")
-write_file("output.txt", content)
-lines   = read_file_lines("log.txt")
-exists  = file_exists("config.json")
-entries = list_dir("./agents")
-
-// Email (uses SMTP_HOST, SMTP_USER, SMTP_PASS env vars)
-send_email({ to: "user@example.com", subject: "Alert", body: "Agent completed." })
-
-// Scrape
-text = scrape("https://example.com")
-
-// Notify (Slack/webhook)
-notify({ channel: "slack", message: "Agent done" })
-
-// JSON
-obj  = json_parse(read_file("data.json"))
-raw  = json_stringify(obj)
-
-// Character
-code = ord("A")    // 65
-ch   = chr(65)     // "A"
-is_digit("5")      // true
-```
-
----
-
-## Package Interop
-
-```gx
-use js.axios
-use py.pandas
-
-agent "analyst" {
-  when started {
-    data = js.axios.get("https://api.example.com/data")
-    cwd  = py.os.getcwd()
-  }
-}
-```
-
-Install:
-```bash
-gx install js.axios
-gx install py.requests
-```
-
----
-
-## CLI Reference
-
-| Command | Description |
-|---------|-------------|
-| `gx run file.gx` | Run a GX file |
-| `gx run file.gx --debug` | Run with debug output |
-| `gx check file.gx` | Syntax check without running |
-| `gx init my-project` | Scaffold a new project |
-| `gx build file.gx` | Build a standalone launcher |
-| `gx install js.axios` | Install npm package for GX |
-| `gx install py.requests` | Install Python package for GX |
-| `gx fmt file.gx` | Format GX source |
-| `gx test` | Run all files in `tests/` |
-| `gx make "a weather bot"` | AI-generate GX code |
-| `gx version` | Print version |
-
----
-
-## Control Flow
-
-```gx
-// Standard
-if x > 10 { log("big") } else { log("small") }
-for each item in list { log(item) }
-while running { check() }
-try { risky() } catch e { log(e) }
-
-// v0.2.0 sugar
-loop until done { process() }
-repeat 5 times { tick() }
-repeat 10 times as i { log("step {i}") }
-parallel { step_a() step_b() step_c() }
-```
-
----
-
-## Memory
-
-```gx
-agent "tracker" {
-  remember {
-    count = 0
-    history = []
-  }
-  when started {
-    memory.count += 1
-    memory.history = memory.history.push("run {memory.count}")
-    log(memory.ai_trace)   // every AI call ever made, auto-logged
-  }
-}
-```
-
----
-
-## When Blocks
-
-```gx
-when started        { /* runs once on startup */ }
-when memory.x > 10  { /* runs when condition is true */ }
-when memory.status changes { re-run }
-when message "task" { log("received: {message.task}") }
-```
-
----
-
-## Platform Support
-
-| Platform | Architecture | Status |
-|----------|-------------|--------|
-| macOS | arm64 (Apple Silicon) | ✅ |
-| macOS | x86_64 (Intel) | ✅ |
-| Linux | x86_64 | ✅ |
-| Linux | arm64 | ✅ |
-| Windows | x86_64 | ✅ |
-
----
-
-## More
-
-- **GitHub:** https://github.com/elgrhy/gx
-- **Language Reference:** https://github.com/elgrhy/gx/blob/main/docs/language_reference.md
-- **Examples:** https://github.com/elgrhy/gx/tree/main/examples
-- **Getting Started:** https://github.com/elgrhy/gx/blob/main/docs/getting_started.md
-- **Playground:** https://elgrhy.github.io/gx/playground/
-
----
+[github.com/elgrhy/gx](https://github.com/elgrhy/gx)
 
 ## License
 
-MIT — © 2026 [DEVJSX LIMITED](https://devjsx.com) · Ahmed Elgarhy
+MIT — © 2025 Ahmed Elgarhy / DEVJSX LIMITED (London, UK)

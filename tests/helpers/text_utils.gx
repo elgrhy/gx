@@ -1,0 +1,33 @@
+// text_utils.gx — string helper module for v0.4.0 test suite
+// Imported as: import "helpers/text_utils.gx" as text
+
+function truncate(s, max_len) {
+  if s.len() <= max_len { return s }
+  return s[0..max_len] + "..."
+}
+
+function pad(s, width) {
+  diff = width - s.len()
+  if diff <= 0 { return s }
+  i = 0
+  padding = ""
+  while i < diff {
+    padding = padding + " "
+    i += 1
+  }
+  return s + padding
+}
+
+function count_words(s) {
+  words = regex_split(s.trim(), "\\s+")
+  if len(words) == 1 and words[0] == "" { return 0 }
+  return len(words)
+}
+
+function extract_numbers(s) {
+  return regex_find_all(s, "\\d+\\.?\\d*")
+}
+
+function is_valid_email(s) {
+  return regex_test(s, "@") and regex_test(s, "\\.")
+}

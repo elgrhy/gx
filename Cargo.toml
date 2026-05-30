@@ -1,9 +1,25 @@
 [package]
 name = "gx"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
-description = "GX — brain-first programming language for building transparent AI assistants"
+description = "GX — brain-first programming language for building transparent, auditable AI assistants. Every AI call logged, every decision explicit, every agent debuggable."
 authors = ["Ahmed Elgarhy <ahmed@devjsx.com>"]
+license = "MIT"
+homepage = "https://github.com/elgrhy/gx"
+repository = "https://github.com/elgrhy/gx"
+documentation = "https://github.com/elgrhy/gx#readme"
+keywords = ["ai", "agent", "language", "llm", "interpreter"]
+categories = ["command-line-utilities", "development-tools", "parsing"]
+readme = "README.md"
+exclude = [
+    "tests/tmp/*",
+    "tests/.env.test",
+    "self/*",
+    "examples/*",
+    "docs/*",
+    "Formula/*",
+    ".github/*",
+]
 
 [[bin]]
 name = "gx"
@@ -20,10 +36,14 @@ serde_json = "1"
 
 # Native-only (HTTP client + server — not available in WASM)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ureq = { version = "2", features = ["json", "tls"], default-features = false }
+ureq    = { version = "2", features = ["json", "tls"], default-features = false }
 tiny_http = "0.12"
-regex = "1"
+regex   = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+chrono  = { version = "0.4", features = ["serde"] }
+csv     = "1"
+serde_yaml = "0.9"
+toml    = "0.8"
 
 # WASM-only
 [target.'cfg(target_arch = "wasm32")'.dependencies]

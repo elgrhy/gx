@@ -97,6 +97,20 @@ impl Interpreter {
         }
         match namespace {
             "js" => self.call_js(module, method, args),
+            "ts" => {
+                // TypeScript bridge — lazy-init, shared with JS bridge slot
+                if self.js_bridge.is_none() {
+                    match Bridge::new_typescript() {
+                        Ok(b) => self.js_bridge = Some(b),
+                        Err(e) => return Err(Signal::Error(e)),
+                    }
+                }
+                let bridge = self
+                    .js_bridge
+                    .as_mut()
+                    .ok_or_else(|| Signal::Error("TypeScript bridge unavailable".into()))?;
+                bridge.call(module, method, args).map_err(Signal::Error)
+            }
             "py" => {
                 if self.py_bridge.is_none() {
                     match Bridge::new_python() {
@@ -110,12 +124,32 @@ impl Interpreter {
                     .ok_or_else(|| Signal::Error("Python bridge unavailable".into()))?;
                 bridge.call(module, method, args).map_err(Signal::Error)
             }
+            // Generic binary / Go bridge — module is the path to the executable.
+            // Syntax: use binary "./my_service" → bridge_call("binary", "./my_service", method, args)
+            // Syntax: use go "./my_go_service" → bridge_call("go", "./my_go_service", method, args)
+            "binary" | "go" | "rust_bin" => {
+                let bridge_key = format!("{}:{}", namespace, module);
+                if !self.binary_bridges.contains_key(&bridge_key) {
+                    match Bridge::new_binary(module) {
+                        Ok(b) => {
+                            self.binary_bridges.insert(bridge_key.clone(), b);
+                        }
+                        Err(e) => return Err(Signal::Error(e)),
+                    }
+                }
+                let bridge = self
+                    .binary_bridges
+                    .get_mut(&bridge_key)
+                    .ok_or_else(|| Signal::Error("Binary bridge unavailable".into()))?;
+                bridge.call(module, method, args).map_err(Signal::Error)
+            }
             "rust" => Err(Signal::Error(format!(
-                "Native Rust interop for '{}' requires recompiling GX with the crate linked.",
+                "Native Rust interop for '{}' requires recompiling GX with the crate linked. \
+                 For subprocess interop, use: use binary \"./my_rust_binary\"",
                 module
             ))),
             other => Err(Signal::Error(format!(
-                "Unknown namespace '{}'. Use: js, py",
+                "Unknown namespace '{}'. Use: js, ts, py, binary, go",
                 other
             ))),
         }

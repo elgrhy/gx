@@ -101,6 +101,13 @@ pub enum TokenKind {
     Timeout,
     OnError,
     Cron, // when cron "expr" { }
+    // v0.4.0
+    Tool,
+    Schema,
+    Await,
+    Required,
+    Description,
+    Persistent,
 
     // Operators / punctuation
     LBrace,           // {
@@ -234,8 +241,17 @@ impl Lexer {
 
     fn read_number(&mut self) -> f64 {
         let mut s = String::new();
+        let mut has_dot = false;
         while let Some(c) = self.peek() {
-            if c.is_ascii_digit() || c == '.' {
+            if c.is_ascii_digit() {
+                s.push(c);
+                self.advance();
+            } else if c == '.' && !has_dot {
+                // Do NOT consume a second dot — `..` is the range operator, not part of a number.
+                if self.peek_next() == Some('.') {
+                    break;
+                }
+                has_dot = true;
                 s.push(c);
                 self.advance();
             } else {
@@ -303,7 +319,8 @@ impl Lexer {
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "return" => TokenKind::Return,
-            "output" => TokenKind::Output,
+            // "output" is intentionally NOT a keyword — it is usable as a variable name.
+            // output(expr) still works as a builtin function call.
             "log" => TokenKind::Log,
             "say" => TokenKind::Say,
             "use" => TokenKind::Use,
@@ -356,6 +373,12 @@ impl Lexer {
             "timeout" => TokenKind::Timeout,
             "on_error" => TokenKind::OnError,
             "cron" => TokenKind::Cron,
+            "tool" => TokenKind::Tool,
+            "schema" => TokenKind::Schema,
+            "await" => TokenKind::Await,
+            "required" => TokenKind::Required,
+            "description" => TokenKind::Description,
+            "persistent" => TokenKind::Persistent,
             "respond" => TokenKind::Respond,
             "port" => TokenKind::Port,
             "true" => TokenKind::BoolLit(true),
@@ -494,7 +517,8 @@ impl Lexer {
                         self.advance();
                         tokens.push(Token::new(TokenKind::NotEq, line, col));
                     } else {
-                        return Err(format!("Unexpected '!' at line {}, col {}", line, col));
+                        // `!expr` is sugar for `not expr`
+                        tokens.push(Token::new(TokenKind::Not, line, col));
                     }
                 }
                 Some('<') => {

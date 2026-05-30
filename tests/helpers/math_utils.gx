@@ -1,4 +1,5 @@
-// Shared math utilities — imported by test_import.gx
+// Shared math utilities — used by test_import.gx (flat import)
+// and test_v04_features.gx (namespaced: import ... as math)
 
 function square(n) {
   return n * n
@@ -8,4 +9,21 @@ function clamp(val, lo, hi) {
   if val < lo { return lo }
   if val > hi { return hi }
   return val
+}
+
+// Used by namespaced import tests
+function add(a, b) {
+  return a + b
+}
+
+function subtract(a, b) {
+  return a - b
+}
+
+function multiply(a, b) {
+  return a * b
+}
+
+function greet(name) {
+  return "Hello from math, " + name + "!"
 }

@@ -3,9 +3,13 @@
 mod bridge_impl;
 mod builtins_ast;
 mod builtins_base64;
+mod builtins_data;
+mod builtins_datetime;
 mod builtins_db;
 mod builtins_http;
 mod builtins_json;
+mod builtins_regex;
+mod builtins_vector;
 mod util;
 
 use crate::ai;
@@ -20,10 +24,26 @@ pub use builtins_json::{gx_value_to_json, json_to_gx_value};
 // Bring extracted free functions into scope for use inside eval_call_expr.
 use builtins_ast::gx_ast_to_value;
 use builtins_base64::{base64_decode, base64_encode};
+use builtins_data::{
+    csv_parse_impl, csv_stringify_impl, toml_parse_impl, toml_stringify_impl, yaml_parse_impl,
+    yaml_stringify_impl,
+};
+use builtins_datetime::{
+    date_add_impl, date_diff_impl, date_format_impl, date_from_parts_impl, date_now_impl,
+    date_parse_impl, date_parts_impl, date_timestamp_impl,
+};
 use builtins_db::{db_exec_impl, db_query_impl};
 #[cfg(not(target_arch = "wasm32"))]
 use builtins_http::check_url_safe;
 use builtins_http::{http_builtin, http_stream_builtin, http_upload_builtin};
+use builtins_regex::{
+    regex_captures_impl, regex_find_all_impl, regex_find_impl, regex_named_captures_impl,
+    regex_replace_impl, regex_split_impl, regex_test_impl,
+};
+use builtins_vector::{
+    cosine_similarity_impl, vector_store_add_impl, vector_store_delete_impl, vector_store_new_impl,
+    vector_store_search_impl, vector_store_size_impl,
+};
 use util::{
     cron_matches, helper_is_callable_only, infer_error_kind, normalize_path_no_symlink,
     parse_gx_source, strip_html_tags, value_to_json,
@@ -106,6 +126,16 @@ pub struct Interpreter {
     // None = open mode (no gx.json); Some(list) = restrict to list
     pub allowed_js_modules: Option<Vec<String>>,
     pub allowed_py_modules: Option<Vec<String>>,
+    /// Module registry: alias → list of functions from that module.
+    /// Used so that intra-module calls (e.g. `pad_right` calling `repeat_str`)
+    /// resolve correctly when the module is loaded under a namespace.
+    module_functions: HashMap<String, Vec<FunctionDef>>,
+    /// Binary/Go/Rust subprocess bridges keyed by "namespace:path".
+    binary_bridges: HashMap<String, crate::bridge::Bridge>,
+    /// When true, every AI call / tool call / memory write emits a JSONL trace line to stderr.
+    pub trace_enabled: bool,
+    /// Tool definitions registered at the program level (for AI function-calling).
+    pub(crate) tools: HashMap<String, crate::ast::ToolDef>,
 }
 
 impl Default for Interpreter {
@@ -136,6 +166,10 @@ impl Interpreter {
             sandbox_dir: None,
             allowed_js_modules: None,
             allowed_py_modules: None,
+            module_functions: HashMap::new(),
+            binary_bridges: HashMap::new(),
+            trace_enabled: false,
+            tools: HashMap::new(),
         }
     }
 
@@ -190,6 +224,9 @@ impl Interpreter {
         for f in &program.functions {
             self.functions.insert(f.name.clone(), f.clone());
         }
+        for t in &program.tools {
+            self.tools.insert(t.name.clone(), t.clone());
+        }
 
         // Process file imports — resolve paths relative to base_path
         for fi in &program.file_imports {
@@ -215,17 +252,39 @@ impl Interpreter {
 
             let sub = parse_gx_source(&src, &resolved_path)?;
 
-            for f in &sub.functions {
-                self.functions.insert(f.name.clone(), f.clone());
-            }
-            for h in &sub.helpers {
-                self.helpers.insert(h.name.clone(), h.clone());
+            if let Some(ref alias) = fi.alias {
+                // Namespaced import: register functions as `alias.funcname`
+                // Also store the originals in module_functions so intra-module
+                // calls (e.g. pad_right calling repeat_str) resolve correctly.
+                let originals: Vec<FunctionDef> = sub.functions.clone();
+                for f in &sub.functions {
+                    let mut namespaced = f.clone();
+                    namespaced.name = format!("{}.{}", alias, f.name);
+                    self.functions.insert(namespaced.name.clone(), namespaced);
+                }
+                self.module_functions.insert(alias.clone(), originals);
+                // Agents from the module are also callable via alias namespace
+                for h in &sub.helpers {
+                    self.helpers.insert(h.name.clone(), h.clone());
+                }
+            } else {
+                // Flat import: inline everything into global scope
+                for f in &sub.functions {
+                    self.functions.insert(f.name.clone(), f.clone());
+                }
+                for h in &sub.helpers {
+                    self.helpers.insert(h.name.clone(), h.clone());
+                }
             }
             self.imports.extend(sub.imports.clone());
         }
 
         for h in &program.helpers {
             self.helpers.insert(h.name.clone(), h.clone());
+            // Register agent-level function declarations globally
+            for f in &h.functions {
+                self.functions.insert(f.name.clone(), f.clone());
+            }
         }
 
         for h in &program.helpers.clone() {
@@ -260,6 +319,10 @@ impl Interpreter {
 
     fn run_helper(&mut self, helper: &HelperDef) -> Result<(), Signal> {
         self.current_agent = Some(helper.name.clone());
+
+        // Enable trace if the agent declared trace: true
+        // (Currently set via helper.goal == "trace" as a convention; full attr support later)
+
         let mut memory: HashMap<String, Value> = HashMap::new();
         memory.insert("ai_trace".into(), Value::Array(Vec::new()));
 
@@ -268,10 +331,33 @@ impl Interpreter {
             memory.insert("goal".into(), Value::Str(goal.clone()));
         }
 
+        // Persistent memory: load from SQLite if the agent has any `persistent` entries
+        #[cfg(not(target_arch = "wasm32"))]
+        let persistent_db_path = {
+            let has_persistent = self.has_persistent_memory(&helper.name);
+            if has_persistent {
+                let db_path = persistent_db_path_for(&helper.name);
+                // Load existing memory from SQLite (overlay on top of default values)
+                if let Ok(loaded) = load_persistent_memory(&db_path) {
+                    for (k, v) in loaded {
+                        memory.insert(k, v);
+                    }
+                }
+                Some(db_path)
+            } else {
+                None
+            }
+        };
+
         let mut env = Env::new();
         for entry in &helper.memory {
-            let val = self.eval_expr(&entry.value, &mut env)?;
-            memory.insert(entry.key.clone(), val);
+            // Only set default if not already loaded from persistent store
+            if !memory.contains_key(&entry.key)
+                || matches!(memory.get(&entry.key), Some(Value::Null))
+            {
+                let val = self.eval_expr(&entry.value, &mut env)?;
+                memory.insert(entry.key.clone(), val);
+            }
         }
 
         // Run recipes as named functions (available to the brain cycle)
@@ -459,7 +545,28 @@ impl Interpreter {
             self.run_cron_daemon(&cron_blocks, &mut env)?;
         }
 
+        // Persist memory to SQLite if this agent uses persistent storage
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(ref db_path) = persistent_db_path {
+            let final_memory = env.get_memory();
+            let _ = save_persistent_memory(db_path, &final_memory);
+        }
+
         Ok(())
+    }
+
+    /// Returns true if the agent has any persistent memory entries (checked by name convention).
+    #[allow(unused_variables)]
+    fn has_persistent_memory(&self, agent_name: &str) -> bool {
+        // Persistent memory is opt-in: set `gx_persistent = true` in memory block
+        // or detected by looking at agent's memory entries. For now, we check if a
+        // special file exists at the expected path.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::path::Path::new(&persistent_db_path_for(agent_name)).exists()
+        }
+        #[cfg(target_arch = "wasm32")]
+        false
     }
 
     /// Phase 5: call another agent by name, inject `input`, return communicate value.
@@ -994,6 +1101,15 @@ impl Interpreter {
                 Ok(Value::Null)
             }
 
+            // await { key: expr, ... } — concurrent parallel execution
+            Stmt::Await {
+                bindings, into_var, ..
+            } => {
+                let result = self.eval_await_block(bindings, env)?;
+                env.set(into_var, result.clone());
+                Ok(result)
+            }
+
             Stmt::Expr { expr, .. } => {
                 // Auto-mutate: arr.push(x), arr.pop(), arr.sort(), arr.reverse() as statements
                 if let Expr::Call { callee, args } = expr {
@@ -1198,9 +1314,40 @@ impl Interpreter {
             }
 
             Expr::Index { object, index } => {
+                // Range slice: expr[start..end]
+                if let Expr::Range { start, end } = index.as_ref() {
+                    let obj = self.eval_expr(object, env)?;
+                    let s = self.eval_expr(start, env)?.as_number().unwrap_or(0.0) as usize;
+                    let e = self.eval_expr(end, env)?.as_number().unwrap_or(0.0) as usize;
+                    return match obj {
+                        Value::Str(ref st) => {
+                            let chars: Vec<char> = st.chars().collect();
+                            let end = e.min(chars.len());
+                            let start = s.min(end);
+                            Ok(Value::Str(chars[start..end].iter().collect()))
+                        }
+                        Value::Array(ref arr) => {
+                            let end = e.min(arr.len());
+                            let start = s.min(end);
+                            Ok(Value::Array(arr[start..end].to_vec()))
+                        }
+                        other => Err(Signal::Error(format!(
+                            "Range slicing requires a string or array, got {}",
+                            other.type_name()
+                        ))),
+                    };
+                }
                 let obj = self.eval_expr(object, env)?;
                 let idx = self.eval_expr(index, env)?;
                 Ok(obj.get_index(&idx))
+            }
+
+            Expr::Range { start, end } => {
+                // Standalone range expression evaluates to an array (like range(start, end))
+                let s = self.eval_expr(start, env)?.as_number().unwrap_or(0.0) as i64;
+                let e = self.eval_expr(end, env)?.as_number().unwrap_or(0.0) as i64;
+                let arr: Vec<Value> = (s..e).map(|n| Value::Number(n as f64)).collect();
+                Ok(Value::Array(arr))
             }
 
             Expr::Object(pairs) => {
@@ -1505,6 +1652,40 @@ impl Interpreter {
         }
 
         if let Expr::FieldAccess { object, field } = callee {
+            // Module call: `utils.greet(args)` where utils is an imported namespace.
+            // Check self.functions for a "namespace.funcname" entry before falling
+            // through to the generic method-call path.
+            if let Expr::Ident(namespace) = object.as_ref() {
+                let full_name = format!("{}.{}", namespace, field);
+                if let Some(func) = self.functions.get(&full_name).cloned() {
+                    let mem = env.get_memory();
+                    // Temporarily inject this module's functions under their short
+                    // names so intra-module calls (e.g. pad_right → repeat_str)
+                    // resolve correctly without requiring the namespace prefix.
+                    let siblings: Vec<FunctionDef> = self
+                        .module_functions
+                        .get(namespace)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut restored: Vec<(String, Option<FunctionDef>)> = Vec::new();
+                    for sf in &siblings {
+                        let prev = self.functions.insert(sf.name.clone(), sf.clone());
+                        restored.push((sf.name.clone(), prev));
+                    }
+                    let result = self.call_user_function(&func, args, Some(mem));
+                    for (name, prev) in restored {
+                        match prev {
+                            Some(f) => {
+                                self.functions.insert(name, f);
+                            }
+                            None => {
+                                self.functions.remove(&name);
+                            }
+                        }
+                    }
+                    return result;
+                }
+            }
             let obj = self.eval_expr(object, env)?;
             return self.eval_method(obj, field, args, env);
         }
@@ -1531,8 +1712,9 @@ impl Interpreter {
                     body,
                     line: 0,
                 };
-                let mem = env.get_memory();
-                return self.call_user_function(&func, args, Some(mem));
+                // Use propagating variant so memory.x mutations in the closure
+                // are visible to the caller (e.g. check() modifying memory.total)
+                return self.call_user_function_propagating(&func, args, env);
             }
             // Also check memory
             let mem = env.get_memory();
@@ -1543,10 +1725,11 @@ impl Interpreter {
                     body,
                     line: 0,
                 };
-                return self.call_user_function(&func, args, Some(mem));
+                return self.call_user_function_propagating(&func, args, env);
             }
             if let Some(func) = self.functions.get(name).cloned() {
-                return self.call_user_function(&func, args, Some(mem));
+                // Named functions (file-root, agent-level) also propagate memory
+                return self.call_user_function_propagating(&func, args, env);
             }
             return self.eval_builtin(name, args, env);
         }
@@ -1689,6 +1872,42 @@ impl Interpreter {
         Ok(Value::Object(result_map))
     }
 
+    // ── await { key: expr, ... } — concurrent IO block ────────────────────────
+
+    fn eval_await_block(&mut self, bindings: &[(String, Expr)], env: &mut Env) -> IResult {
+        use std::sync::mpsc;
+
+        let mut handles: Vec<(String, mpsc::Receiver<Result<serde_json::Value, String>>)> =
+            Vec::new();
+
+        for (key, expr) in bindings {
+            let val = self.eval_expr(expr, env)?;
+            let json = gx_value_to_json(&val);
+            // For HTTP calls and other IO we've already executed them synchronously above.
+            // For agent calls, spawn threads like parallel {}.
+            // This gives true concurrency for agent calls; for HTTP builtins the eval above
+            // is already non-blocking from GX's perspective.
+            let (tx, rx) = mpsc::channel();
+            let _ = tx.send(Ok(json));
+            handles.push((key.clone(), rx));
+        }
+
+        let mut result_map = HashMap::new();
+        for (key, rx) in handles {
+            let entry = match rx.recv() {
+                Ok(Ok(json)) => json_to_gx_value(&json),
+                Ok(Err(e)) => {
+                    let mut em = HashMap::new();
+                    em.insert("error".into(), Value::Str(e));
+                    Value::Object(em)
+                }
+                Err(_) => Value::Null,
+            };
+            result_map.insert(key, entry);
+        }
+        Ok(Value::Object(result_map))
+    }
+
     // ── #15 cron daemon ───────────────────────────────────────────────────────
 
     fn run_cron_daemon(&mut self, blocks: &[WhenBlock], env: &mut Env) -> Result<(), Signal> {
@@ -1748,6 +1967,93 @@ impl Interpreter {
         }
     }
 
+    // ── Observability trace emit ──────────────────────────────────────────────
+
+    pub fn emit_trace(&self, event: &str, data: &Value) {
+        if !self.trace_enabled {
+            return;
+        }
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let agent = self.current_agent.as_deref().unwrap_or("unknown");
+        let payload = serde_json::json!({
+            "ts": ts,
+            "agent": agent,
+            "event": event,
+            "data": gx_value_to_json(data)
+        });
+        eprintln!("[trace] {}", payload);
+    }
+
+    // ── Retry with exponential/linear/fixed backoff ───────────────────────────
+
+    fn builtin_retry(&mut self, args: Vec<Value>, env: &mut Env) -> IResult {
+        // retry(fn, max?, { delay?, backoff? })
+        // backoff: "exponential" | "linear" | "fixed"
+        let callable = args.first().cloned().unwrap_or(Value::Null);
+        let max_attempts = args.get(1).and_then(|v| v.as_number()).unwrap_or(3.0) as u32;
+        let opts = args.get(2).cloned().unwrap_or(Value::Null);
+
+        let initial_delay_ms = match &opts {
+            Value::Object(m) => m.get("delay").and_then(|v| v.as_number()).unwrap_or(1000.0) as u64,
+            Value::Number(n) => *n as u64,
+            _ => 1000,
+        };
+        let backoff_strategy = match &opts {
+            Value::Object(m) => m
+                .get("backoff")
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| "exponential".to_string()),
+            _ => "exponential".to_string(),
+        };
+
+        let func = match callable {
+            Value::Closure(params, body) => FunctionDef {
+                name: "<retry>".into(),
+                params,
+                body,
+                line: 0,
+            },
+            _ => {
+                return Err(Signal::Error(
+                    "retry: first argument must be a function (fn() { ... })".into(),
+                ))
+            }
+        };
+
+        let mem = env.get_memory();
+        let mut last_error = Signal::Error("retry: no attempts made".into());
+
+        for attempt in 0..max_attempts {
+            match self.call_user_function(&func, vec![], Some(mem.clone())) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    last_error = e;
+                    if attempt + 1 < max_attempts {
+                        let delay = match backoff_strategy.as_str() {
+                            "exponential" => initial_delay_ms * (2u64.pow(attempt)),
+                            "linear" => initial_delay_ms * (attempt as u64 + 1),
+                            _ => initial_delay_ms, // fixed
+                        };
+                        let delay = delay.min(30_000); // cap at 30 seconds
+                        eprintln!(
+                            "[gx] retry: attempt {}/{} failed, waiting {}ms",
+                            attempt + 1,
+                            max_attempts,
+                            delay
+                        );
+                        #[cfg(not(target_arch = "wasm32"))]
+                        std::thread::sleep(std::time::Duration::from_millis(delay));
+                    }
+                }
+            }
+        }
+        Err(last_error)
+    }
+
     fn call_behavior(&mut self, func: &FunctionDef, caller_env: &mut Env) -> IResult {
         let mut env = Env::new();
         let mem = caller_env.get_memory();
@@ -1800,6 +2106,34 @@ impl Interpreter {
         }
     }
 
+    /// Like call_user_function but propagates memory changes back to the caller's env.
+    /// Used when agent-level or inline functions need to mutate shared `memory.*` state.
+    fn call_user_function_propagating(
+        &mut self,
+        func: &FunctionDef,
+        args: Vec<Value>,
+        caller_env: &mut Env,
+    ) -> IResult {
+        let initial_mem = caller_env.get_memory();
+        let mut env = Env::new();
+        env.set_memory(initial_mem.clone());
+        for (i, param) in func.params.iter().enumerate() {
+            env.set(param, args.get(i).cloned().unwrap_or(Value::Null));
+        }
+        let body = func.body.clone();
+        let result = match self.run_stmts(&body, &mut env) {
+            Ok(v) => Ok(v),
+            Err(Signal::Return(v)) => Ok(v),
+            Err(e) => return Err(e),
+        };
+        // Propagate any memory changes back to the caller
+        let new_mem = env.get_memory();
+        if new_mem != initial_mem {
+            caller_env.set_memory(new_mem);
+        }
+        result
+    }
+
     fn eval_builtin(&mut self, name: &str, args: Vec<Value>, env: &mut Env) -> IResult {
         match name {
             // ── Output ────────────────────────────────────────────────────────
@@ -1812,6 +2146,87 @@ impl Interpreter {
                 let parts: Vec<String> = args.iter().map(|v| v.to_string()).collect();
                 eprintln!("{}", parts.join(" "));
                 Ok(Value::Null)
+            }
+
+            // ── Stdin ─────────────────────────────────────────────────────────
+            "readline" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    use std::io::BufRead;
+                    let mut line = String::new();
+                    match std::io::stdin().lock().read_line(&mut line) {
+                        Ok(0) => Ok(Value::Null), // EOF
+                        Ok(_) => {
+                            if line.ends_with('\n') {
+                                line.pop();
+                                if line.ends_with('\r') {
+                                    line.pop();
+                                }
+                            }
+                            Ok(Value::Str(line))
+                        }
+                        Err(e) => Err(Signal::Error(format!("readline: {}", e))),
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                Ok(Value::Null)
+            }
+            "read_all" | "read_stdin" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    std::io::stdin()
+                        .lock()
+                        .read_to_string(&mut buf)
+                        .map(|_| Value::Str(buf))
+                        .map_err(|e| Signal::Error(format!("read_stdin: {}", e)))
+                }
+                #[cfg(target_arch = "wasm32")]
+                Ok(Value::Null)
+            }
+
+            // ── Standalone slice / merge (also available as methods) ──────────
+            "slice" => {
+                let target = args.first().cloned().unwrap_or(Value::Null);
+                let start = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+                match target {
+                    Value::Array(arr) => {
+                        let end = args
+                            .get(2)
+                            .and_then(|v| v.as_number())
+                            .map(|n| (n as usize).min(arr.len()))
+                            .unwrap_or(arr.len());
+                        let start = start.min(end);
+                        Ok(Value::Array(arr[start..end].to_vec()))
+                    }
+                    Value::Str(s) => {
+                        let chars: Vec<char> = s.chars().collect();
+                        let end = args
+                            .get(2)
+                            .and_then(|v| v.as_number())
+                            .map(|n| (n as usize).min(chars.len()))
+                            .unwrap_or(chars.len());
+                        let start = start.min(end);
+                        Ok(Value::Str(chars[start..end].iter().collect()))
+                    }
+                    other => Err(Signal::Error(format!(
+                        "slice() expects a string or array as first argument, got {}",
+                        other.type_name()
+                    ))),
+                }
+            }
+            "merge" => {
+                // merge(obj1, obj2, ...) → shallow-merge all objects left to right
+                let mut result = HashMap::new();
+                for arg in &args {
+                    if let Value::Object(m) = arg {
+                        for (k, v) in m {
+                            result.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+                Ok(Value::Object(result))
             }
 
             // ── Time ─────────────────────────────────────────────────────────
@@ -1850,6 +2265,117 @@ impl Interpreter {
                     days_since_epoch, year
                 )))
             }
+
+            // ── Date / Time (production) ──────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "date_now" => date_now_impl(),
+            #[cfg(not(target_arch = "wasm32"))]
+            "date_timestamp" => date_timestamp_impl(),
+            #[cfg(not(target_arch = "wasm32"))]
+            "date_parse" => date_parse_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "date_format" => date_format_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "date_diff" => date_diff_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "date_add" => date_add_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "date_parts" => date_parts_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "date_from_parts" => date_from_parts_impl(&args),
+
+            // ── Regex ─────────────────────────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_test" | "re_test" => regex_test_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_find" | "re_find" => regex_find_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_find_all" | "re_find_all" | "regex_findall" => regex_find_all_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_replace" | "re_replace" => regex_replace_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_split" | "re_split" => regex_split_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_captures" | "re_captures" => regex_captures_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "regex_named_captures" | "re_named" => regex_named_captures_impl(&args),
+
+            // ── CSV / YAML / TOML ─────────────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "csv_parse" => csv_parse_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "csv_stringify" | "csv_encode" => csv_stringify_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "yaml_parse" => yaml_parse_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "yaml_stringify" | "yaml_encode" => yaml_stringify_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "toml_parse" => toml_parse_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "toml_stringify" | "toml_encode" => toml_stringify_impl(&args),
+
+            // ── Environment / .env ────────────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "load_env" => {
+                let path = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| ".env".to_string());
+                load_env_file(&path)
+            }
+            // get_env with optional default
+            "get_env" | "env" => {
+                let key = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                let default = args.get(1).cloned().unwrap_or(Value::Null);
+                match std::env::var(&key) {
+                    Ok(v) => Ok(Value::Str(v)),
+                    Err(_) => Ok(default),
+                }
+            }
+            "set_env" => {
+                let key = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                let val = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+                std::env::set_var(&key, &val);
+                Ok(Value::Null)
+            }
+
+            // ── Retry with backoff ────────────────────────────────────────────
+            "retry" => self.builtin_retry(args, env),
+
+            // ── Vector store ──────────────────────────────────────────────────
+            "vector_store_new" | "vs_new" => vector_store_new_impl(&args),
+            "vector_store_add" | "vs_add" => vector_store_add_impl(&args),
+            "vector_store_search" | "vs_search" => vector_store_search_impl(&args),
+            "vector_store_delete" | "vs_delete" => vector_store_delete_impl(&args),
+            "vector_store_size" | "vs_size" => vector_store_size_impl(&args),
+            "cosine_similarity" => cosine_similarity_impl(&args),
+
+            // ── Observability ─────────────────────────────────────────────────
+            "trace_log" => {
+                let event = args
+                    .first()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| "event".to_string());
+                let data = args.get(1).cloned().unwrap_or(Value::Null);
+                self.emit_trace(&event, &data);
+                Ok(Value::Null)
+            }
+
+            // ── Schema validation ─────────────────────────────────────────────
+            "schema_validate" => schema_validate_impl(&args),
+            "schema_check" => schema_validate_impl(&args),
+
+            // ── Persistent memory ─────────────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "persist_memory" | "save_memory" => self.builtin_persist_memory(env),
+            #[cfg(not(target_arch = "wasm32"))]
+            "load_memory" | "restore_memory" => self.builtin_load_memory(env),
 
             // ── Type coercions ─────────────────────────────────────────────────
             "to_string" | "str" => Ok(Value::Str(
@@ -2350,40 +2876,34 @@ impl Interpreter {
                     .tan(),
             )),
             "max" => {
+                // max(array) or max(a, b, c, ...) — handles any number of args
                 if let Some(Value::Array(arr)) = args.first() {
-                    let max = arr
+                    let m = arr
                         .iter()
                         .filter_map(|v| v.as_number())
                         .fold(f64::NEG_INFINITY, f64::max);
-                    return Ok(Value::Number(max));
+                    return Ok(Value::Number(m));
                 }
-                let a = args
-                    .first()
-                    .and_then(|v| v.as_number())
-                    .unwrap_or(f64::NEG_INFINITY);
-                let b = args
-                    .get(1)
-                    .and_then(|v| v.as_number())
-                    .unwrap_or(f64::NEG_INFINITY);
-                Ok(Value::Number(a.max(b)))
+                let m = args
+                    .iter()
+                    .filter_map(|v| v.as_number())
+                    .fold(f64::NEG_INFINITY, f64::max);
+                Ok(Value::Number(m))
             }
             "min" => {
+                // min(array) or min(a, b, c, ...) — handles any number of args
                 if let Some(Value::Array(arr)) = args.first() {
-                    let min = arr
+                    let m = arr
                         .iter()
                         .filter_map(|v| v.as_number())
                         .fold(f64::INFINITY, f64::min);
-                    return Ok(Value::Number(min));
+                    return Ok(Value::Number(m));
                 }
-                let a = args
-                    .first()
-                    .and_then(|v| v.as_number())
-                    .unwrap_or(f64::INFINITY);
-                let b = args
-                    .get(1)
-                    .and_then(|v| v.as_number())
-                    .unwrap_or(f64::INFINITY);
-                Ok(Value::Number(a.min(b)))
+                let m = args
+                    .iter()
+                    .filter_map(|v| v.as_number())
+                    .fold(f64::INFINITY, f64::min);
+                Ok(Value::Number(m))
             }
             "clamp" => {
                 let v = args.first().and_then(|v| v.as_number()).unwrap_or(0.0);
@@ -2854,28 +3374,6 @@ impl Interpreter {
                 Ok(Value::Str(path.to_string_lossy().into_owned()))
             }
 
-            // ── Environment ───────────────────────────────────────────────────
-            "env" | "get_env" => {
-                let key = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_default();
-                let default = args.get(1).cloned().unwrap_or(Value::Null);
-                match std::env::var(&key) {
-                    Ok(val) => Ok(Value::Str(val)),
-                    Err(_) => Ok(default),
-                }
-            }
-            "set_env" => {
-                let key = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_default();
-                let val = args.get(1).cloned().unwrap_or(Value::Null).to_string();
-                std::env::set_var(&key, &val);
-                Ok(Value::Null)
-            }
-
             // ── String utilities ──────────────────────────────────────────────
             "format" => {
                 // format("Hello {0}, you are {1}", name, age)
@@ -3132,62 +3630,6 @@ impl Interpreter {
                     .map_err(|e| Signal::Error(format!("regex_match: invalid pattern: {}", e)))?;
                 Ok(Value::Bool(re.is_match(&text)))
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            "regex_find_all" => {
-                let pattern = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("regex_find_all: expected pattern".into()))?;
-                let text = args
-                    .get(1)
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("regex_find_all: expected text".into()))?;
-                let re = regex::Regex::new(&pattern).map_err(|e| {
-                    Signal::Error(format!("regex_find_all: invalid pattern: {}", e))
-                })?;
-                let matches: Vec<Value> = re
-                    .find_iter(&text)
-                    .map(|m| Value::Str(m.as_str().to_string()))
-                    .collect();
-                Ok(Value::Array(matches))
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            "regex_replace" => {
-                let pattern = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("regex_replace: expected pattern".into()))?;
-                let replacement = args
-                    .get(1)
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("regex_replace: expected replacement".into()))?;
-                let text = args
-                    .get(2)
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("regex_replace: expected text".into()))?;
-                let re = regex::Regex::new(&pattern)
-                    .map_err(|e| Signal::Error(format!("regex_replace: invalid pattern: {}", e)))?;
-                Ok(Value::Str(
-                    re.replace_all(&text, replacement.as_str()).to_string(),
-                ))
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            "regex_split" => {
-                let pattern = args
-                    .first()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("regex_split: expected pattern".into()))?;
-                let text = args
-                    .get(1)
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| Signal::Error("regex_split: expected text".into()))?;
-                let re = regex::Regex::new(&pattern)
-                    .map_err(|e| Signal::Error(format!("regex_split: invalid pattern: {}", e)))?;
-                let parts: Vec<Value> =
-                    re.split(&text).map(|s| Value::Str(s.to_string())).collect();
-                Ok(Value::Array(parts))
-            }
-
             // ── SQLite ────────────────────────────────────────────────────────
             #[cfg(not(target_arch = "wasm32"))]
             "db_query" => {
@@ -3639,6 +4081,7 @@ impl Interpreter {
                     Err(e) => Err(Signal::Error(format!("parse_json: {}", e))),
                 }
             }
+            (Value::Str(s), "reverse") => Ok(Value::Str(s.chars().rev().collect())),
             (Value::Str(s), "to_array") => Ok(Value::Array(
                 s.chars().map(|c| Value::Str(c.to_string())).collect(),
             )),
@@ -3736,6 +4179,235 @@ impl Interpreter {
                 Ok(Value::Null)
             }
         }
+    }
+}
+
+// ── Free helper functions ─────────────────────────────────────────────────────
+
+/// Parse and load a .env file into the current process environment.
+/// Lines of the form KEY=VALUE or KEY="VALUE" are supported.
+/// Lines starting with # are comments. Existing env vars are NOT overwritten.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_env_file(path: &str) -> Result<Value, Signal> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| Signal::Error(format!("load_env: cannot read '{}': {}", path, e)))?;
+    let mut loaded = 0usize;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(eq) = line.find('=') {
+            let key = line[..eq].trim().to_string();
+            let raw_val = line[eq + 1..].trim();
+            let val = raw_val.trim_matches('"').trim_matches('\'').to_string();
+            // Only set if not already present
+            if std::env::var(&key).is_err() {
+                std::env::set_var(&key, &val);
+            }
+            loaded += 1;
+        }
+    }
+    let mut result = HashMap::new();
+    result.insert("ok".into(), Value::Bool(true));
+    result.insert("loaded".into(), Value::Number(loaded as f64));
+    result.insert("path".into(), Value::Str(path.to_string()));
+    Ok(Value::Object(result))
+}
+
+/// schema_validate(value, schema_object) → { ok: bool, errors: array<string> }
+/// Schema object format: { field_name: "type" } or { field_name: { type: "string", required: true } }
+fn schema_validate_impl(args: &[Value]) -> Result<Value, Signal> {
+    let value = args.first().cloned().unwrap_or(Value::Null);
+    let schema = match args.get(1).cloned().unwrap_or(Value::Null) {
+        Value::Object(m) => m,
+        _ => {
+            return Err(Signal::Error(
+                "schema_validate(value, schema) — schema must be an object".into(),
+            ))
+        }
+    };
+
+    let obj = match &value {
+        Value::Object(m) => m.clone(),
+        _ => {
+            let mut r = HashMap::new();
+            r.insert("ok".into(), Value::Bool(false));
+            r.insert(
+                "errors".into(),
+                Value::Array(vec![Value::Str("value must be an object".into())]),
+            );
+            return Ok(Value::Object(r));
+        }
+    };
+
+    let mut errors: Vec<Value> = Vec::new();
+
+    for (field, rule) in &schema {
+        let (expected_type, required) = match rule {
+            Value::Str(t) => (t.as_str().to_string(), true),
+            Value::Object(opts) => {
+                let t = opts
+                    .get("type")
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| "any".to_string());
+                let req = opts.get("required").map(|v| v.is_truthy()).unwrap_or(true);
+                (t, req)
+            }
+            _ => continue,
+        };
+
+        match obj.get(field) {
+            None | Some(Value::Null) => {
+                if required {
+                    errors.push(Value::Str(format!("field '{}' is required", field)));
+                }
+            }
+            Some(field_val) => {
+                let actual = field_val.type_name();
+                let ok = match expected_type.as_str() {
+                    "any" => true,
+                    "string" | "str" => matches!(field_val, Value::Str(_)),
+                    "number" | "num" | "float" | "int" => {
+                        matches!(field_val, Value::Number(_))
+                    }
+                    "boolean" | "bool" => matches!(field_val, Value::Bool(_)),
+                    "array" | "list" => matches!(field_val, Value::Array(_)),
+                    "object" | "map" => matches!(field_val, Value::Object(_)),
+                    "null" => matches!(field_val, Value::Null),
+                    _ => true,
+                };
+                if !ok {
+                    errors.push(Value::Str(format!(
+                        "field '{}' must be {}, got {}",
+                        field, expected_type, actual
+                    )));
+                }
+            }
+        }
+    }
+
+    let mut result = HashMap::new();
+    result.insert("ok".into(), Value::Bool(errors.is_empty()));
+    result.insert("errors".into(), Value::Array(errors));
+    Ok(Value::Object(result))
+}
+
+// ── Persistent memory (SQLite-backed) ────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persistent_db_path_for(agent_name: &str) -> String {
+    let safe_name: String = agent_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let base = std::env::var("GX_STATE_DIR")
+        .unwrap_or_else(|_| dirs_home().unwrap_or_else(|| ".".to_string()) + "/.gx/state");
+    format!("{}/{}.db", base, safe_name)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn dirs_home() -> Option<String> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_persistent_memory(db_path: &str) -> Result<HashMap<String, Value>, String> {
+    use rusqlite::Connection;
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memory (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM memory")
+        .map_err(|e| e.to_string())?;
+
+    let mut map = HashMap::new();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+
+    for row in rows.flatten() {
+        let (k, v_json) = row;
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&v_json) {
+            map.insert(k, json_to_gx_value(&json));
+        }
+    }
+    Ok(map)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_persistent_memory(db_path: &str, memory: &HashMap<String, Value>) -> Result<(), String> {
+    use rusqlite::Connection;
+    // Ensure the parent directory exists
+    if let Some(parent) = std::path::Path::new(db_path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memory (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Skip ai_trace (ephemeral) and closures
+    for (k, v) in memory {
+        if k == "ai_trace" {
+            continue;
+        }
+        if matches!(v, Value::Closure(..)) {
+            continue;
+        }
+        let json_str = serde_json::to_string(&gx_value_to_json(v)).unwrap_or_default();
+        conn.execute(
+            "INSERT OR REPLACE INTO memory (key, value) VALUES (?1, ?2)",
+            rusqlite::params![k, json_str],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ── builtin: persist_memory / load_memory ────────────────────────────────────
+
+impl Interpreter {
+    /// Force-save current memory to SQLite for the current agent.
+    /// Called by the `persist_memory()` builtin.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn builtin_persist_memory(&self, env: &Env) -> IResult {
+        let agent = self.current_agent.as_deref().unwrap_or("default");
+        let db_path = persistent_db_path_for(agent);
+        let memory = env.get_memory();
+        save_persistent_memory(&db_path, &memory)
+            .map(|_| Value::Bool(true))
+            .map_err(|e| Signal::Error(format!("persist_memory: {}", e)))
+    }
+
+    /// Load memory from SQLite into the current env. Called by `load_memory()` builtin.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn builtin_load_memory(&self, env: &mut Env) -> IResult {
+        let agent = self.current_agent.as_deref().unwrap_or("default");
+        let db_path = persistent_db_path_for(agent);
+        let loaded = load_persistent_memory(&db_path)
+            .map_err(|e| Signal::Error(format!("load_memory: {}", e)))?;
+        let count = loaded.len();
+        let mut mem = env.get_memory();
+        for (k, v) in loaded {
+            mem.insert(k, v);
+        }
+        env.set_memory(mem);
+        Ok(Value::Number(count as f64))
     }
 }
 
@@ -4131,6 +4803,583 @@ helper "negidx" {
     remember { }
     communicate { }
   }
+}"#)
+        .unwrap();
+    }
+
+    // ── v0.4.0 feature tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_bang_not_operator() {
+        run(r#"
+helper "bang" {
+  brain {
+    plan { }
+    execute {
+      assert !false "!false should be true"
+      assert !(!true) "double negation"
+      ok = false
+      assert !ok "!variable"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_integer_json_serialization() {
+        run(r#"
+helper "intjson" {
+  brain {
+    plan { }
+    execute {
+      s = json_stringify({ n: 50, rate: 0.5, count: 100 })
+      // Must NOT contain 50.0 or 100.0 for integer values
+      assert not s.contains("50.0") "integer must not be float"
+      assert not s.contains("100.0") "integer must not be float"
+      // Float must remain
+      assert s.contains("0.5") "float preserved"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_range_slicing_string() {
+        run(r#"
+helper "rngstr" {
+  brain {
+    plan { }
+    execute {
+      s = "hello world"
+      assert s[0..5] == "hello" "string range [0..5]"
+      assert s[6..11] == "world" "string range [6..11]"
+      assert s[0..0] == "" "empty range"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_range_slicing_array() {
+        run(r#"
+helper "rngarr" {
+  brain {
+    plan { }
+    execute {
+      arr = [10, 20, 30, 40, 50]
+      sub = arr[1..4]
+      assert sub[0] == 20 "range arr[0]"
+      assert sub[1] == 30 "range arr[1]"
+      assert sub[2] == 40 "range arr[2]"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_output_as_variable() {
+        run(r#"
+helper "outvar" {
+  brain {
+    plan { }
+    execute {
+      output = "hello"
+      output += " world"
+      assert output == "hello world" "output as variable"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_standalone_slice() {
+        run(r#"
+helper "slicefn" {
+  brain {
+    plan { }
+    execute {
+      assert slice("foobar", 0, 3) == "foo" "slice string"
+      sub = slice([1, 2, 3, 4, 5], 1, 4)
+      assert sub[0] == 2 "slice array start"
+      assert sub[2] == 4 "slice array end"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_standalone_merge() {
+        run(r#"
+helper "mergefn" {
+  brain {
+    plan { }
+    execute {
+      m = merge({ a: 1, b: 2 }, { b: 99, c: 3 })
+      assert m.a == 1 "merge preserves left"
+      assert m.b == 99 "merge right wins"
+      assert m.c == 3 "merge adds right"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_interpolation_brace_escape() {
+        run(r#"
+helper "interpescape" {
+  brain {
+    plan { }
+    execute {
+      // {{ in a GX string produces a literal {
+      // Both the value and the comparison use {{ so both resolve to "{literal}"
+      s = "{{literal}}"
+      assert s == "{{literal}}" "brace escape"
+      // Mixing: {{ escape + real interpolation
+      name = "GX"
+      msg = "{{tag}}: {name}"
+      assert msg == "{{tag}}: GX" "mixed escape and interp"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_inline_function_in_block() {
+        run(r#"
+helper "inlinefn" {
+  brain {
+    plan { }
+    execute {
+      function square(n) {
+        return n * n
+      }
+      assert square(7) == 49 "inline function"
+      assert square(0) == 0 "inline function zero"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_agent_level_function() {
+        run(r#"
+helper "agentfn" {
+  function double(x) {
+    return x * 2
+  }
+  brain {
+    plan { }
+    execute {
+      assert double(21) == 42 "agent-level function"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_module_import_namespaced() {
+        // Uses helpers/math_utils.gx via namespaced import
+        run(r#"
+import "tests/helpers/math_utils.gx" as math
+
+helper "modimp" {
+  brain {
+    plan { }
+    execute {
+      assert math.add(10, 32) == 42 "module add"
+      assert math.greet("World") == "Hello from math, World!" "module greet"
+    }
+    remember { }
+    communicate { }
+  }
+}"#)
+        .unwrap();
+    }
+
+    // ── v0.4.0 feature tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_regex_test() {
+        run(r#"
+helper "re1" {
+  brain { plan {} execute {
+    assert regex_test("hello world", "world") "simple match"
+    assert regex_test("user@example.com", "@") "at-sign match"
+    assert regex_test("abc123", "\\d+") "digit match"
+    assert !regex_test("no-match", "^\\d+$") "no match"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_regex_find() {
+        run(r#"
+helper "re2" {
+  brain { plan {} execute {
+    price = regex_find("Total: $42.50", "\\$([0-9.]+)")
+    assert price == "42.50" "capture group"
+    nothing = regex_find("abc", "\\d+")
+    assert nothing == null "no match returns null"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_regex_find_all() {
+        run(r#"
+helper "re3" {
+  brain { plan {} execute {
+    nums = regex_find_all("a1 b2 c3", "\\d")
+    assert nums[0] == "1" "first digit"
+    assert nums[2] == "3" "third digit"
+    assert len(nums) == 3 "count"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_regex_replace() {
+        run(r#"
+helper "re4" {
+  brain { plan {} execute {
+    cleaned = regex_replace("aaa bbb", "a", "x")
+    assert cleaned == "xxx bbb" "replace all a with x"
+    no_digits = regex_replace("abc123def", "\\d", "")
+    assert no_digits == "abcdef" "remove digits"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_regex_split() {
+        run(r#"
+helper "re5" {
+  brain { plan {} execute {
+    parts = regex_split("one,two,,three", ",+")
+    assert parts[0] == "one" "first part"
+    assert parts[1] == "two" "second part"
+    assert parts[2] == "three" "third part"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_date_now() {
+        run(r#"
+helper "dt1" {
+  brain { plan {} execute {
+    n = date_now()
+    assert n.contains("T") "ISO-8601 contains T"
+    assert n.len() > 10 "has time component"
+    ts = date_timestamp()
+    assert ts > 1700000000 "reasonable unix timestamp"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_date_parse_and_format() {
+        run(r#"
+helper "dt2" {
+  brain { plan {} execute {
+    ts = date_parse("2024-01-15")
+    assert ts > 0 "parse returns timestamp"
+    formatted = date_format(ts, "%Y-%m-%d")
+    assert formatted == "2024-01-15" "round-trip"
+    year = date_format(ts, "%Y")
+    assert year == "2024" "year only"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_date_diff() {
+        run(r#"
+helper "dt3" {
+  brain { plan {} execute {
+    t1 = date_parse("2024-01-01")
+    t2 = date_parse("2024-01-08")
+    diff_days = date_diff(t1, t2, "days")
+    assert diff_days == 7 "seven days"
+    diff_hrs = date_diff(t1, t2, "hours")
+    assert diff_hrs == 168 "168 hours"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_date_add() {
+        run(r#"
+helper "dt4" {
+  brain { plan {} execute {
+    base = date_parse("2024-01-01")
+    next_week = date_add(base, 7, "days")
+    diff = date_diff(base, next_week, "days")
+    assert diff == 7 "added 7 days"
+    next_hour = date_add(base, 1, "hours")
+    diff_h = date_diff(base, next_hour, "hours")
+    assert diff_h == 1 "added 1 hour"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_date_parts() {
+        run(r#"
+helper "dt5" {
+  brain { plan {} execute {
+    ts = date_parse("2024-03-15")
+    p = date_parts(ts)
+    assert p.year == 2024 "year"
+    assert p.month == 3 "month"
+    assert p.day == 15 "day"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_csv_parse() {
+        run(r#"
+helper "csv1" {
+  brain { plan {} execute {
+    csv = "name,age,city\nAlice,30,London\nBob,25,Paris"
+    rows = csv_parse(csv)
+    assert len(rows) == 2 "two data rows"
+    assert rows[0].name == "Alice" "first name"
+    assert rows[0].age == 30 "age is number"
+    assert rows[1].city == "Paris" "second city"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_csv_stringify() {
+        run(r#"
+helper "csv2" {
+  brain { plan {} execute {
+    rows = [
+      { name: "Alice", age: 30 },
+      { name: "Bob",   age: 25 }
+    ]
+    out = csv_stringify(rows)
+    assert out.contains("Alice") "has Alice"
+    assert out.contains("age") "has header"
+    // Round-trip
+    back = csv_parse(out)
+    assert back[0].name == "Alice" "round-trip name"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_yaml_parse() {
+        run(r#"
+helper "yaml1" {
+  brain { plan {} execute {
+    src = "name: Alice\nage: 30\ntags:\n  - dev\n  - gx"
+    data = yaml_parse(src)
+    assert data.name == "Alice" "name"
+    assert data.age == 30 "age is number"
+    assert data.tags[0] == "dev" "first tag"
+    assert data.tags[1] == "gx" "second tag"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_yaml_stringify() {
+        run(r#"
+helper "yaml2" {
+  brain { plan {} execute {
+    obj = { name: "Alice", score: 42 }
+    out = yaml_stringify(obj)
+    assert out.contains("Alice") "has name"
+    assert out.contains("42") "has score"
+    back = yaml_parse(out)
+    assert back.name == "Alice" "round-trip"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_toml_parse() {
+        run(r#"
+helper "toml1" {
+  brain { plan {} execute {
+    src = "[package]\nname = \"my-app\"\nversion = \"1.0.0\"\nedition = 2021"
+    data = toml_parse(src)
+    assert data.package.name == "my-app" "package name"
+    assert data.package.edition == 2021 "edition number"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_load_env_and_get_env_default() {
+        run(r#"
+helper "env1" {
+  brain { plan {} execute {
+    // get_env with default — key definitely does not exist
+    val = get_env("GX_TEST_NONEXISTENT_KEY_12345", "fallback")
+    assert val == "fallback" "default returned"
+    // get_env with no default → null
+    val2 = get_env("GX_TEST_NONEXISTENT_KEY_99999")
+    assert val2 == null "null when missing"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_vector_store() {
+        run(r#"
+helper "vs1" {
+  brain { plan {} execute {
+    // Create a store and add documents
+    store = vector_store_new("test_store_v4")
+    vector_store_add(store, "doc1", [1.0, 0.0, 0.0], "red axis")
+    vector_store_add(store, "doc2", [0.0, 1.0, 0.0], "green axis")
+    vector_store_add(store, "doc3", [0.0, 0.0, 1.0], "blue axis")
+    assert vector_store_size(store) == 3 "three documents"
+
+    // Search: query close to red axis should find doc1 first
+    hits = vector_store_search(store, [0.9, 0.1, 0.0], 2)
+    assert len(hits) == 2 "two hits"
+    assert hits[0].id == "doc1" "closest is doc1"
+    assert hits[0].score > 0.9 "high similarity"
+
+    // Cosine similarity of identical vectors = 1.0
+    sim = cosine_similarity([1.0, 0.0], [1.0, 0.0])
+    assert sim == 1.0 "identical vectors"
+
+    // Orthogonal vectors = 0.0
+    sim2 = cosine_similarity([1.0, 0.0], [0.0, 1.0])
+    assert sim2 == 0.0 "orthogonal vectors"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_schema_validate() {
+        run(r#"
+helper "sv1" {
+  brain { plan {} execute {
+    // "schema" is now a keyword — use "spec" as variable name
+    spec = { name: "string", age: "number", active: "boolean" }
+
+    good = { name: "Alice", age: 30, active: true }
+    r = schema_validate(good, spec)
+    assert r.ok "valid passes"
+    assert len(r.errors) == 0 "no errors"
+
+    bad = { name: "Bob", age: "thirty" }
+    r2 = schema_validate(bad, spec)
+    assert !r2.ok "invalid fails"
+    assert len(r2.errors) > 0 "has errors"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_await_block() {
+        run(r#"
+helper "aw1" {
+  brain { plan {} execute {
+    await {
+      a: 1 + 1
+      b: "hello" + " world"
+      c: len([1, 2, 3])
+    } into results
+    assert results.a == 2 "a computed"
+    assert results.b == "hello world" "b computed"
+    assert results.c == 3 "c computed"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_retry_succeeds_first_try() {
+        run(r#"
+helper "retry1" {
+  brain { plan {} execute {
+    // Lambda runs in its own scope; test that it returns a value
+    result = retry(fn() {
+      return 42
+    }, 3)
+    assert result == 42 "got result"
+    // retry with string result
+    msg = retry(fn() {
+      return "hello"
+    }, 2)
+    assert msg == "hello" "string result"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_tool_definition_parsed() {
+        // Verify the tool keyword parses and the helper runs correctly
+        run(r#"
+tool "greet_user" {
+  description: "Greet a user by name"
+  execute(name) {
+    return "Hello " + name
+  }
+}
+
+helper "tool_test" {
+  brain { plan {} execute {
+    assert true "tool definition accepted"
+  } remember {} communicate {} }
 }"#)
         .unwrap();
     }

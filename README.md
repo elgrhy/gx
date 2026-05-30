@@ -1,25 +1,34 @@
 # GX Language
 
-A brain-first programming language for building transparent, auditable AI assistants.
+**Brain-first programming language for building transparent, auditable AI assistants.**
 
-**The core idea:** Every AI assistant today is a black box. GX makes it a glass box — every decision explicit, every AI call logged, every agent fully auditable. Built in Rust, runs anywhere, no cloud lock-in.
+Every AI assistant today is a black box. GX makes it a glass box — every decision explicit, every AI call logged, every agent fully debuggable. Built in Rust. Runs anywhere. No cloud lock-in.
+
+[![Crates.io](https://img.shields.io/crates/v/gx)](https://crates.io/crates/gx)
+[![npm](https://img.shields.io/npm/v/gxlang)](https://www.npmjs.com/package/gxlang)
+[![CI](https://github.com/elgrhy/gx/actions/workflows/ci.yml/badge.svg)](https://github.com/elgrhy/gx/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
 
 ## Install
 
 ```bash
-# macOS / Linux
+# macOS / Linux — one-line installer
 curl -sSf https://raw.githubusercontent.com/elgrhy/gx/main/install.sh | sh
 
-# npm (any platform with Node.js)
+# npm (any platform with Node.js 16+)
 npm install -g gxlang
 
-# Homebrew (coming after v0.1.0 release)
-brew install gx
+# Cargo
+cargo install gx
 
-# From source (requires Rust)
+# From source
 git clone https://github.com/elgrhy/gx.git && cd gx && cargo build --release
+```
+
+```bash
+gx --version   # gx 0.4.0
 ```
 
 ---
@@ -32,623 +41,450 @@ cd my-agent
 gx run main.gx
 ```
 
+```gx
+agent "hello" {
+  when started {
+    name = "World"
+    say "Hello, {name}! GX v0.4.0 is running."
+  }
+}
+```
+
 ---
 
-## What's New in v0.2.5
+## What's New in v0.4.0
 
-- **HTTPS fix** — `ask openai`, `http_post`, and all HTTP primitives now work reliably on every machine (switched from bundled rustls to the system's native TLS stack)
-- **`shell()` stdin** — child processes launched via `shell("...")` now inherit the parent's stdin, so `shell("cat")` with piped input works correctly
-- **String object keys** — object literals now accept quoted keys: `{ "Content-Type": "application/json" }` — required for building HTTP headers and working with JSON APIs directly in GX
+The biggest release yet — GX now competes with Python for agent-building.
 
----
-
-## The Official GX Style (v0.2.0)
-
-GX is opinionated. Every agent follows a clear, readable structure — **goal → observe → think → act → remember → communicate**. You can see exactly what an agent does without running it.
+### Regex — Full Pattern Matching
 
 ```gx
-agent "lead_generator" {
-  goal: "Find and contact 10 qualified real-estate leads this week"
+price  = regex_find("Total: $42.50", "\\$([0-9.]+)")       // "42.50"
+scores = regex_find_all("85, 92, 100", "\\d+")              // ["85","92","100"]
+valid  = regex_test(email, "@")
+clean  = regex_replace("hello   world", "\\s+", " ")
+parts  = regex_split("a::b::c", ":+")                       // ["a","b","c"]
+caps   = regex_captures("2024-01-15", "(\\d{{4}})-(\\d{{2}})-(\\d{{2}})")
+// caps[1]="2024", caps[2]="01", caps[3]="15"
+```
 
-  retry: 3
-  on_error: escalate
+### Date / Time
 
+```gx
+now   = date_now()                          // "2025-05-30T14:23:01Z"
+ts    = date_parse("2024-01-15")            // Unix timestamp
+ts2   = date_parse("Jan 15, 2024")          // auto-detects format
+fmt   = date_format(ts, "%B %d, %Y")        // "January 15, 2024"
+diff  = date_diff(ts, date_now(), "days")
+next  = date_add(ts, 7, "days")
+parts = date_parts(ts)  // { year, month, day, hour, minute, second, weekday }
+```
+
+### CSV, YAML, TOML
+
+```gx
+rows   = csv_parse(read_file("data.csv"))        // auto-types numbers & booleans
+out    = csv_stringify(rows)
+
+config = yaml_parse(read_file("config.yml"))
+yaml_out = yaml_stringify(config)
+
+manifest = toml_parse(read_file("Cargo.toml"))
+log(manifest.package.version)                    // "0.4.0"
+```
+
+### .env File Loading
+
+```gx
+load_env(".env")                              // loads KEY=VALUE, never overwrites existing
+key = get_env("OPENAI_API_KEY", "")           // second arg is default
+url = get_env("API_URL", "https://localhost")
+```
+
+### Language Bridges — TypeScript, Go, Any Binary
+
+```gx
+// TypeScript — auto-detects tsx or ts-node
+use ts.analytics
+result = ts.analytics.process(events)
+
+// Go / Rust / Java / .NET — JSON stdin/stdout protocol
+use binary "./my_rust_service"
+output = binary.transform(payload)
+
+use go "./analytics_server"
+stats = go.compute(events)
+
+// Python (unchanged)
+use py.pandas
+df = py.pandas.read_csv("data.csv")
+```
+
+### AI Tool Use — Function Calling
+
+```gx
+tool "search_web" {
+  description: "Search the web for current information"
+  params: {
+    query: { type: "string", required: true }
+  }
+  execute(query) {
+    result = http_get("https://api.search.example.com?q={query}")
+    return result.data
+  }
+}
+
+agent "researcher" {
   when started {
-    observe {
-      context: "Dubai Marina, 2BR, AED 120k budget"
+    response = ask openai {
+      prompt: "What is the current Bitcoin price?",
+      tools:  [search_web],
+      model:  "gpt-4o"
     }
-
-    think {
-      prompt: "Extract 10 qualified leads matching: {context}",
-      model: "openai",
-      min_confidence: 0.82
-    }
-
-    act {
-      if result.confidence > 0.82 {
-        log("Processing {len(result.leads)} leads")
-        for each lead in result.leads {
-          log("Lead: {lead.name} — {lead.email}")
-        }
-      } else {
-        escalate to human
+    if response.tool_calls != null {
+      for each call in response.tool_calls {
+        log("AI called: " + call.name + " with " + json_stringify(call.arguments))
       }
     }
-
-    remember {
-      memory.total_leads += 1
-      memory.last_run = get_timestamp()
-    }
-
-    communicate {
-      say "Processed leads for: {context}"
-    }
+    say response.text
   }
 }
 ```
 
-Without an AI key, use the built-in brain cycle directly — no `think` required:
+### Streaming AI
 
 ```gx
-agent "classifier" {
-  goal: "Route incoming questions to the right specialist"
+result = ask openai {
+  prompt: "Write a 500-word essay on AI transparency",
+  stream: true    // chunks print in real-time; result.text has the full assembled text
+}
+```
+
+### Persistent Memory — Survives Restarts
+
+```gx
+agent "counter" {
+  remember { count = 0 }
 
   when started {
-    question = "Can my employer withhold my gratuity in UAE?"
-
-    category = spawn agent "domain_expert" with { question: question }
-    log("Routed to: {category}")
+    load_memory()          // loads from ~/.gx/state/counter.db (SQLite)
+    memory.count += 1
+    log("Run #{memory.count}")
+    persist_memory()       // saves back to SQLite
   }
 }
 ```
 
----
-
-## The Language
-
-GX has **three progressive syntax levels** — all compile to the same runtime. Use the level that fits what you're building.
-
-### Level 1 — Pure intent (no ceremony)
+### Vector Store — Semantic Search
 
 ```gx
-Agent greeter
+store = vector_store_new("docs")
+vector_store_add(store, "doc1", embed("The cat sat on the mat"), "cat story")
+vector_store_add(store, "doc2", embed("Dogs are loyal companions"),  "dog story")
 
-name = "World"
+hits = vector_store_search(store, embed("feline pets"), 3)
+log(hits[0].label)   // "cat story"
+log(hits[0].score)   // cosine similarity score
 
-"Hello {name}"
+sim = cosine_similarity([1.0, 0.0], [0.7, 0.7])
 ```
 
-No braces. Variables become memory automatically. Strings auto-print. GX infers the brain cycle.
-
-### Level 2 — Named behaviors
+### Schema Validation
 
 ```gx
-Agent assistant
-
-Greet:
-  "Hello {name}!"
-
-CheckIn:
-  result = ask openai { prompt: "How are things with {name}?" }
-  result.text
-
-On start:
-  Greet
-  CheckIn
-```
-
-Reusable, composable behavior blocks. Memory is shared between behaviors.
-
-### Level 3 — Explicit brain cycle
-
-```gx
-Agent counter
-
-count = 0
-
-Plan:
-  action = "increment"
-
-Execute:
-  If action == "increment"
-    count += 1
-
-Remember:
-  memory.count = count
-
-Communicate:
-  "Count is now {count}"
-```
-
-Full control over Plan → Execute → Remember → Communicate. Still no braces required.
-
-### Classic brace syntax (also fully supported)
-
-```gx
-agent "greeter" {
-  remember { name = "World" }
-  when started { say "Hello, {memory.name}!" }
+spec = { name: "string", age: "number", email: { type: "string", required: false } }
+r = schema_validate(user_input, spec)
+if !r.ok {
+  for each err in r.errors { log("Error: " + err) }
 }
 ```
 
----
-
-## AI Primitives
-
-AI is built into the language. Every call is automatically logged.
+### Await Block — Concurrent I/O
 
 ```gx
-agent "assistant" {
+await {
+  weather: http_get("https://api.weather.com/london"),
+  news:    http_get("https://api.news.com/top"),
+  stocks:  http_get("https://api.stocks.com/AAPL")
+} into data
+
+log(data.weather.body)
+```
+
+### Retry with Backoff
+
+```gx
+result = retry(fn() {
+  return ask openai { prompt: "Classify this text" }
+}, 5, { delay: 1000, backoff: "exponential" })
+// Retries up to 5×: 1s, 2s, 4s, 8s, 16s — capped at 30s
+```
+
+### Observability — Structured JSONL Tracing
+
+```gx
+trace_log("pipeline.start", { query: memory.query })
+result = ask anthropic { prompt: memory.query }
+trace_log("ai.done", { tokens: result.tokens_used })
+// Emits: {"ts":1748609381000,"agent":"my_agent","event":"ai.done","data":{...}} to stderr
+```
+
+---
+
+## Core Language
+
+### Agent Structure
+
+```gx
+agent "my_agent" {
+  goal: "Do something useful"
+  retry: 3
+  timeout: 30s
+  on_error: escalate
+
   remember {
-    history = []
+    count = 0
+    items = []
   }
 
   when started {
-    result = ask openai {
-      prompt: "Explain quantum computing in one sentence.",
-      max_tokens: 100
-    }
+    memory.count += 1
+    say "Run #{memory.count}"
+  }
 
-    if result.confidence > 0.8 {
-      say result.text
-    } else {
-      say "I'm not confident enough — escalating"
-      escalate to human
-    }
+  when memory.count > 100 {
+    memory.count = 0
+    log("Reset counter")
+  }
+
+  when cron "0 9 * * 1-5" {
+    log("Good morning, it's a weekday")
   }
 }
 ```
 
-**Every `ask` call returns:**
-- `result.text` — the response
-- `result.confidence` — 0.0 to 1.0 (adjusted for hedging language)
-- `result.tokens_used` — for cost tracking
-- `result.model` / `result.provider`
-
-**Supported providers:** `openai`, `anthropic`, `ollama` (local, no API key needed)
-
-```bash
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-# For ollama: brew install ollama && ollama pull llama3
-```
-
----
-
-## Package Interop
-
-Use npm, pip, and cargo packages directly. No ecosystem lock-in.
+### Functions — Three Scopes
 
 ```gx
-use js.path
-use py.os
+// 1. File-root — available to all agents
+function format_price(amount) {
+  return "$" + to_string(round(amount * 100) / 100)
+}
 
-agent "file_agent" {
+agent "shop" {
+  // 2. Agent-level — available across all when blocks
+  function validate_order(order) {
+    return schema_validate(order, { item: "string", qty: "number" })
+  }
+
   when started {
-    joined = js.path.join("/home/user", "docs")
-    say "Path: {joined}"
-
-    cwd = py.os.getcwd()
-    say "CWD: {cwd}"
+    // 3. Inline — scoped to this block
+    function greet(name) { return "Hello, {name}!" }
+    log(greet("Alice"))
   }
 }
 ```
 
-Install packages:
+### Module System
 
-```bash
-gx install js.axios      # runs: npm install axios
-gx install py.requests   # runs: pip install requests
-```
-
----
-
-## GX → JavaScript Transpiler (Self-Hosting)
-
-GX can compile itself to JavaScript. The tokenizer, parser, and evaluator are all written in GX — and the JS transpiler compiles them to a standalone Node.js script that runs `.gx` programs without Rust.
-
-### Bootstrap: GX running GX without Rust
-
-```bash
-# Compile the GX self-interpreter to JavaScript (~2 seconds)
-gx run self/jsc_bootstrap.gx > gx_interp.js
-
-# Run a GX program using the compiled JS interpreter (no Rust needed)
-GX_FILE=self/test_self.gx node gx_interp.js
-# → All self-interpreter tests passed!
-```
-
-The produced `gx_interp.js` (committed to this repo) is a 1641-line, self-contained Node.js script. It implements the full GX tokenizer, parser, and evaluator in JavaScript — generated by the GX → JS transpiler, which is itself written in GX.
-
-### Compile any GX file to JavaScript
-
-```bash
-# Compile hello.gx to hello.js
-GX_FILE=hello.gx gx run self/jsc.gx > hello.js
-
-# Run the compiled output
-node hello.js
-```
-
-The transpiler maps all GX constructs to idiomatic JavaScript — `for each` loops to `for...of`, method chains to runtime helpers, string interpolation to template literals.
-
-### Self-hosting source files
-
-```
-self/
-├── lexer.gx         GX tokenizer written in GX
-├── parser.gx        Recursive descent parser written in GX (functional index-passing style)
-├── eval.gx          Tree-walking evaluator written in GX (functional env-threading)
-├── js_codegen.gx    GX AST → JavaScript code generator
-├── jsc.gx           JS transpiler entry point (compile one file)
-├── jsc_bootstrap.gx Bootstrap compiler (uses native parse_gx() for speed)
-├── gx_runtime.js    JavaScript runtime prepended to all compiled output
-├── gx_main_logic.gx Entry point logic for the compiled interpreter
-└── test_self.gx     Test suite for the self-hosted interpreter
-```
-
-The committed `gx_interp.js` can be regenerated at any time:
-
-```bash
-gx run self/jsc_bootstrap.gx > gx_interp.js
-```
-
----
-
-## CLI Reference
-
-```bash
-gx run file.gx                     # Run a GX file
-gx run file.gx --debug             # Run with debug output
-gx check file.gx                   # Syntax check without running
-gx init my-project                 # Scaffold a new project
-gx build file.gx                   # Build standalone launcher
-gx build file.gx --output dist/app # Build to specific path
-gx install js.axios                # Install npm package
-gx install py.requests             # Install Python package
-gx fmt file.gx                     # Format GX source
-gx test                            # Run all tests/
-gx test tests/specific.gx         # Run specific test
-gx make "a weather bot"            # AI-generate GX code
-gx version                         # Print version
-gx help                            # Print help
-```
-
----
-
-## Project Structure
-
-After `gx init my-agent`:
-
-```
-my-agent/
-├── gx.json          # Project manifest
-├── main.gx          # Entry point
-├── agents/          # Additional agent files
-├── tests/           # Test files (run with gx test)
-└── .gitignore
-```
-
-`gx.json`:
-```json
-{
-  "name": "my-agent",
-  "version": "0.1.0",
-  "entry": "main.gx",
-  "dependencies": {
-    "js": [],
-    "py": [],
-    "gx": []
-  }
-}
-```
-
----
-
-## Language Reference
-
-### Types
-| Type | Example |
-|------|---------|
-| String | `"hello"`, `"Hi {memory.name}"` |
-| Number | `42`, `3.14`, `-7` |
-| Bool | `true`, `false` |
-| Array | `[1, 2, 3]` |
-| Object | `{ key: "value", "Content-Type": "application/json" }` |
-| Null | `null` |
-
-### Operators
 ```gx
-a + b      // add / concat
-a - b      // subtract
-a * b      // multiply
-a / b      // divide
-a % b      // modulo
-a == b     // equal
-a != b     // not equal
-a < b      // less than
-a > b      // greater than
-a <= b     // less or equal
-a >= b     // greater or equal
-a and b    // logical and
-a or b     // logical or
-not a      // logical not
-a ?? b     // null coalescing — returns b if a is null
+import "utils/math.gx"    as math
+import "utils/strings.gx" as str
+
+result = math.add(10, 32)         // 42
+label  = str.truncate(result, 5)  // "42..."
 ```
 
-### Control Flow
+### Range Slicing
+
 ```gx
-if condition {
-  // ...
-} else if other {
-  // ...
-} else {
-  // ...
-}
+s = "hello world"
+s[0..5]    // "hello"
+s[6..11]   // "world"
 
-for each item in collection {
-  log(item)
-}
-
-while count < 10 {
-  count += 1
-}
-
-try {
-  risky_call()
-} catch e {
-  log("Error: " + e)
-}
-```
-
-### Memory
-```gx
-// Declare in remember block
-remember {
-  count = 0
-  name = "default"
-  items = []
-}
-
-// Read anywhere
-log(memory.count)
-
-// Write anywhere
-memory.count += 1
-memory.name = "updated"
-
-// Nested
-memory.stats.runs += 1
-```
-
-### Built-in Functions
-```gx
-log("message")               // print to stdout
-say "message"                // print to stdout (simple syntax)
-get_timestamp()              // current Unix timestamp (ms)
-to_string(value)             // convert to string
-len("hello")                 // string/array length
-range(start, end)            // produce [start, start+1, ..., end-1]
-ord("A")                     // character code point
-chr(65)                      // code point → character
-is_digit("3")                // true/false character tests
-is_alpha("a")
-is_alnum("z")
-is_whitespace(" ")
-floor(3.9)                   // math helpers
-ceil(3.1)
-abs(-5)
-sqrt(16.0)
-set_key(obj, "k", val)       // return new object with key set (immutable update)
-json_parse(str)              // parse JSON string
-json_stringify(val)          // serialise to JSON
-parse_gx(src)                // parse GX source → AST value (used by the JS transpiler)
-read_file(path)              // read file as string
-write_file(path, content)    // write string to file
-file_exists(path)            // boolean
-env("VAR")                   // read environment variable
+arr = [1, 2, 3, 4, 5]
+arr[1..4]  // [2, 3, 4]
 ```
 
 ### String Interpolation
+
 ```gx
-name = "Ahmed"
-say "Hello, {name}!"
-say "Count: {memory.count}, time: {get_timestamp()}"
+name = "GX"
+"Hello from {name}!"          // "Hello from GX!"
+"Literal brace: {{name}}"     // "Literal brace: {name}"
+"Result: {1 + 2 * 3}"         // "Result: 7"
 ```
 
-### AI Primitives
+### Control Flow
+
 ```gx
-// Ask an AI model
-result = ask openai { prompt: "your prompt", max_tokens: 200 }
-result = ask anthropic { prompt: "your prompt" }
-result = ask ollama:llama3 { prompt: "your prompt" }
+// Range for loop
+for n in range(1, 11) { log(n) }
 
-// Embed text (returns float array)
-vector = embed "text to embed"
-
-// Classify
-label = infer classifier {
-  input: memory.text,
-  classes: ["positive", "negative", "neutral"]
-}
-```
-
-### When Blocks (Simple Syntax)
-```gx
-when started {
-  // runs once on startup, before brain cycle
+// While with break/continue
+while running {
+  line = readline()
+  if line == null { break }
+  if line.starts_with("#") { continue }
+  process(line)
 }
 
-when memory.count > 10 {
-  // runs when condition is true
+// Try/catch with typed errors
+try {
+  result = http_post(url, payload)
+} catch NetworkError e {
+  log("Network: " + e)
+} catch e {
+  log("Other: " + e)
 }
 
-when memory.status changes {
-  // runs when value changes
-  re-run  // restart the brain cycle
-}
-```
+// Await — concurrent branches
+await { a: expr1, b: expr2, c: expr3 } into results
 
-### Escalation
-```gx
-escalate to human    // emit escalation event and stop brain cycle
-```
-
-### Multi-Agent Orchestration (v0.1.5)
-
-Agents can call each other, chain results through pipelines, and pass messages.
-
-**Spawn an agent** (returns the communicate value):
-```gx
-result = spawn agent "summarizer" with { text: "hello world" }
-log(result)  // "'hello world' has 2 word(s)"
-```
-
-**Chain calls** (output of one becomes input of next):
-```gx
-doubled   = spawn agent "doubler"    with { value: 21 }
-formatted = spawn agent "formatter" with { value: doubled }
-log(formatted)  // "RESULT: 42"
-```
-
-**Pipeline with `|>`** (scalar values are auto-wrapped as `{ value: X }`):
-```gx
-result = { value: 5 } |> spawn agent "doubler" |> spawn agent "formatter"
-log(result)  // "RESULT: 10"
-```
-
-**Send a message** to a `when message` handler:
-```gx
-spawn "task" to "worker" with { task: "process data" }
-```
-
-**Receive messages** in a helper:
-```gx
-helper "worker" {
-  when message "task" {
-    log("Worker received: {message.task}")
-  }
-}
-```
-
-**Define a callable agent** (any helper that reads `input` becomes call-only — it won't auto-run):
-```gx
-helper "doubler" {
-  brain {
-    plan { }
-    execute { result = input.value * 2 }
-    remember { }
-    communicate { result }
-  }
-}
+// Retry with backoff
+result = retry(fn() { risky_call() }, 3, { backoff: "exponential" })
 ```
 
 ---
 
-## Examples
+## Built-in Reference
 
-See [`docs/examples/`](docs/examples/) for working examples:
-
-- [`hello_world.gx`](docs/examples/hello_world.gx) — print to stdout
-- [`simple_agent.gx`](docs/examples/simple_agent.gx) — `agent` + `when started`
-- [`calculator.gx`](docs/examples/calculator.gx) — brain cycle with memory
-- [`ai_assistant.gx`](docs/examples/ai_assistant.gx) — `ask openai`, confidence check
-- [`package_interop.gx`](docs/examples/package_interop.gx) — `use js.path`, `use py.os`
-
----
-
-## Architecture
-
-```
-src/
-├── main.rs           CLI entry point
-├── lexer.rs          Tokenizer (brace syntax)
-├── parser.rs         AST builder (brace syntax)
-├── indent_parser.rs  Parser for progressive indentation syntax
-├── ast.rs            AST node types
-├── interpreter.rs    Tree-walking executor + parse_gx() builtin
-├── value.rs          Runtime value types
-├── ai.rs             AI provider connectors (OpenAI, Anthropic, Ollama)
-├── bridge.rs         JS/Python subprocess IPC
-├── toolchain.rs      gx init/build/install/fmt/make/test
-└── lib.rs            Public API for embedding
-
-self/                 GX self-hosting layer (the language written in itself)
-├── lexer.gx          Tokenizer written in GX
-├── parser.gx         Parser written in GX (functional index-passing style)
-├── eval.gx           Evaluator written in GX (functional env-threading)
-├── js_codegen.gx     GX AST → JavaScript transpiler
-├── jsc.gx            Single-file JS compile entry point
-├── jsc_bootstrap.gx  Bootstrap compiler using native parse_gx()
-├── gx_runtime.js     JS runtime library prepended to all compiled output
-├── gx_main_logic.gx  Self-interpreter entry point logic
-└── test_self.gx      Self-interpreter test suite
-
-gx_interp.js          Compiled GX interpreter — runs .gx files via Node.js (no Rust)
-```
-
-**Key design decisions:**
-- Tree-walking interpreter (no bytecode) — simple, debuggable, correct
-- Flat `memory` scope (no lexical scoping) — predictable for AI agents
-- Synchronous execution — no async/await complexity in Phase 1
-- Every AI call auto-logged to `memory.ai_trace`
-- JS bridge: one-shot `node -e` subprocess per call
-- Python bridge: persistent child process with JSON IPC (avoids 200ms startup per call)
-- GX passes all values by copy — the self-hosting evaluator threads `env` and `fns` explicitly through every function call
-- `parse_gx(src)` builtin runs the Rust parser at native speed, returning a GX value tree for the JS transpiler — bypasses the O(n²) token-clone cost of the GX-written parser
+| Category | Builtins |
+|----------|---------|
+| **AI** | `ask openai/anthropic/ollama` (streaming + tool use), `embed`, `infer classifier` |
+| **HTTP** | `http_get`, `http_post`, `http_put`, `http_delete`, `http_stream`, `http_upload` |
+| **File I/O** | `read_file`, `write_file`, `delete_file`, `file_exists`, `list_dir`, `make_dir` |
+| **JSON** | `json_stringify` (integers stay integers), `json_parse` |
+| **CSV** | `csv_parse` (auto-types), `csv_stringify` |
+| **YAML** | `yaml_parse`, `yaml_stringify` |
+| **TOML** | `toml_parse`, `toml_stringify` |
+| **Regex** | `regex_test`, `regex_find`, `regex_find_all`, `regex_replace`, `regex_split`, `regex_captures`, `regex_named_captures` |
+| **Date** | `date_now`, `date_timestamp`, `date_parse`, `date_format`, `date_diff`, `date_add`, `date_parts`, `date_from_parts` |
+| **Math** | `abs`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `min(a,b,…)`, `max(a,b,…)`, `random` |
+| **String** | `.trim()`, `.upper()`, `.lower()`, `.contains()`, `.replace()`, `.split()`, `.reverse()`, `.slice()`, `.starts_with()`, `.ends_with()`, `.len()`, `.repeat()`, `.pad_left()`, `.pad_right()` |
+| **Array** | `.sort()`, `.filter_by()`, `.unique()`, `.flatten()`, `.sum()`, `.min()`, `.max()`, `.average()`, `.take()`, `.skip()`, `.map_field()` |
+| **DB** | `db_query`, `db_exec` (SQLite, bundled) |
+| **Env** | `load_env`, `get_env(key, default)`, `set_env` |
+| **Shell** | `shell()` (requires `--allow-shell`) |
+| **Vector** | `vector_store_new`, `vector_store_add`, `vector_store_search`, `vector_store_delete`, `vector_store_size`, `cosine_similarity` |
+| **Schema** | `schema_validate(value, spec)` |
+| **Memory** | `persist_memory()`, `load_memory()` |
+| **Base64** | `base64_encode`, `base64_decode` |
+| **I/O** | `readline()`, `read_all()` |
+| **Observability** | `trace_log(event, data)` |
+| **Retry** | `retry(fn, max, opts)` |
+| **Slice/Merge** | `slice(arr_or_str, start, end)`, `merge(obj1, obj2, …)` |
+| **Type** | `type_of`, `is_null`, `to_string`, `to_number`, `len` |
 
 ---
 
-## Status
+## Language Interop
 
-| Phase | What | Status |
-|-------|------|--------|
-| 1 | Rust interpreter — lexer, parser, AST, tree-walker | ✅ Done |
-| 2 | Simple syntax — `agent`, `when started`, `re-run`, `escalate to human` | ✅ Done |
-| 3 | AI primitives — `ask`, `embed`, `infer classifier` | ✅ Done |
-| 4 | Package interop — `use js.X`, `use py.X` | ✅ Done |
-| 5 | Toolchain — `gx init/build/install/fmt/make/test` | ✅ Done |
-| 6 | Distribution — curl installer, GitHub Actions CI/release, npm package | ✅ Done |
-| 7 | Multi-agent orchestration — `spawn agent`, `\|>` pipelines, `when message` | ✅ Done |
-| 8 | Opinionated sugar — `goal`, `think`, `act`, `observe`, `loop until`, `repeat N times`, `parallel`, `retry`, `timeout`, `on_error` | ✅ Done |
-| 9 | Native tools — `http_request`, `send_email`, `scrape`, `notify`, `read/write_file`, `json_parse`, `ord`/`chr`/`is_digit` | ✅ Done |
-| 10 | Self-hosting — GX interpreter written in GX, GX → JS transpiler, Node.js bootstrap | ✅ Done |
-
-CI: `cargo test` (40 tests), `cargo clippy -D warnings`, `cargo fmt --check` — all pass on ubuntu/macos/windows.
+| Language | Syntax | How it works |
+|----------|--------|-------------|
+| JavaScript | `use js.axios` | Persistent Node.js subprocess, JSON IPC |
+| TypeScript | `use ts.mylib` | Auto-detects `tsx` or `ts-node` |
+| Python | `use py.requests` | Persistent Python subprocess, JSON IPC |
+| Go | `use go "./service"` | Compiled binary, JSON stdin/stdout |
+| Any binary | `use binary "./app"` | Same JSON protocol — Rust, Java, .NET, C++ |
 
 ---
 
-## Self-Hosting Details
+## Progressive Syntax
 
-Phase 10 is complete. Here is what "self-hosting" means for GX:
+Three levels that compile to the same runtime — pick the verbosity you want:
 
-**Stage 1 — Self-interpreter:** `self/lexer.gx` + `self/parser.gx` + `self/eval.gx` implement the full GX tokenizer, parser, and evaluator in GX itself. Running `gx run self/main.gx` interprets a `.gx` file using only GX code (the Rust runtime only drives the outer loop).
+```gx
+// Level 1 — Pure intent
+Agent greeter
+name = "World"
+"Hello {name}"
 
-**Stage 2 — JS transpiler:** `self/js_codegen.gx` + `self/jsc.gx` compile GX AST nodes to JavaScript source. Every GX construct maps to idiomatic JS — `for each` → `for...of`, null coalescing → `??`, string interpolation → template literals, all builtins (`len`, `range`, `set_key`, etc.) → typed JS runtime helpers in `self/gx_runtime.js`.
+// Level 2 — Named behaviors
+Agent assistant
+On start:
+  Greet
 
-**Stage 3 — Bootstrap:** `self/jsc_bootstrap.gx` compiles the entire self-hosting stack to a single JavaScript file. The `parse_gx(src)` builtin runs the native Rust parser at full speed and returns the AST as a GX value tree, feeding it directly into `js_codegen.gx` — this eliminates the O(n²) token-clone overhead that would arise from passing large arrays through the GX-written parser's recursive functions.
+Greet:
+  say "Hello!"
 
+// Level 3 — Explicit brain cycle
+Agent processor
+Plan:
+  action = "process"
+Execute:
+  If action == "process"
+    result = transform(input)
+Remember:
+  memory.last = result
+Communicate:
+  result
 ```
-gx run self/jsc_bootstrap.gx > gx_interp.js   # 2 seconds, 1641 lines of JS
-GX_FILE=self/test_self.gx node gx_interp.js    # All self-interpreter tests passed!
+
+---
+
+## AI Providers
+
+| Provider | Env Variable | Default Model |
+|----------|-------------|---------------|
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
+| Ollama (local) | `OLLAMA_URL` (default `localhost:11434`) | `llama3` |
+
+---
+
+## Security Model
+
+GX is secure by default — all dangerous operations require explicit opt-in:
+
+| Operation | Default | Flag to enable |
+|-----------|---------|----------------|
+| Shell execution | Blocked | `--allow-shell` |
+| Internal HTTP (SSRF) | Blocked | `--allow-internal-http` |
+| File access | Sandboxed to script dir | `--no-sandbox` |
+
+---
+
+## Toolchain
+
+```bash
+gx run main.gx              # Run a GX program
+gx check main.gx            # Syntax check (no execution)
+gx init my-project          # Scaffold a new project
+gx test                     # Run all *.test.gx files
+gx fmt main.gx              # Format source
+gx build                    # Compile for distribution
+gx install js.axios         # Add JS dependency
+gx install py.requests      # Add Python dependency
 ```
 
-`gx_interp.js` is committed to the repo. It is a self-contained Node.js GX interpreter — no Rust, no native dependencies.
+---
+
+## Version History
+
+| Version | Highlights |
+|---------|-----------|
+| **v0.4.0** | Regex · Date/Time · CSV/YAML/TOML · TypeScript+Go+Binary bridges · AI tool use · Streaming AI · Persistent memory (SQLite) · Vector store · Schema validation · `await {}` concurrent block · Retry with backoff · Observability tracing · `string.reverse()` · Vararg `min()`/`max()` · Memory-propagating function calls |
+| **v0.3.0** | Security audit · Sandbox & SSRF protection · Shell gate · Module system (`import … as alias`) · `!` operator · Integer JSON · Range slicing `[a..b]` · `output` unreserved · Standalone `slice()`/`merge()` · `readline()` |
+| **v0.2.5** | HTTPS/TLS fix · Shell stdin · Quoted object keys |
+| **v0.2.0** | `think`/`act`/`observe` · `parallel {}` · `retry:` · Multi-agent orchestration |
+| **v0.1.0** | Initial release — lexer, parser, interpreter, OpenAI/Anthropic/Ollama |
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+```bash
+cargo test                       # 72 unit tests — must all pass
+gx run tests/test_v04_full.gx    # 678 integration checks
+cargo clippy -- -D warnings      # zero warnings
+cargo fmt --check                # formatted
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ---
 
 ## License
 
-MIT
-
----
-
-**© 2025 DEVJSX LIMITED** — Company No: 16618207, 128 City Road, London EC1V 2NX
-
-**Ahmed Elgarhy** — Founder, DEVJSX | AI Software Architect
+MIT — © 2025 Ahmed Elgarhy / DEVJSX LIMITED (London, UK). Company No: 16618207.

@@ -1,0 +1,28 @@
+// Report utilities — import as: import "helpers/report_utils.gx" as report
+
+function success_rate(passed, total) {
+  if total == 0 { return 0 }
+  return (passed * 100) / total
+}
+
+function classify_status(code) {
+  if code >= 200 and code < 300 { return "ok" }
+  if code >= 400 and code < 500 { return "client_err" }
+  if code >= 500 { return "server_err" }
+  return "unknown"
+}
+
+function format_ms(ms) {
+  if ms < 1000 { return to_string(ms) + "ms" }
+  return to_string(ms / 1000) + "s"
+}
+
+function build_summary(total, passed, failed, avg_ms) {
+  return {
+    total: total,
+    passed: passed,
+    failed: failed,
+    success_rate: success_rate(passed, total),
+    avg_ms: avg_ms
+  }
+}

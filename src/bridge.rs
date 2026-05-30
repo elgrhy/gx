@@ -1,5 +1,8 @@
 //! GX Package Interop Bridge
-//! JS (Node.js) and Python bridges via subprocess JSON IPC.
+//! JS (Node.js), TypeScript, Python, Go, and generic binary bridges via JSON IPC.
+//! Protocol: newline-delimited JSON over stdin/stdout.
+//! Request:  {"type":"call","module":"m","method":"fn","args":[...]}
+//! Response: {"ok":true,"result":...} or {"ok":false,"error":"..."}
 
 use crate::value::Value;
 
@@ -13,8 +16,14 @@ impl Bridge {
     pub fn new_js() -> Result<Self, String> {
         Err("JS bridge not available in playground".into())
     }
+    pub fn new_typescript() -> Result<Self, String> {
+        Err("TypeScript bridge not available in playground".into())
+    }
     pub fn new_python() -> Result<Self, String> {
         Err("Python bridge not available in playground".into())
+    }
+    pub fn new_binary(_path: &str) -> Result<Self, String> {
+        Err("Binary bridge not available in playground".into())
     }
     pub fn call(&mut self, _module: &str, _method: &str, _args: &[Value]) -> Result<Value, String> {
         Err("Bridge not available in playground".into())
@@ -179,7 +188,10 @@ pub struct Bridge {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeKind {
     Js,
+    TypeScript,
     Python,
+    /// Generic binary that speaks the JSON IPC protocol over stdin/stdout.
+    Binary(String),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -220,6 +232,51 @@ impl Bridge {
         })
     }
 
+    /// TypeScript bridge — tries `tsx` first (fast, zero-config), then `ts-node`.
+    /// Falls back to plain `node` if neither is installed (for .js files).
+    pub fn new_typescript() -> Result<Self, String> {
+        let runner = if command_exists("tsx") {
+            "tsx"
+        } else if command_exists("ts-node") {
+            "ts-node"
+        } else if command_exists("node") {
+            "node"
+        } else {
+            return Err("TypeScript bridge: neither tsx, ts-node, nor node found.\n\
+                 Install tsx with: npm install -g tsx"
+                .into());
+        };
+
+        // Inject the same JS shim — it works with both CJS and ESM runners.
+        let mut child = Command::new(runner)
+            .args(if runner == "node" {
+                &["--input-type=module"][..]
+            } else {
+                &[][..]
+            })
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to start TypeScript runner ({}): {}", runner, e))?;
+
+        let mut stdin = child.stdin.take().ok_or("Failed to get TS runner stdin")?;
+        let stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or("Failed to get TS runner stdout")?,
+        );
+        writeln!(stdin, "{}", JS_SHIM).map_err(|e| format!("Shim write failed: {}", e))?;
+
+        Ok(Bridge {
+            kind: BridgeKind::TypeScript,
+            _child: child,
+            stdin,
+            stdout,
+        })
+    }
+
     pub fn new_python() -> Result<Self, String> {
         let python = find_python().ok_or("Python 3 not found. Install from https://python.org")?;
         let mut child = Command::new(&python)
@@ -244,6 +301,34 @@ impl Bridge {
 
         Ok(Bridge {
             kind: BridgeKind::Python,
+            _child: child,
+            stdin,
+            stdout,
+        })
+    }
+
+    /// Generic binary bridge — calls any executable that reads JSON lines from stdin
+    /// and writes JSON lines to stdout using the same IPC protocol.
+    /// Use for Go, Rust, Java, .NET, or any compiled service.
+    pub fn new_binary(path: &str) -> Result<Self, String> {
+        if !std::path::Path::new(path).exists() {
+            return Err(format!(
+                "Binary bridge: executable '{}' not found. Build it first.",
+                path
+            ));
+        }
+        let mut child = Command::new(path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to start binary '{}': {}", path, e))?;
+
+        let stdin = child.stdin.take().ok_or("Failed to get binary stdin")?;
+        let stdout = BufReader::new(child.stdout.take().ok_or("Failed to get binary stdout")?);
+
+        Ok(Bridge {
+            kind: BridgeKind::Binary(path.to_string()),
             _child: child,
             stdin,
             stdout,
@@ -283,9 +368,11 @@ impl Bridge {
     }
 
     fn kind_name(&self) -> &str {
-        match self.kind {
+        match &self.kind {
             BridgeKind::Js => "JS",
+            BridgeKind::TypeScript => "TypeScript",
             BridgeKind::Python => "Python",
+            BridgeKind::Binary(path) => path.as_str(),
         }
     }
 }

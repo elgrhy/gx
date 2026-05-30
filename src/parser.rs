@@ -142,6 +142,13 @@ impl Parser {
             TokenKind::Timeout => "timeout".into(),
             TokenKind::OnError => "on_error".into(),
             TokenKind::Cron => "cron".into(),
+            // v0.4.0 keywords usable as identifiers in most contexts
+            TokenKind::Tool => "tool".into(),
+            TokenKind::Schema => "schema".into(),
+            TokenKind::Await => "await".into(),
+            TokenKind::Required => "required".into(),
+            TokenKind::Description => "description".into(),
+            TokenKind::Persistent => "persistent".into(),
             other => {
                 return Err(format!(
                     "Line {}: expected identifier, got {:?}",
@@ -215,6 +222,7 @@ impl Parser {
         let mut file_imports = Vec::new();
         let mut imports = Vec::new();
         let mut functions = Vec::new();
+        let mut tools = Vec::new();
         let mut helpers = Vec::new();
         let mut top_level_brain = None;
 
@@ -230,6 +238,9 @@ impl Parser {
                 }
                 TokenKind::Function => {
                     functions.push(self.parse_function()?);
+                }
+                TokenKind::Tool => {
+                    tools.push(self.parse_tool()?);
                 }
                 TokenKind::Helper | TokenKind::Agent => {
                     helpers.push(self.parse_helper()?);
@@ -251,8 +262,143 @@ impl Parser {
             file_imports,
             imports,
             functions,
+            tools,
             helpers,
             top_level_brain,
+        })
+    }
+
+    /// Parse a `tool "name" { description: "...", params: { ... }, execute(args) { body } }` definition.
+    fn parse_tool(&mut self) -> Result<ToolDef, String> {
+        let line = self.line();
+        self.advance(); // consume `tool`
+        let name = self.expect_string()?;
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut description = String::new();
+        let mut params: Vec<ToolParam> = Vec::new();
+        let mut body: Vec<Stmt> = Vec::new();
+
+        loop {
+            self.skip_newlines();
+            match self.peek_kind().clone() {
+                TokenKind::RBrace => {
+                    self.advance();
+                    break;
+                }
+                TokenKind::Eof => return Err(format!("Line {}: unclosed tool '{}'", line, name)),
+                TokenKind::Description => {
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
+                    description = self.expect_string()?;
+                }
+                TokenKind::Ident(ref s) if s == "description" => {
+                    self.advance();
+                    self.expect(&TokenKind::Colon)?;
+                    description = self.expect_string()?;
+                }
+                // params: { name: { type: "string", description: "...", required: true } }
+                TokenKind::Ident(ref s) if s == "params" => {
+                    self.advance();
+                    self.eat(&TokenKind::Colon); // consume optional `:`
+                    self.expect(&TokenKind::LBrace)?;
+                    loop {
+                        self.skip_newlines();
+                        if self.eat(&TokenKind::RBrace) {
+                            break;
+                        }
+                        let param_name = self.expect_ident()?;
+                        self.expect(&TokenKind::Colon)?;
+                        self.expect(&TokenKind::LBrace)?;
+                        let mut param_type = "string".to_string();
+                        let mut param_desc: Option<String> = None;
+                        let mut required = true;
+                        loop {
+                            self.skip_newlines();
+                            if self.eat(&TokenKind::RBrace) {
+                                break;
+                            }
+                            let key = self.expect_ident()?;
+                            self.expect(&TokenKind::Colon)?;
+                            match key.as_str() {
+                                "type" => param_type = self.expect_string()?,
+                                "description" => param_desc = Some(self.expect_string()?),
+                                "required" => {
+                                    if let TokenKind::BoolLit(b) = self.peek_kind().clone() {
+                                        self.advance();
+                                        required = b;
+                                    }
+                                }
+                                _ => {
+                                    let _ = self.parse_expr();
+                                }
+                            }
+                            self.eat(&TokenKind::Comma);
+                        }
+                        params.push(ToolParam {
+                            name: param_name,
+                            param_type,
+                            description: param_desc,
+                            required,
+                        });
+                        self.eat(&TokenKind::Comma);
+                    }
+                }
+                // execute(param1, param2) { body }
+                // `execute` is a GX keyword (TokenKind::Execute), not an Ident.
+                TokenKind::Execute => {
+                    self.advance();
+                    self.expect(&TokenKind::LParen)?;
+                    // param names in execute() override those from params block if given
+                    let mut exec_params: Vec<String> = Vec::new();
+                    loop {
+                        self.skip_newlines();
+                        if self.eat(&TokenKind::RParen) {
+                            break;
+                        }
+                        exec_params.push(self.expect_ident()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            self.skip_newlines();
+                            self.expect(&TokenKind::RParen)?;
+                            break;
+                        }
+                    }
+                    // Align param names from execute() signature with existing params
+                    for (i, ep) in exec_params.iter().enumerate() {
+                        if let Some(p) = params.get_mut(i) {
+                            p.name = ep.clone();
+                        } else {
+                            params.push(ToolParam {
+                                name: ep.clone(),
+                                param_type: "string".to_string(),
+                                description: None,
+                                required: true,
+                            });
+                        }
+                    }
+                    self.expect(&TokenKind::LBrace)?;
+                    body = self.parse_stmts()?;
+                }
+                _ => {
+                    // Skip unknown keys — must advance at least one token to avoid infinite loops
+                    let pos_before = self.pos;
+                    let _ = self.expect_ident();
+                    if self.pos == pos_before {
+                        // Could not advance via expect_ident — skip the token manually
+                        self.advance();
+                    }
+                    self.eat(&TokenKind::Colon);
+                    let _ = self.parse_expr();
+                    self.eat(&TokenKind::Comma);
+                }
+            }
+        }
+        Ok(ToolDef {
+            name,
+            description,
+            params,
+            body,
+            line,
         })
     }
 
@@ -260,7 +406,13 @@ impl Parser {
         let line = self.line();
         self.advance(); // consume `import`
         let path = self.expect_string()?;
-        Ok(FileImport { path, line })
+        // Optional: `import "path.gx" as namespace`
+        let alias = if self.eat(&TokenKind::As) {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        Ok(FileImport { path, alias, line })
     }
 
     fn parse_function(&mut self) -> Result<FunctionDef, String> {
@@ -322,6 +474,7 @@ impl Parser {
         let mut retry = None;
         let mut timeout_ms = None;
         let mut on_error = None;
+        let mut functions = Vec::new();
 
         loop {
             self.skip_newlines();
@@ -464,6 +617,11 @@ impl Parser {
                     on_error = Some(policy);
                 }
 
+                // Agent-level function declaration
+                TokenKind::Function => {
+                    functions.push(self.parse_function()?);
+                }
+
                 // `message` blocks — skip (Phase 2)
                 TokenKind::Ident(ref s) if s == "message" => {
                     self.advance();
@@ -495,6 +653,7 @@ impl Parser {
             retry,
             timeout_ms,
             on_error,
+            functions,
             line,
         })
     }
@@ -853,6 +1012,8 @@ impl Parser {
                 self.expect(&TokenKind::RParen)?;
                 Ok(Stmt::Log { value, line })
             }
+            // TokenKind::Output is never produced by the lexer anymore (output is unreserved),
+            // but the branch is kept for any code path that still constructs it directly.
             TokenKind::Output => {
                 self.advance();
                 self.expect(&TokenKind::LParen)?;
@@ -902,7 +1063,79 @@ impl Parser {
             TokenKind::Loop => self.parse_loop_until(),
             TokenKind::Repeat => self.parse_repeat_times(),
             TokenKind::Parallel => self.parse_parallel(),
+            // await { key: expr, ... } into var → concurrent execution, object result
+            TokenKind::Await => self.parse_await(),
+            // `function name(params) { body }` inside a block → lambda assignment
+            // This allows helper functions co-located with the code that uses them.
+            TokenKind::Function => {
+                let func = self.parse_function()?;
+                Ok(Stmt::Assign {
+                    target: Expr::Ident(func.name),
+                    value: Expr::Lambda {
+                        params: func.params,
+                        body: func.body,
+                    },
+                    line,
+                })
+            }
             _ => {
+                // Helpful error: detect reserved keywords used as variable names
+                let reserved_as_var = matches!(
+                    self.peek_kind(),
+                    TokenKind::Log
+                        | TokenKind::Say
+                        | TokenKind::Wait
+                        | TokenKind::Serve
+                        | TokenKind::Return
+                        | TokenKind::Think
+                        | TokenKind::Act
+                        | TokenKind::Observe
+                        | TokenKind::Loop
+                        | TokenKind::Repeat
+                        | TokenKind::Parallel
+                        | TokenKind::Assert
+                        | TokenKind::Try
+                        | TokenKind::Emit
+                        | TokenKind::Broadcast
+                );
+                if reserved_as_var {
+                    // peek two tokens ahead to see if this looks like `keyword = ...`
+                    let kw_name = match self.peek_kind() {
+                        TokenKind::Log => "log",
+                        TokenKind::Say => "say",
+                        TokenKind::Wait => "wait",
+                        TokenKind::Serve => "serve",
+                        TokenKind::Return => "return",
+                        TokenKind::Think => "think",
+                        TokenKind::Act => "act",
+                        TokenKind::Observe => "observe",
+                        TokenKind::Loop => "loop",
+                        TokenKind::Repeat => "repeat",
+                        TokenKind::Parallel => "parallel",
+                        TokenKind::Assert => "assert",
+                        TokenKind::Try => "try",
+                        TokenKind::Emit => "emit",
+                        TokenKind::Broadcast => "broadcast",
+                        _ => "",
+                    };
+                    let next_is_assign = matches!(
+                        self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                        Some(TokenKind::Eq)
+                            | Some(TokenKind::PlusEq)
+                            | Some(TokenKind::MinusEq)
+                            | Some(TokenKind::StarEq)
+                            | Some(TokenKind::SlashEq)
+                    );
+                    if next_is_assign && !kw_name.is_empty() {
+                        return Err(format!(
+                            "Line {}: '{}' is a GX keyword and cannot be used as a variable name. \
+                             Choose a different name (e.g. '{}_val') or use log(expr) for output.",
+                            self.line(),
+                            kw_name,
+                            kw_name
+                        ));
+                    }
+                }
                 let expr = self.parse_expr()?;
                 self.skip_newlines();
                 if self.eat(&TokenKind::Eq) {
@@ -1062,6 +1295,36 @@ impl Parser {
         }
         self.expect(&TokenKind::RBrace)?;
         Ok(Stmt::Parallel { branches, line })
+    }
+
+    /// await { key: expr, ... } into var — concurrent execution block
+    fn parse_await(&mut self) -> Result<Stmt, String> {
+        let line = self.line();
+        self.advance(); // consume `await`
+        self.expect(&TokenKind::LBrace)?;
+        let mut bindings = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.eat(&TokenKind::RBrace) {
+                break;
+            }
+            let key = self.parse_object_key()?;
+            self.expect(&TokenKind::Colon)?;
+            let val = self.parse_expr()?;
+            bindings.push((key, val));
+            self.eat(&TokenKind::Comma);
+        }
+        // Optional: `await { ... } into results`
+        let into_var = if self.eat(&TokenKind::Ident("into".to_string())) {
+            self.expect_ident()?
+        } else {
+            "results".to_string()
+        };
+        Ok(Stmt::Await {
+            bindings,
+            into_var,
+            line,
+        })
     }
 
     /// parse { key: expr, key: expr } → Vec<(String, Expr)>
@@ -1558,12 +1821,25 @@ impl Parser {
                 }
                 TokenKind::LBracket => {
                     self.advance();
-                    let index = self.parse_expr()?;
-                    self.expect(&TokenKind::RBracket)?;
-                    expr = Expr::Index {
-                        object: Box::new(expr),
-                        index: Box::new(index),
-                    };
+                    let start = self.parse_expr()?;
+                    // `[start..end]` range slice
+                    if self.eat(&TokenKind::DotDot) {
+                        let end = self.parse_expr()?;
+                        self.expect(&TokenKind::RBracket)?;
+                        expr = Expr::Index {
+                            object: Box::new(expr),
+                            index: Box::new(Expr::Range {
+                                start: Box::new(start),
+                                end: Box::new(end),
+                            }),
+                        };
+                    } else {
+                        self.expect(&TokenKind::RBracket)?;
+                        expr = Expr::Index {
+                            object: Box::new(expr),
+                            index: Box::new(start),
+                        };
+                    }
                 }
                 TokenKind::LParen => {
                     self.advance();
@@ -1903,16 +2179,55 @@ fn parse_interpolated(s: String) -> Expr {
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '{' {
+            // `{{` → literal `{`
+            if i + 1 < chars.len() && chars[i + 1] == '{' {
+                literal.push('{');
+                i += 2;
+                continue;
+            }
             if !literal.is_empty() {
                 parts.push(InterpolatedPart::Literal(std::mem::take(&mut literal)));
             }
             i += 1;
+            // Collect the expression source, tracking nested braces and quoted strings
+            // so that `{"key": val}` inside an interpolation works correctly.
             let mut expr_src = String::new();
-            while i < chars.len() && chars[i] != '}' {
-                expr_src.push(chars[i]);
+            let mut depth = 1usize;
+            let mut in_str = false;
+            let mut escape_next = false;
+            while i < chars.len() {
+                let c = chars[i];
+                if escape_next {
+                    expr_src.push(c);
+                    escape_next = false;
+                } else if in_str {
+                    if c == '\\' {
+                        expr_src.push(c);
+                        escape_next = true;
+                    } else if c == '"' {
+                        expr_src.push(c);
+                        in_str = false;
+                    } else {
+                        expr_src.push(c);
+                    }
+                } else if c == '"' {
+                    expr_src.push(c);
+                    in_str = true;
+                } else if c == '{' {
+                    depth += 1;
+                    expr_src.push(c);
+                } else if c == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                    expr_src.push(c);
+                } else {
+                    expr_src.push(c);
+                }
                 i += 1;
             }
-            i += 1;
             match Lexer::new(&expr_src).tokenize() {
                 Ok(toks) => match Parser::new(toks).parse_expr() {
                     Ok(e) => parts.push(InterpolatedPart::Expr(e)),
@@ -1920,6 +2235,10 @@ fn parse_interpolated(s: String) -> Expr {
                 },
                 Err(_) => parts.push(InterpolatedPart::Literal(format!("{{{}}}", expr_src))),
             }
+        } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
+            // `}}` → literal `}`
+            literal.push('}');
+            i += 2;
         } else {
             literal.push(chars[i]);
             i += 1;

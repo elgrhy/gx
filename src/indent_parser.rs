@@ -566,8 +566,18 @@ pub fn parse(source: &str) -> Result<Program, String> {
 
         if lower.starts_with("import ") {
             let path = line.text[7..].trim().trim_matches('"').to_string();
+            // Parse optional `import "path" as alias`
+            let (import_path, import_alias) = if let Some(as_pos) = path.to_lowercase().find(" as ")
+            {
+                let p = path[..as_pos].trim().trim_matches('"').to_string();
+                let a = path[as_pos + 4..].trim().to_string();
+                (p, Some(a))
+            } else {
+                (path.trim_matches('"').to_string(), None)
+            };
             file_imports.push(FileImport {
-                path,
+                path: import_path,
+                alias: import_alias,
                 line: line.no,
             });
             idx += 1;
@@ -595,6 +605,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
         file_imports,
         imports,
         functions,
+        tools: Vec::new(),
         helpers,
         top_level_brain: None,
     })
@@ -762,6 +773,7 @@ fn parse_agent(
             retry: None,
             timeout_ms: None,
             on_error: None,
+            functions: Vec::new(),
             line: header.no,
         },
         extracted_fns,

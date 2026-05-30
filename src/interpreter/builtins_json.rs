@@ -22,7 +22,15 @@ pub fn gx_value_to_json(val: &Value) -> serde_json::Value {
     match val {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Number(n) => serde_json::json!(n),
+        Value::Number(n) => {
+            // Serialize whole-number floats as JSON integers so that APIs (e.g. OpenAI)
+            // that require integer fields don't reject values like 50.0.
+            if n.fract() == 0.0 && n.abs() < 1e15 {
+                serde_json::Value::Number(serde_json::Number::from(*n as i64))
+            } else {
+                serde_json::json!(n)
+            }
+        }
         Value::Str(s) => serde_json::Value::String(s.clone()),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(gx_value_to_json).collect()),
         Value::Object(map) => {

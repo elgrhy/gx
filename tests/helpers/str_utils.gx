@@ -1,0 +1,31 @@
+// String utilities — import as: import "helpers/str_utils.gx" as str
+
+function truncate(text, max_len) {
+  if text.len() <= max_len {
+    return text
+  }
+  return text[0..max_len] + "..."
+}
+
+function repeat_str(s, n) {
+  result = ""
+  i = 0
+  while i < n {
+    result = result + s
+    i += 1
+  }
+  return result
+}
+
+function pad_right(text, width) {
+  diff = width - text.len()
+  if diff <= 0 { return text }
+  return text + repeat_str(" ", diff)
+}
+
+function center_banner(text, width) {
+  pad = (width - text.len()) / 2
+  border = repeat_str("=", width)
+  spaces = repeat_str(" ", pad)
+  return border + "\n" + spaces + text + "\n" + border
+}

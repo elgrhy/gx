@@ -1,0 +1,220 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Real-world scenario: API health monitor pipeline
+//
+// Simulates a developer who receives a batch of API call logs and needs to:
+//   • Enrich each log with status classification and timing labels
+//   • Compute aggregate statistics
+//   • Identify slow or failing endpoints
+//   • Produce a JSON summary payload (e.g. to POST to a monitoring service)
+//
+// Every v0.4.0 feature is used naturally, not as a checklist:
+//   ✓ import … as (module system)
+//   ✓ function at file root, agent level, and inside when block
+//   ✓ ! operator
+//   ✓ [start..end] range slicing on strings and arrays
+//   ✓ output as a plain variable name
+//   ✓ standalone slice() and merge()
+//   ✓ {{ }} brace escaping in interpolated strings
+//   ✓ json_stringify producing clean integers (not 50.0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+import "helpers/str_utils.gx"    as str
+import "helpers/report_utils.gx" as report
+
+// ── File-root helper: available to all agents in this file ───────────────────
+
+function is_slow(duration_ms, threshold_ms) {
+  return duration_ms > threshold_ms
+}
+
+function endpoint_label(endpoint, max_len) {
+  // Truncate using range slice so long paths fit in a table row
+  if endpoint.len() <= max_len {
+    return endpoint
+  }
+  return endpoint[0..max_len] + "…"
+}
+
+// ── Agent ────────────────────────────────────────────────────────────────────
+
+agent "api_monitor" {
+
+  // Agent-level function — shared across all when blocks of this agent
+  function make_row(entry) {
+    icon = "✓"
+    if !entry.ok { icon = "✗" }
+    label = endpoint_label(entry.endpoint, 18)
+    return "{icon}  " + str.pad_right(label, 20) + str.pad_right(entry.category, 12) + entry.timing
+  }
+
+  when started {
+
+    // ── Inline helper: scoped to this block ──────────────────────────────────
+    function enrich(entry) {
+      category  = report.classify_status(entry.status)
+      ok        = !(category == "client_err" or category == "server_err")
+      slow      = is_slow(entry.duration_ms, 500)
+      timing    = report.format_ms(entry.duration_ms)
+      return merge(entry, { category: category, ok: ok, slow: slow, timing: timing })
+    }
+
+    // ── Dataset: simulated API logs ───────────────────────────────────────────
+    raw_logs = [
+      { id: 1,  endpoint: "/api/users",            status: 200, duration_ms: 45   },
+      { id: 2,  endpoint: "/api/orders",           status: 201, duration_ms: 120  },
+      { id: 3,  endpoint: "/api/products/catalog", status: 404, duration_ms: 12   },
+      { id: 4,  endpoint: "/api/auth/login",       status: 500, duration_ms: 850  },
+      { id: 5,  endpoint: "/api/users",            status: 200, duration_ms: 38   },
+      { id: 6,  endpoint: "/api/checkout/confirm", status: 200, duration_ms: 1250 },
+      { id: 7,  endpoint: "/api/products/search",  status: 200, duration_ms: 67   },
+      { id: 8,  endpoint: "/api/auth/refresh",     status: 401, duration_ms: 8    }
+    ]
+
+    // ── Step 1: enrich every log entry ───────────────────────────────────────
+    logs = []
+    for each entry in raw_logs {
+      logs.push(enrich(entry))
+    }
+
+    // ── Step 2: aggregate statistics ─────────────────────────────────────────
+    total        = len(logs)
+    passed       = 0
+    failed       = 0
+    slow_count   = 0
+    total_ms     = 0
+
+    for each e in logs {
+      if e.ok   { passed += 1 } else { failed += 1 }
+      if e.slow { slow_count += 1 }
+      total_ms += e.duration_ms
+    }
+
+    avg_ms  = total_ms / total
+    summary = report.build_summary(total, passed, failed, avg_ms)
+
+    // ── Step 3: render the table ──────────────────────────────────────────────
+    banner = str.center_banner("API HEALTH REPORT", 50)
+    log(banner)
+
+    header = str.pad_right("   Endpoint", 24) + str.pad_right("Category", 12) + "Timing"
+    log(header)
+    log(str.repeat_str("-", 50))
+
+    for each e in logs {
+      log(make_row(e))
+    }
+
+    log(str.repeat_str("-", 50))
+
+    // ── Step 4: print summary using `output` as a normal variable ─────────────
+    output = "Summary: {total} requests — {passed} ok, {failed} failed, {slow_count} slow"
+    log(output)
+    log("Avg latency : " + report.format_ms(avg_ms))
+    log("Success rate: " + to_string(summary.success_rate) + "%")
+
+    // ── Step 5: build a JSON payload (must have clean integers, not 50.0) ─────
+    // Use slice() standalone to trim the logs array to the first 3 for the payload
+    sample = slice(logs, 0, 3)
+
+    payload = {
+      service:      "api-gateway",
+      total:        summary.total,
+      passed:       summary.passed,
+      failed:       summary.failed,
+      success_rate: summary.success_rate,
+      avg_ms:       avg_ms,
+      slow_count:   slow_count
+    }
+
+    json_out = json_stringify(payload)
+    log("JSON payload:")
+    log(json_out)
+
+    // ── Step 6: identify failures and slow requests for alerting ──────────────
+    log("\nEndpoints needing attention:")
+    for each e in logs {
+      if !e.ok or e.slow {
+        // Use {{ }} to embed a literal brace in the alert label
+        label = "{{alert}} " + e.endpoint + " [" + to_string(e.status) + "] " + e.timing
+        log("  " + label)
+      }
+    }
+
+    // ── Assertions ────────────────────────────────────────────────────────────
+    // Core counts
+    assert total      == 8  "total log count"
+    assert passed     == 5  "success count"
+    assert failed     == 3  "failure count"
+    assert slow_count == 2  "slow request count (>500ms: 850ms and 1250ms)"
+
+    // ! operator
+    assert !false                  "bang false"
+    assert !(failed == 0)          "there are failures"
+    assert !(slow_count == 0)      "there are slow requests"
+
+    // Range slicing on a string
+    long_ep = "/api/products/catalog"
+    assert long_ep[0..4]  == "/api"     "range slice prefix"
+    assert long_ep[5..13] == "products" "range slice middle"
+
+    // Range slicing on the logs array
+    first_two = logs[0..2]
+    assert len(first_two) == 2   "range slice array length"
+    assert first_two[0].id == 1  "range slice array first"
+    assert first_two[1].id == 2  "range slice array second"
+
+    // standalone slice()
+    top3 = slice(logs, 0, 3)
+    assert len(top3) == 3       "standalone slice length"
+    assert top3[2].id == 3      "standalone slice content"
+
+    // standalone merge()
+    base    = { a: 1, b: 2 }
+    patch   = { b: 99, c: 3 }
+    merged  = merge(base, patch)
+    assert merged.a == 1   "merge keeps left"
+    assert merged.b == 99  "merge right wins"
+    assert merged.c == 3   "merge adds key"
+
+    // output as a regular variable
+    output = 0
+    for each e in logs { if e.ok { output += 1 } }
+    assert output == passed  "output as counter variable"
+
+    // JSON integers (no trailing .0)
+    assert !json_out.contains(".0")     "clean integer JSON"
+    assert json_out.contains(":8")      "total is 8 not 8.0"
+    assert json_out.contains(":5")      "passed is 5 not 5.0"
+
+    // {{ }} brace escaping
+    escaped = "{{tag}}: hello"
+    assert escaped == "{{tag}}: hello"  "brace escape"
+
+    // Module functions
+    assert report.success_rate(5, 8)    == 62.5  "module success_rate"
+    assert report.format_ms(45)         == "45ms" "module format_ms"
+    assert report.format_ms(2000)       == "2s"   "module format_ms seconds"
+    assert report.classify_status(200)  == "ok"          "module classify 200"
+    assert report.classify_status(404)  == "client_err"  "module classify 404"
+    assert report.classify_status(500)  == "server_err"  "module classify 500"
+
+    // File-root functions
+    assert is_slow(1250, 500)  "is_slow true"
+    assert !is_slow(45, 500)   "is_slow false"
+    assert endpoint_label("/api/products/catalog", 12) == "/api/product…"  "truncate label"
+
+    // Agent-level function (make_row returns a non-empty string)
+    first_row = make_row(logs[0])
+    assert first_row.len() > 0  "make_row produces output"
+    assert first_row.contains("ok") "make_row has category"
+
+    // str module
+    padded = str.pad_right("hi", 5)
+    assert padded == "hi   "        "pad_right"
+    assert str.repeat_str("ab", 3) == "ababab"  "repeat_str"
+    short = str.truncate("hello world", 5)
+    assert short == "hello..."  "truncate"
+
+    log("\nAll assertions passed. Pipeline complete.")
+  }
+}

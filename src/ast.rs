@@ -5,15 +5,18 @@ pub struct Program {
     pub file_imports: Vec<FileImport>,
     pub imports: Vec<ImportDecl>,
     pub functions: Vec<FunctionDef>,
+    pub tools: Vec<ToolDef>,
     pub helpers: Vec<HelperDef>,
     pub top_level_brain: Option<BrainBlock>,
 }
 
-// ── File import (`import "path.gx"`) ─────────────────────────────────────────
+// ── File import (`import "path.gx"` or `import "path.gx" as name`) ───────────
 
 #[derive(Debug, Clone)]
 pub struct FileImport {
     pub path: String,
+    /// When `Some("utils")`, functions from the file are namespaced as `utils.fn_name`.
+    pub alias: Option<String>,
     pub line: usize,
 }
 
@@ -25,6 +28,26 @@ pub struct FunctionDef {
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
     pub line: usize,
+}
+
+// ── AI Tool definitions (function calling) ───────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    pub params: Vec<ToolParam>,
+    pub body: Vec<Stmt>,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolParam {
+    pub name: String,
+    /// JSON Schema type: "string" | "number" | "boolean" | "array" | "object"
+    pub param_type: String,
+    pub description: Option<String>,
+    pub required: bool,
 }
 
 // ── Package import declarations (`use js.X`) ─────────────────────────────────
@@ -52,6 +75,8 @@ pub struct HelperDef {
     pub retry: Option<u32>,
     pub timeout_ms: Option<u64>,
     pub on_error: Option<String>,
+    /// Functions declared inside the agent body — registered globally when the agent is loaded.
+    pub functions: Vec<FunctionDef>,
     pub line: usize,
 }
 
@@ -276,6 +301,12 @@ pub enum Stmt {
         status: u16,
         line: usize,
     },
+    /// await { a: expr, b: expr } — run all branches concurrently, collect results as object
+    Await {
+        bindings: Vec<(String, Expr)>,
+        into_var: String,
+        line: usize,
+    },
 }
 
 // ── HTTP route declaration ────────────────────────────────────────────────────
@@ -348,6 +379,11 @@ pub enum Expr {
     Lambda {
         params: Vec<String>,
         body: Vec<Stmt>,
+    },
+    // Range for slice indexing: expr[start..end]
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
     },
     // Parallel named results: parallel { a: expr, b: expr }
     ParallelMap(Vec<(String, Expr)>),

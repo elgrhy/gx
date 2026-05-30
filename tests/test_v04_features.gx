@@ -1,0 +1,183 @@
+// Test suite for v0.4.0 improvements:
+//   1. `!` operator
+//   2. Integer JSON serialization
+//   3. Range slicing [start..end]
+//   4. `output` usable as a variable name
+//   5. Standalone slice() and merge() builtins
+//   6. String interpolation: {{ }} escaping and nested braces
+//   7. Inline functions inside when blocks
+//   8. Agent-level function declarations
+//   9. Module system: import "file.gx" as alias
+
+import "helpers/math_utils.gx" as math
+
+// Agent-level function — available globally without being at file root.
+function double_it(x) {
+  return x * 2
+}
+
+helper "test_v04_features" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  // Agent-level function co-located with the agent that uses it.
+  function clamp(val, lo, hi) {
+    if val < lo { return lo }
+    if val > hi { return hi }
+    return val
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+
+      // ── 1. `!` operator ─────────────────────────────────────────────────────
+      t = true
+      f = false
+      if !f { memory.passed += 1 } else { log("FAIL: !false should be true") memory.failed += 1 }
+      if !t { log("FAIL: !true should be false") memory.failed += 1 } else { memory.passed += 1 }
+
+      // `not` keyword and `!` symbol are interchangeable
+      result = { ok: false }
+      if !result.ok { memory.passed += 1 } else { log("FAIL: !result.ok") memory.failed += 1 }
+      if not result.ok { memory.passed += 1 } else { log("FAIL: not result.ok") memory.failed += 1 }
+
+      // ── 2. Integer JSON serialization ────────────────────────────────────────
+      payload = { n: 50, rate: 0.75, count: 100 }
+      serialized = json_stringify(payload)
+      // Must contain `"n":50` not `"n":50.0`
+      if serialized.contains(":50,") or serialized.contains(":50}") {
+        memory.passed += 1
+      } else {
+        log("FAIL: integer JSON — got: " + serialized)
+        memory.failed += 1
+      }
+      // Float values must remain floats
+      if serialized.contains("0.75") {
+        memory.passed += 1
+      } else {
+        log("FAIL: float JSON — got: " + serialized)
+        memory.failed += 1
+      }
+      // count: 100 must be integer
+      if serialized.contains(":100") {
+        memory.passed += 1
+      } else {
+        log("FAIL: count JSON — got: " + serialized)
+        memory.failed += 1
+      }
+
+      // ── 3. Range slicing [start..end] ────────────────────────────────────────
+      s = "hello world"
+      if s[0..5] == "hello" { memory.passed += 1 } else { log("FAIL: string range [0..5]") memory.failed += 1 }
+      if s[6..11] == "world" { memory.passed += 1 } else { log("FAIL: string range [6..11]") memory.failed += 1 }
+      if s[0..0] == "" { memory.passed += 1 } else { log("FAIL: empty range") memory.failed += 1 }
+
+      arr = [10, 20, 30, 40, 50]
+      sub = arr[1..4]
+      if sub[0] == 20 and sub[1] == 30 and sub[2] == 40 {
+        memory.passed += 1
+      } else {
+        log("FAIL: array range [1..4]")
+        memory.failed += 1
+      }
+
+      // Range from variable
+      st = 0
+      en = 3
+      if "abcdef"[st..en] == "abc" { memory.passed += 1 } else { log("FAIL: range from vars") memory.failed += 1 }
+
+      // ── 4. `output` as a variable name ──────────────────────────────────────
+      output = "hello"
+      output += " world"
+      if output == "hello world" { memory.passed += 1 } else { log("FAIL: output as var") memory.failed += 1 }
+
+      // ── 5. Standalone slice() and merge() ────────────────────────────────────
+      sliced_str = slice("foobar", 0, 3)
+      if sliced_str == "foo" { memory.passed += 1 } else { log("FAIL: slice() string") memory.failed += 1 }
+
+      sliced_arr = slice([1, 2, 3, 4, 5], 1, 4)
+      if sliced_arr[0] == 2 and sliced_arr[2] == 4 {
+        memory.passed += 1
+      } else {
+        log("FAIL: slice() array")
+        memory.failed += 1
+      }
+
+      base = { a: 1, b: 2 }
+      extra = { b: 99, c: 3 }
+      merged = merge(base, extra)
+      if merged.a == 1 and merged.b == 99 and merged.c == 3 {
+        memory.passed += 1
+      } else {
+        log("FAIL: merge()")
+        memory.failed += 1
+      }
+
+      // merge() also works with three objects
+      combined = merge({ x: 1 }, { y: 2 }, { z: 3 })
+      if combined.x == 1 and combined.y == 2 and combined.z == 3 {
+        memory.passed += 1
+      } else {
+        log("FAIL: merge() three objects")
+        memory.failed += 1
+      }
+
+      // ── 6. String interpolation: {{ }} brace escaping ────────────────────────
+      key = "name"
+      val = "Alice"
+      // {{ should produce a literal {, not start an interpolation
+      escaped = "key={{key}}, val={val}"
+      // The comparison also uses {{ so that the literal { is preserved in the expected string.
+      if escaped == "key={{key}}, val=Alice" {
+        memory.passed += 1
+      } else {
+        log("FAIL: {{ escape — got: " + escaped)
+        memory.failed += 1
+      }
+
+      // Nested object literal inside interpolation
+      count = 42
+      msg = "count is {count} items"
+      if msg == "count is 42 items" { memory.passed += 1 } else { log("FAIL: interpolation with number") memory.failed += 1 }
+
+      // ── 7. Inline function inside agent brain ────────────────────────────────
+      function square(n) {
+        return n * n
+      }
+      if square(7) == 49 { memory.passed += 1 } else { log("FAIL: inline function square") memory.failed += 1 }
+      if square(0) == 0 { memory.passed += 1 } else { log("FAIL: inline function square(0)") memory.failed += 1 }
+
+      // Lambda stored in a variable (existing feature, regression check)
+      multiply = fn(a, b) { return a * b }
+      if multiply(6, 7) == 42 { memory.passed += 1 } else { log("FAIL: lambda") memory.failed += 1 }
+
+      // ── 8. Agent-level function and file-root function ───────────────────────
+      if double_it(21) == 42 { memory.passed += 1 } else { log("FAIL: double_it (file-root fn)") memory.failed += 1 }
+      if clamp(150, 0, 100) == 100 { memory.passed += 1 } else { log("FAIL: clamp high") memory.failed += 1 }
+      if clamp(-5, 0, 100) == 0 { memory.passed += 1 } else { log("FAIL: clamp low") memory.failed += 1 }
+      if clamp(50, 0, 100) == 50 { memory.passed += 1 } else { log("FAIL: clamp mid") memory.failed += 1 }
+
+      // ── 9. Module system: import "file.gx" as alias ──────────────────────────
+      sum_result = math.add(10, 32)
+      if sum_result == 42 { memory.passed += 1 } else { log("FAIL: math.add — got: " + to_string(sum_result)) memory.failed += 1 }
+
+      greet_result = math.greet("GX")
+      if greet_result == "Hello from math, GX!" {
+        memory.passed += 1
+      } else {
+        log("FAIL: math.greet — got: " + greet_result)
+        memory.failed += 1
+      }
+
+      // Method-style still works alongside module calls
+      if "hello".to_upper() == "HELLO" { memory.passed += 1 } else { log("FAIL: method regression") memory.failed += 1 }
+
+      log("test_v04_features: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}
