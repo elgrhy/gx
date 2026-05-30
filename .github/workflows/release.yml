@@ -4,9 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.4.0)'
+        required: false
 
 permissions:
   contents: write
+  id-token: write   # Required for crates.io Trusted Publishing (OIDC)
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -101,10 +107,52 @@ jobs:
             ### Install
 
             ```bash
+            # npm
+            npm install -g gxlang
+
+            # Cargo
+            cargo install gx
+
+            # One-line script
             curl -sSf https://raw.githubusercontent.com/elgrhy/gx/main/install.sh | sh
             ```
 
             Or download a binary for your platform below.
 
             ### What's new
-            See [CHANGELOG.md](CHANGELOG.md) for details.
+            See the [README](https://github.com/elgrhy/gx#readme) for the full changelog.
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    environment: crates-io   # Must match the environment name configured in crates.io Trusted Publishing
+    permissions:
+      id-token: write        # Required for OIDC Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io (Trusted Publishing via OIDC)
+        run: cargo publish --locked
+
+  publish-npm:
+    name: Publish to npm
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish npm package
+        run: npm publish
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
