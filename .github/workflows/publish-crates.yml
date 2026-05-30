@@ -10,12 +10,13 @@ on:
 
 permissions:
   id-token: write   # Required for crates.io OIDC Trusted Publishing
+  contents: read
 
 jobs:
   publish:
     name: Publish gx to crates.io
     runs-on: ubuntu-latest
-    environment: crates-io   # Must match the environment in crates.io Trusted Publishing settings
+    environment: crates-io   # Must match the Trusted Publisher environment configured on crates.io
     steps:
       - uses: actions/checkout@v4
 
@@ -27,5 +28,19 @@ jobs:
           VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
           echo "Publishing gx v$VERSION to crates.io"
 
-      - name: Publish to crates.io (Trusted Publishing via OIDC)
+      # Exchange the GitHub OIDC token for a crates.io publish token.
+      # This requires the crate owner to have configured Trusted Publishing on
+      # https://crates.io/settings/tokens pointing at this repo + workflow.
+      - name: Get crates.io OIDC token
+        id: oidc
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('crates.io');
+            core.setSecret(token);
+            return token;
+
+      - name: Publish to crates.io
         run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.oidc.outputs.result }}
