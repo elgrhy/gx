@@ -1,0 +1,29 @@
+// v0.5.0 DX + stdlib smoke tests (run: gx run tests/test_v05_dx.gx)
+
+// truncate(value, max[, ellipsis])
+assert_eq(truncate("hello world", 5), "hell…", "truncate clips with ellipsis")
+assert_eq(truncate("hi", 10), "hi", "truncate leaves short strings")
+assert_eq(truncate("hello", 3, "..."), "...", "truncate custom ellipsis")
+
+// token_count — heuristic ~4 chars/token
+assert_eq(token_count("abcd"), 1, "token_count 4 chars => 1")
+assert_eq(token_count("abcdefgh"), 2, "token_count 8 chars => 2")
+
+// stdlib fs path helpers
+assert_eq(dirname("/a/b/c.txt"), "/a/b", "dirname")
+assert_eq(basename("/a/b/c.txt"), "c.txt", "basename")
+assert_eq(path_join("a", "b", "c"), "a/b/c", "path_join")
+
+// stdlib net: url_parse
+u = url_parse("https://example.com:8080/path/to?q=1&x=2#frag")
+assert_eq(u.scheme, "https", "url scheme")
+assert_eq(u.host, "example.com", "url host")
+assert_eq(u.port, "8080", "url port")
+assert_eq(u.path, "/path/to", "url path")
+assert_eq(u.query, "q=1&x=2", "url query")
+assert_eq(u.fragment, "frag", "url fragment")
+
+// tokens_used starts at 0 with no AI calls
+assert_eq(tokens_used(), 0, "tokens_used starts at 0")
+
+print("test_v05_dx: all assertions passed")

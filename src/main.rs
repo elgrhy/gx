@@ -84,6 +84,14 @@ fn main() {
             let path = args.get(2).map(|s| s.as_str());
             toolchain::test(path)
         }
+        "-e" | "eval" => {
+            let src = require_arg(&args, 2, "gx -e '<source>'");
+            let allow_shell = args.contains(&"--allow-shell".to_string());
+            let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
+            let no_sandbox = args.contains(&"--no-sandbox".to_string());
+            let no_limit = args.contains(&"--no-limit".to_string());
+            cmd_eval(src, allow_shell, allow_internal_http, no_sandbox, no_limit)
+        }
         "repl" => cmd_repl(),
         "version" | "--version" | "-v" => {
             println!("gx {}", VERSION);
@@ -229,6 +237,32 @@ fn cmd_run(
         .map_err(|e| format!("{}: {}", path, e))
 }
 
+fn cmd_eval(
+    src: &str,
+    allow_shell: bool,
+    allow_internal_http: bool,
+    no_sandbox: bool,
+    no_limit: bool,
+) -> Result<(), String> {
+    let program = parse_file(src, "<eval>")?;
+
+    let mut interp = Interpreter::new();
+    interp.allow_shell = allow_shell;
+    interp.allow_internal_http = allow_internal_http;
+    interp.no_loop_limit = no_limit;
+
+    // Sandbox relative file I/O to the current working directory for inline scripts.
+    if !no_sandbox {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+        interp.sandbox_dir = Some(cwd);
+    }
+
+    interp
+        .run_program(&program)
+        .map_err(|e| format!("<eval>: {}", e))
+}
+
 fn cmd_check(path: &str) -> Result<(), String> {
     let source = read_file(path)?;
     let program = parse_file(&source, path)?;
@@ -342,6 +376,7 @@ fn print_help() {
     );
     println!("  gx run <file.gx> --no-sandbox                  Disable file-path sandboxing");
     println!("  gx run <file.gx> --no-limit                    Remove while-loop iteration cap (for REPLs, infinite I/O loops)");
+    println!("  gx -e '<source>'                       Run inline GX source (no temp file)");
     println!("  gx check <file.gx>                     Check syntax without running");
     println!("  gx init <name>                         Create a new GX project");
     println!("  gx build <file.gx> [-o name]           Build standalone launcher");
@@ -378,6 +413,8 @@ fn print_help() {
     println!("  File:    read_file, write_file, append_file, file_exists, list_dir");
     println!("  Env:     env(\"NAME\"), env(\"NAME\", \"default\")");
     println!("  Util:    base64_encode, base64_decode, html_escape, url_encode");
+    println!("  Stdlib:  truncate, token_count, tokens_used, write (no trailing newline)");
+    println!("           dirname, basename, path_join, group_by, url_parse");
     println!();
     println!("LANGUAGE:");
     println!("  agent \"name\" {{ ... }}        Define an AI agent");

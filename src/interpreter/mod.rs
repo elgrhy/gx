@@ -143,6 +143,8 @@ pub struct Interpreter {
     global_vars: HashMap<String, Value>,
     /// Call stack of frame names (agent / function / closure) for error traces.
     call_stack: Vec<String>,
+    /// Cumulative tokens used across all AI calls this session (exposed via `tokens_used()`).
+    total_tokens_used: u64,
 }
 
 impl Default for Interpreter {
@@ -180,6 +182,7 @@ impl Interpreter {
             no_loop_limit: false,
             global_vars: HashMap::new(),
             call_stack: Vec::new(),
+            total_tokens_used: 0,
         }
     }
 
@@ -225,6 +228,28 @@ impl Interpreter {
             buf.push(line.to_string());
         } else {
             println!("{}", line);
+        }
+    }
+
+    /// Add the `tokens_used` reported by an AI response to the session total.
+    fn record_tokens(&mut self, result: &Value) {
+        if let Value::Object(m) = result {
+            if let Some(n) = m.get("tokens_used").and_then(|v| v.as_number()) {
+                if n > 0.0 {
+                    self.total_tokens_used += n as u64;
+                }
+            }
+        }
+    }
+
+    /// Write output WITHOUT a trailing newline (for inline prompts before readline()).
+    fn emit_output_raw(&mut self, text: &str) {
+        if let Some(buf) = &mut self.output_capture {
+            buf.push(text.to_string());
+        } else {
+            use std::io::Write;
+            print!("{}", text);
+            std::io::stdout().flush().ok();
         }
     }
 
@@ -1063,6 +1088,7 @@ impl Interpreter {
                     params.insert("prompt".into(), prompt_val);
                     params.insert("temperature".into(), temp_val);
                     let result = ai::ask_ai(provider, None, &params);
+                    self.record_tokens(&result);
                     if min_conf > 0.0 {
                         let conf = if let Value::Object(ref m) = result {
                             m.get("confidence")
@@ -1526,6 +1552,7 @@ impl Interpreter {
                     .and_then(|v| v.as_str().map(String::from));
                 let effective_model = param_model.or_else(|| model.clone());
                 let result = ai::ask_ai(provider, effective_model.as_deref(), &resolved);
+                self.record_tokens(&result);
                 self.append_ai_trace(env, &result);
                 Ok(result)
             }
@@ -2243,6 +2270,12 @@ impl Interpreter {
                 self.emit_output(&parts.join(" "));
                 Ok(Value::Null)
             }
+            // Print without a trailing newline — for inline prompts (e.g. `> `) before readline().
+            "write" | "print_inline" => {
+                let parts: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+                self.emit_output_raw(&parts.join(" "));
+                Ok(Value::Null)
+            }
             "eprint" | "elog" => {
                 let parts: Vec<String> = args.iter().map(|v| v.to_string()).collect();
                 eprintln!("{}", parts.join(" "));
@@ -2432,11 +2465,14 @@ impl Interpreter {
             // ── Environment / .env ────────────────────────────────────────────
             #[cfg(not(target_arch = "wasm32"))]
             "load_env" => {
-                let path = args
+                let raw = args
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_else(|| ".env".to_string());
-                load_env_file(&path)
+                // Resolve relative to the script's sandbox dir (not the CWD) so that
+                // `load_env(".env")` finds the .env next to the script from any CWD.
+                let path = self.safe_path(&raw)?;
+                load_env_file(&path.to_string_lossy())
             }
             // get_env with optional default
             "get_env" | "env" => {
@@ -3542,6 +3578,119 @@ impl Interpreter {
                 }
                 Ok(Value::Str(path.to_string_lossy().into_owned()))
             }
+            "dirname" => {
+                let p = args.first().map(|v| v.to_string()).unwrap_or_default();
+                let d = std::path::Path::new(&p)
+                    .parent()
+                    .map(|x| x.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                Ok(Value::Str(d))
+            }
+            "basename" => {
+                let p = args.first().map(|v| v.to_string()).unwrap_or_default();
+                let b = std::path::Path::new(&p)
+                    .file_name()
+                    .map(|x| x.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                Ok(Value::Str(b))
+            }
+
+            // ── stdlib: strings / tokens ──────────────────────────────────────
+            // truncate(value, max[, ellipsis]) — char-safe clip to `max` total chars.
+            "truncate" => {
+                let s = args.first().map(|v| v.to_string()).unwrap_or_default();
+                let max = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+                let chars: Vec<char> = s.chars().collect();
+                if chars.len() <= max {
+                    Ok(Value::Str(s))
+                } else if max == 0 {
+                    Ok(Value::Str(String::new()))
+                } else {
+                    let ellipsis = args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "…".to_string());
+                    let keep = max.saturating_sub(ellipsis.chars().count());
+                    let mut out: String = chars.into_iter().take(keep).collect();
+                    out.push_str(&ellipsis);
+                    Ok(Value::Str(out))
+                }
+            }
+            // token_count(text) — fast heuristic estimate (~4 chars/token). Approximate,
+            // not a real tokenizer; use it to budget before an API call.
+            "token_count" => {
+                let s = args.first().map(|v| v.to_string()).unwrap_or_default();
+                let est = ((s.chars().count() as f64) / 4.0).ceil();
+                Ok(Value::Number(est))
+            }
+            // tokens_used() — cumulative tokens across every AI call this session.
+            "tokens_used" | "total_tokens" => Ok(Value::Number(self.total_tokens_used as f64)),
+
+            // ── stdlib: collections / net ─────────────────────────────────────
+            // group_by(array, key) — group objects by the value at `key`.
+            "group_by" => {
+                let arr = match args.first() {
+                    Some(Value::Array(a)) => a.clone(),
+                    _ => return Err(Signal::Error("group_by requires an array".into())),
+                };
+                let key = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+                let mut groups: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+                for item in arr {
+                    let k = match &item {
+                        Value::Object(o) => o.get(&key).map(|v| v.to_string()).unwrap_or_default(),
+                        other => other.to_string(),
+                    };
+                    groups.entry(k).or_default().push(item);
+                }
+                let mut out = HashMap::new();
+                for (k, v) in groups {
+                    out.insert(k, Value::Array(v));
+                }
+                Ok(Value::Object(out))
+            }
+            // url_parse(url) -> { scheme, host, port, path, query, fragment }
+            "url_parse" => {
+                let u = args.first().map(|v| v.to_string()).unwrap_or_default();
+                let mut rest = u.as_str();
+                let mut fragment = String::new();
+                if let Some(i) = rest.find('#') {
+                    fragment = rest[i + 1..].to_string();
+                    rest = &rest[..i];
+                }
+                let mut scheme = String::new();
+                if let Some(i) = rest.find("://") {
+                    scheme = rest[..i].to_string();
+                    rest = &rest[i + 3..];
+                }
+                let mut query = String::new();
+                if let Some(i) = rest.find('?') {
+                    query = rest[i + 1..].to_string();
+                    rest = &rest[..i];
+                }
+                let (authority, path) = match rest.find('/') {
+                    Some(i) => (&rest[..i], rest[i..].to_string()),
+                    None => (rest, String::new()),
+                };
+                let (host, port) = match authority.rfind(':') {
+                    Some(i) => (authority[..i].to_string(), authority[i + 1..].to_string()),
+                    None => (authority.to_string(), String::new()),
+                };
+                let mut obj = HashMap::new();
+                obj.insert("scheme".to_string(), Value::Str(scheme));
+                obj.insert("host".to_string(), Value::Str(host));
+                obj.insert(
+                    "port".to_string(),
+                    if port.is_empty() {
+                        Value::Null
+                    } else {
+                        Value::Str(port)
+                    },
+                );
+                obj.insert("path".to_string(), Value::Str(path));
+                obj.insert("query".to_string(), Value::Str(query));
+                obj.insert("fragment".to_string(), Value::Str(fragment));
+                Ok(Value::Object(obj))
+            }
 
             // ── String utilities ──────────────────────────────────────────────
             "format" => {
@@ -4401,6 +4550,15 @@ const KNOWN_BUILTINS: &[&str] = &[
     "log",
     "print",
     "say",
+    "write",
+    "truncate",
+    "token_count",
+    "tokens_used",
+    "path_join",
+    "dirname",
+    "basename",
+    "group_by",
+    "url_parse",
     "readline",
     "read_all",
     "is_tty",
