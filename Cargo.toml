@@ -1,5 +1,5 @@
 [package]
-name = "gx"
+name = "gxlang"
 version = "0.4.1"
 edition = "2021"
 description = "GX — brain-first programming language for building transparent, auditable AI assistants. Every AI call logged, every decision explicit, every agent debuggable."

@@ -4,7 +4,7 @@
 
 Every AI assistant today is a black box. GX makes it a glass box — every decision explicit, every AI call logged, every agent fully debuggable. Built in Rust. Runs anywhere. No cloud lock-in.
 
-[![Crates.io](https://img.shields.io/crates/v/gx)](https://crates.io/crates/gx)
+[![Crates.io](https://img.shields.io/crates/v/gxlang)](https://crates.io/crates/gxlang)
 [![npm](https://img.shields.io/npm/v/gxlang)](https://www.npmjs.com/package/gxlang)
 [![CI](https://github.com/elgrhy/gx/actions/workflows/ci.yml/badge.svg)](https://github.com/elgrhy/gx/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -21,7 +21,7 @@ curl -sSf https://raw.githubusercontent.com/elgrhy/gx/main/install.sh | sh
 npm install -g gxlang
 
 # Cargo
-cargo install gx
+cargo install gxlang
 
 # From source
 git clone https://github.com/elgrhy/gx.git && cd gx && cargo build --release

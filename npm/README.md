@@ -3,7 +3,7 @@
 > Brain-first programming language for building transparent, auditable AI assistants.
 
 [![npm version](https://img.shields.io/npm/v/gxlang)](https://www.npmjs.com/package/gxlang)
-[![Crates.io](https://img.shields.io/crates/v/gx)](https://crates.io/crates/gx)
+[![Crates.io](https://img.shields.io/crates/v/gxlang)](https://crates.io/crates/gxlang)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](https://github.com/elgrhy/gx)
 

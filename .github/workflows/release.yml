@@ -111,7 +111,7 @@ jobs:
             npm install -g gxlang
 
             # Cargo
-            cargo install gx
+            cargo install gxlang
 
             # One-line script
             curl -sSf https://raw.githubusercontent.com/elgrhy/gx/main/install.sh | sh
@@ -122,41 +122,23 @@ jobs:
             ### What's new
             See the [README](https://github.com/elgrhy/gx#readme) for the full changelog.
 
-  # Best-effort publish to crates.io via Trusted Publishing (OIDC).
-  # Requires a one-time setup on crates.io: Settings → Trusted Publishing →
-  # add owner=elgrhy, repo=gx, workflow=release.yml, environment=crates-io.
-  # Marked continue-on-error so a missing config never fails the whole release.
+  # Publish the `gxlang` crate to crates.io using the CARGO_REGISTRY_TOKEN secret.
+  # Marked continue-on-error so re-publishing an existing version never fails the release.
   publish-crates:
     name: Publish to crates.io
     needs: release
     runs-on: ubuntu-latest
-    environment: crates-io
     continue-on-error: true
-    permissions:
-      id-token: write
-      contents: read
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Mint crates.io token via Trusted Publishing
-        run: |
-          OIDC_TOKEN=$(curl -sS \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=crates.io" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            | jq -r '.value')
-          RESPONSE=$(curl -sS --fail-with-body \
-            -X POST https://crates.io/api/v1/trusted_publishing/github_actions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${OIDC_TOKEN}")
-          TOKEN=$(echo "${RESPONSE}" | jq -r '.token')
-          echo "::add-mask::${TOKEN}"
-          echo "CARGO_REGISTRY_TOKEN=${TOKEN}" >> "${GITHUB_ENV}"
-
       - name: Publish to crates.io
         run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # Best-effort publish to npm. Requires the NPM_TOKEN repo secret.
   # Marked continue-on-error so a missing token never fails the whole release

@@ -191,7 +191,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gx"
+name = "gxlang"
 version = "0.4.1"
 dependencies = [
  "chrono",
