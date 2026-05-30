@@ -96,7 +96,11 @@ jobs:
         with:
           path: artifacts/
 
+      # Only create a GitHub Release on an actual tag push. On manual
+      # workflow_dispatch (branch ref) there is no tag, so this step is skipped
+      # and the downstream publish jobs still run for testing.
       - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           files: artifacts/**/*
