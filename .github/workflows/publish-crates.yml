@@ -1,0 +1,31 @@
+name: Publish to crates.io
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version being published (informational)'
+        required: false
+        default: 'latest'
+
+permissions:
+  id-token: write   # Required for crates.io OIDC Trusted Publishing
+
+jobs:
+  publish:
+    name: Publish gx to crates.io
+    runs-on: ubuntu-latest
+    environment: crates-io   # Must match the environment in crates.io Trusted Publishing settings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+          echo "Publishing gx v$VERSION to crates.io"
+
+      - name: Publish to crates.io (Trusted Publishing via OIDC)
+        run: cargo publish --locked
