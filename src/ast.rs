@@ -8,6 +8,9 @@ pub struct Program {
     pub tools: Vec<ToolDef>,
     pub helpers: Vec<HelperDef>,
     pub top_level_brain: Option<BrainBlock>,
+    /// Statements at file root — x = 1, load_env(".env"), config = yaml_parse(...)
+    /// Executed once before any agent runs. Result vars are injected into every agent's env.
+    pub top_level_stmts: Vec<Stmt>,
 }
 
 // ── File import (`import "path.gx"` or `import "path.gx" as name`) ───────────

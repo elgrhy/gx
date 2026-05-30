@@ -671,18 +671,37 @@ pub fn test(path: Option<&str>) -> Result<(), String> {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
-    let test_dir = path.unwrap_or("tests");
+    // Resolve the test target:
+    //   - explicit single .gx file → run just that file
+    //   - explicit directory → discover test files within it
+    //   - no argument → try "tests/", then current directory
+    let target = path.unwrap_or_else(|| {
+        if Path::new("tests").exists() {
+            "tests"
+        } else {
+            "."
+        }
+    });
 
-    if !Path::new(test_dir).exists() {
-        return Err(format!("Test directory '{}' not found", test_dir));
+    let target_path = Path::new(target);
+    if !target_path.exists() {
+        return Err(format!("Test path '{}' not found", target));
     }
 
     let mut test_files = Vec::new();
-    collect_gx_files(Path::new(test_dir), &mut test_files);
+    if target_path.is_file() {
+        test_files.push(target.to_string());
+    } else {
+        collect_test_files(target_path, &mut test_files);
+        // If no test_*.gx / *.test.gx files matched, fall back to all .gx files
+        if test_files.is_empty() {
+            collect_gx_files(target_path, &mut test_files);
+        }
+    }
     test_files.sort();
 
     if test_files.is_empty() {
-        println!("No .gx test files found in '{}'", test_dir);
+        println!("No .gx test files found in '{}'", target);
         return Ok(());
     }
 
@@ -784,6 +803,26 @@ fn collect_gx_files(dir: &Path, files: &mut Vec<String>) {
             } else if path.extension().map(|e| e == "gx").unwrap_or(false) {
                 if let Some(s) = path.to_str() {
                     files.push(s.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Discover test files by convention: `test_*.gx` or `*.test.gx`.
+fn collect_test_files(dir: &Path, files: &mut Vec<String>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_test_files(&path, files);
+            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let is_test = (name.starts_with("test_") && name.ends_with(".gx"))
+                    || name.ends_with(".test.gx");
+                if is_test {
+                    if let Some(s) = path.to_str() {
+                        files.push(s.to_string());
+                    }
                 }
             }
         }

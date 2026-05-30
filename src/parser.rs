@@ -225,6 +225,7 @@ impl Parser {
         let mut tools = Vec::new();
         let mut helpers = Vec::new();
         let mut top_level_brain = None;
+        let mut top_level_stmts = Vec::new();
 
         loop {
             self.skip_newlines();
@@ -248,12 +249,11 @@ impl Parser {
                 TokenKind::Brain => {
                     top_level_brain = Some(self.parse_brain_block()?);
                 }
-                other => {
-                    return Err(format!(
-                        "Line {}: unexpected top-level token {:?}",
-                        self.line(),
-                        other
-                    ));
+                // Top-level statements: x = 1, load_env(".env"), config = yaml_parse(...)
+                // Anything that isn't a keyword-only top-level construct is parsed as a statement.
+                _ => {
+                    let stmt = self.parse_stmt()?;
+                    top_level_stmts.push(stmt);
                 }
             }
         }
@@ -265,6 +265,7 @@ impl Parser {
             tools,
             helpers,
             top_level_brain,
+            top_level_stmts,
         })
     }
 

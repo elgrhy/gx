@@ -1,0 +1,154 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// GX v0.4.1 — Friction-Point Fixes Test
+// Verifies every fix from the developer feedback:
+//   1. Closures capture enclosing locals
+//   2. obj.field(args) calls a stored closure
+//   3. Top-level statements (x = 1 at file root)
+//   4. load_env at file root
+//   5. is_tty() builtin
+//   6. Test-assertion builtins (assert_eq, assert_true, assert_contains)
+//   7. retry() with captured state
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Issue 3+4: Top-level statements at file root ──────────────────────────────
+api_base = "https://api.example.com"
+api_version = "v4"
+max_retries = 5
+shared_config = { timeout: 30, debug: false }
+
+function pass(label) { log("  ✓ " + label) }
+
+agent "v041_test" {
+  remember {
+    total = 0
+    passed = 0
+    failed = 0
+  }
+
+  function check(cond, label) {
+    memory.total += 1
+    if cond {
+      memory.passed += 1
+      log("  ✓ " + label)
+    } else {
+      memory.failed += 1
+      log("  ✗ FAIL: " + label)
+    }
+  }
+
+  when started {
+    log("═══ GX v0.4.1 Friction-Point Fixes ═══\n")
+
+    // ── 1. Top-level vars accessible inside agent ──────────────────────────
+    log("── Top-level statements ──")
+    check(api_base == "https://api.example.com", "file-root string var accessible")
+    check(api_version == "v4",                    "file-root second var")
+    check(max_retries == 5,                       "file-root number var")
+    check(shared_config.timeout == 30,            "file-root object var")
+
+    // ── 2. Closures capture enclosing locals ──────────────────────────────
+    log("\n── Closures capture locals ──")
+    multiplier = 3
+    times = fn(n) { return n * multiplier }
+    check(times(5) == 15, "closure captures 'multiplier'")
+
+    base_url = "https://test.com"
+    endpoint = "/users"
+    build_url = fn() { return base_url + endpoint }
+    check(build_url() == "https://test.com/users", "closure captures two locals")
+
+    // Closure captures at definition time, used later
+    greeting = "Hello"
+    name = "World"
+    make_msg = fn() { return greeting + ", " + name + "!" }
+    check(make_msg() == "Hello, World!", "closure captures string locals")
+
+    // Closure with params shadowing captures
+    x = 100
+    adder = fn(x) { return x + 1 }
+    check(adder(5) == 6, "param shadows captured var")
+
+    // Nested data captured
+    config = { retries: 3, delay: 1000 }
+    get_retries = fn() { return config.retries }
+    check(get_retries() == 3, "closure captures object field access")
+
+    // ── 3. obj.field(args) calls stored closure ───────────────────────────
+    log("\n── Closures in object fields ──")
+    handlers = {
+      "double": fn(n) { return n * 2 },
+      "square": fn(n) { return n * n },
+      "greet":  fn(name) { return "Hi " + name }
+    }
+    check(handlers.double(21) == 42,        "obj.field(args) calls closure — double")
+    check(handlers.square(7) == 49,         "obj.field(args) calls closure — square")
+    check(handlers.greet("Bob") == "Hi Bob","obj.field(args) calls closure — string arg")
+
+    // Dispatch table pattern
+    dispatch = {
+      "add": fn(a, b) { return a + b },
+      "sub": fn(a, b) { return a - b }
+    }
+    check(dispatch.add(10, 5) == 15, "dispatch table — add")
+    check(dispatch.sub(10, 5) == 5,  "dispatch table — sub")
+
+    // ── 4. retry() with captured API call arguments ───────────────────────
+    log("\n── retry() with closures ──")
+    counter_obj = { calls: 0 }
+    result_url = "https://api.test.com/data"
+    result_body = { query: "test" }
+
+    // This closure captures result_url and result_body — the key fix
+    fetch_result = retry(fn() {
+      // In real code this would be http_post(result_url, result_body)
+      // Here we verify the captured vars are accessible
+      return { url: result_url, body: result_body.query }
+    }, 3)
+    check(fetch_result.url == "https://api.test.com/data", "retry: captures url")
+    check(fetch_result.body == "test",                     "retry: captures body")
+
+    // ── 5. is_tty() builtin exists and returns a bool ─────────────────────
+    log("\n── is_tty() ──")
+    tty = is_tty()
+    check(tty == true or tty == false, "is_tty() returns a boolean")
+
+    // ── 6. Test-assertion builtins ────────────────────────────────────────
+    log("\n── assert_* builtins ──")
+    assert_eq(2 + 2, 4, "assert_eq passes")
+    check(true, "assert_eq(4, 4) did not throw")
+    assert_true(1 < 2, "assert_true passes")
+    check(true, "assert_true did not throw")
+    assert_contains("hello world", "world", "assert_contains string")
+    check(true, "assert_contains string did not throw")
+    assert_contains([1, 2, 3], 2, "assert_contains array")
+    check(true, "assert_contains array did not throw")
+
+    // ── 7. Functional composition (map/filter with closures) ──────────────
+    log("\n── Functional composition ──")
+    factor = 10
+    nums = [1, 2, 3, 4, 5]
+    scaled = map(nums, fn(n) { return n * factor })
+    check(scaled[0] == 10 and scaled[4] == 50, "map with captured 'factor'")
+
+    threshold = 3
+    big = filter(nums, fn(n) { return n > threshold })
+    check(len(big) == 2, "filter with captured 'threshold'")
+
+    // ── Summary ────────────────────────────────────────────────────────────
+    pct = (memory.passed * 100) / memory.total
+    log("\n═══════════════════════════════════════")
+    log("  Total : " + to_string(memory.total))
+    log("  Passed: " + to_string(memory.passed))
+    log("  Failed: " + to_string(memory.failed))
+    log("  Rate  : " + to_string(pct) + "%")
+    log("═══════════════════════════════════════")
+
+    if memory.failed == 0 {
+      log("  ✓ ALL v0.4.1 FIXES VERIFIED")
+    } else {
+      log("  ✗ " + to_string(memory.failed) + " FAILED")
+    }
+
+    assert memory.failed == 0, "All v0.4.1 fixes must pass"
+  }
+}

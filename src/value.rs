@@ -12,8 +12,10 @@ pub enum Value {
     Str(String),
     Array(Vec<Value>),
     Object(HashMap<String, Value>),
-    /// Anonymous function / closure: (params, body)
-    Closure(Vec<String>, Vec<Stmt>),
+    /// Closure: (params, body, captured_env)
+    /// captured_env is a snapshot of the enclosing scope's local variables at
+    /// the point the lambda was created — this is what enables closures to work.
+    Closure(Vec<String>, Vec<Stmt>, HashMap<String, Value>),
 }
 
 impl Value {
@@ -177,7 +179,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::Closure(params, _body) => write!(f, "<fn({})>", params.join(", ")),
+            Value::Closure(params, _body, _captured) => write!(f, "<fn({})>", params.join(", ")),
         }
     }
 }

@@ -216,7 +216,7 @@ fn gx_to_yaml(v: &Value) -> serde_yaml::Value {
             }
             serde_yaml::Value::Mapping(m)
         }
-        Value::Closure(params, _) => {
+        Value::Closure(params, _, _) => {
             serde_yaml::Value::String(format!("<fn({})>", params.join(", ")))
         }
     }
@@ -295,7 +295,7 @@ fn gx_to_toml(v: &Value) -> Option<toml::Value> {
             }
             Some(toml::Value::Table(table))
         }
-        Value::Closure(params, _) => {
+        Value::Closure(params, _, _) => {
             Some(toml::Value::String(format!("<fn({})>", params.join(", "))))
         }
     }

@@ -136,6 +136,11 @@ pub struct Interpreter {
     pub trace_enabled: bool,
     /// Tool definitions registered at the program level (for AI function-calling).
     pub(crate) tools: HashMap<String, crate::ast::ToolDef>,
+    /// When true, removes the iteration cap on while/loop. Use for REPL and I/O-bound loops.
+    pub no_loop_limit: bool,
+    /// Variables assigned at file root (top_level_stmts). Injected into every agent's env
+    /// so they are accessible as normal locals alongside memory.*.
+    global_vars: HashMap<String, Value>,
 }
 
 impl Default for Interpreter {
@@ -170,6 +175,8 @@ impl Interpreter {
             binary_bridges: HashMap::new(),
             trace_enabled: false,
             tools: HashMap::new(),
+            no_loop_limit: false,
+            global_vars: HashMap::new(),
         }
     }
 
@@ -287,6 +294,27 @@ impl Interpreter {
             }
         }
 
+        // Execute top-level statements (x = 1, load_env(".env"), config = yaml_parse(...))
+        // before any agent runs. Results are stored as global_vars and injected into
+        // every agent's env so they are accessible as ordinary locals.
+        if !program.top_level_stmts.is_empty() {
+            let mut global_env = Env::new();
+            for stmt in &program.top_level_stmts.clone() {
+                self.run_stmt(stmt, &mut global_env).map_err(|e| match e {
+                    Signal::Error(m) => format!("top-level statement: {}", m),
+                    Signal::AssertFail(m) => format!("Assertion failed: {}", m),
+                    Signal::Return(_) => "return outside function".into(),
+                    other => format!("top-level error: {:?}", other),
+                })?;
+            }
+            // Store everything that was assigned (excluding memory object itself)
+            for (k, v) in &global_env.vars {
+                if k != "memory" {
+                    self.global_vars.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
         for h in &program.helpers.clone() {
             // Skip auto-running callable agents (those whose brain uses `input`).
             // They are only executed when called via `spawn agent`.
@@ -358,6 +386,13 @@ impl Interpreter {
                 let val = self.eval_expr(&entry.value, &mut env)?;
                 memory.insert(entry.key.clone(), val);
             }
+        }
+
+        // Inject file-root globals into the agent's env as ordinary locals.
+        // This makes `url = "https://..."` at file root accessible inside agents.
+        let global_vars = self.global_vars.clone();
+        for (k, v) in global_vars {
+            env.set(&k, v);
         }
 
         // Run recipes as named functions (available to the brain cycle)
@@ -753,23 +788,24 @@ impl Interpreter {
             } => {
                 let mut last = Value::Null;
                 let mut iterations = 0usize;
-                const MAX_WHILE: usize = 100_000;
-                const MAX_WHILE_SECS: u64 = 10;
-                let start = std::time::Instant::now();
+                // Default cap: 10 million iterations — enough for any real program,
+                // prevents accidental infinite spin. Disabled by --no-limit.
+                // Note: wall-clock timeout is intentionally removed — blocking I/O
+                // (readline, http_stream) would trigger it incorrectly.
+                const MAX_WHILE: usize = 10_000_000;
+                let limit = if self.no_loop_limit {
+                    usize::MAX
+                } else {
+                    MAX_WHILE
+                };
                 loop {
-                    if iterations >= MAX_WHILE {
+                    if iterations >= limit {
                         return Err(Signal::Error(
-                            "while loop exceeded 100,000 iterations (infinite loop?). \
-                             Restructure with async tasks or break conditions."
+                            "while loop exceeded 10,000,000 iterations. \
+                             If this is an intentional infinite loop (e.g. a REPL using readline()), \
+                             run with: gx run --no-limit"
                                 .into(),
                         ));
-                    }
-                    if start.elapsed().as_secs() >= MAX_WHILE_SECS {
-                        return Err(Signal::Error(format!(
-                            "while loop exceeded {}s time limit (infinite loop?). \
-                             Restructure with async tasks or break conditions.",
-                            MAX_WHILE_SECS
-                        )));
                     }
                     iterations += 1;
                     let cond = self.eval_expr(condition, env)?;
@@ -1052,9 +1088,17 @@ impl Interpreter {
                 condition, body, ..
             } => {
                 let mut iterations = 0usize;
+                let loop_limit = if self.no_loop_limit {
+                    usize::MAX
+                } else {
+                    10_000_000
+                };
                 loop {
-                    if iterations > 10_000 {
-                        return Err(Signal::Error("loop until exceeded 10000 iterations".into()));
+                    if iterations > loop_limit {
+                        return Err(Signal::Error(
+                            "loop until exceeded iteration limit. Use --no-limit if intentional."
+                                .into(),
+                        ));
                     }
                     let cond_val = self.eval_expr(condition, env)?;
                     if cond_val.is_truthy() {
@@ -1532,7 +1576,13 @@ impl Interpreter {
                 }
             }
 
-            Expr::Lambda { params, body } => Ok(Value::Closure(params.clone(), body.clone())),
+            Expr::Lambda { params, body } => {
+                // Capture a snapshot of the current local scope so the closure can
+                // reference enclosing variables (url, body, headers, etc.) at call time.
+                // memory.* is propagated separately; only plain locals are captured here.
+                let captured = env.vars.clone();
+                Ok(Value::Closure(params.clone(), body.clone(), captured))
+            }
 
             Expr::ParallelMap(branches) => {
                 let mut named_branches = Vec::new();
@@ -1592,7 +1642,10 @@ impl Interpreter {
             BinOp::Div => match (lv, rv) {
                 (Value::Number(a), Value::Number(b)) => {
                     if *b == 0.0 {
-                        Err(Signal::Error("Division by zero".into()))
+                        Err(Signal::Error(format!(
+                            "Division by zero ({} / 0). Guard with: if divisor != 0 {{ ... }}",
+                            a
+                        )))
                     } else {
                         Ok(Value::Number(a / b))
                     }
@@ -1606,7 +1659,10 @@ impl Interpreter {
             BinOp::Mod => match (lv, rv) {
                 (Value::Number(a), Value::Number(b)) => {
                     if *b == 0.0 {
-                        Err(Signal::Error("Modulo by zero".into()))
+                        Err(Signal::Error(format!(
+                            "Modulo by zero ({} % 0). Guard with: if divisor != 0 {{ ... }}",
+                            a
+                        )))
                     } else {
                         Ok(Value::Number(a % b))
                     }
@@ -1687,45 +1743,34 @@ impl Interpreter {
                 }
             }
             let obj = self.eval_expr(object, env)?;
+            // If the field holds a closure, call it directly instead of treating
+            // it as a built-in method. Enables: tools[i].handler(args), dispatch["post"](req)
+            if let Value::Object(ref map) = obj {
+                if let Some(Value::Closure(params, body, captured)) = map.get(field.as_str()) {
+                    let (p, b, c) = (params.clone(), body.clone(), captured.clone());
+                    return self.call_closure_with_capture(&p, &b, &c, args, env);
+                }
+            }
             return self.eval_method(obj, field, args, env);
         }
 
         // Direct lambda call: fn(x) { x + 1 }(5)
+        // Capture current scope so the body can reference enclosing locals.
         if let Expr::Lambda { params, body } = callee {
-            let func = FunctionDef {
-                name: "<lambda>".into(),
-                params: params.clone(),
-                body: body.clone(),
-                line: 0,
-            };
-            let mem = env.get_memory();
-            return self.call_user_function(&func, args, Some(mem));
+            let captured = env.vars.clone();
+            return self.call_closure_with_capture(params, body, &captured, args, env);
         }
 
         if let Expr::Ident(name) = callee {
             // Check if a closure value is stored under this name
             let val = env.get(name);
-            if let Value::Closure(params, body) = val {
-                let func = FunctionDef {
-                    name: name.clone(),
-                    params,
-                    body,
-                    line: 0,
-                };
-                // Use propagating variant so memory.x mutations in the closure
-                // are visible to the caller (e.g. check() modifying memory.total)
-                return self.call_user_function_propagating(&func, args, env);
+            if let Value::Closure(params, body, captured) = val {
+                return self.call_closure_with_capture(&params, &body, &captured, args, env);
             }
             // Also check memory
             let mem = env.get_memory();
-            if let Some(Value::Closure(params, body)) = mem.get(name).cloned() {
-                let func = FunctionDef {
-                    name: name.clone(),
-                    params,
-                    body,
-                    line: 0,
-                };
-                return self.call_user_function_propagating(&func, args, env);
+            if let Some(Value::Closure(params, body, captured)) = mem.get(name).cloned() {
+                return self.call_closure_with_capture(&params, &body, &captured, args, env);
             }
             if let Some(func) = self.functions.get(name).cloned() {
                 // Named functions (file-root, agent-level) also propagate memory
@@ -1939,21 +1984,13 @@ impl Interpreter {
 
     fn call_closure(&mut self, callee: &Value, args: Vec<Value>, env: &mut Env) -> IResult {
         match callee {
-            Value::Closure(params, body) => {
-                let func = FunctionDef {
-                    name: "<closure>".into(),
-                    params: params.clone(),
-                    body: body.clone(),
-                    line: 0,
-                };
-                let mem = env.get_memory();
-                self.call_user_function(&func, args, Some(mem))
+            Value::Closure(params, body, captured) => {
+                self.call_closure_with_capture(params, body, captured, args, env)
             }
             Value::Str(name) => {
                 let name = name.clone();
                 if let Some(func) = self.functions.get(&name).cloned() {
-                    let mem = env.get_memory();
-                    return self.call_user_function(&func, args, Some(mem));
+                    return self.call_user_function_propagating(&func, args, env);
                 }
                 Err(Signal::Error(format!(
                     "'{}' is not a defined function",
@@ -1965,6 +2002,42 @@ impl Interpreter {
                 callee.type_name()
             ))),
         }
+    }
+
+    /// Core closure execution: seeds env with captured locals, overlays memory,
+    /// then binds params. Changes to memory.* propagate back to the caller.
+    fn call_closure_with_capture(
+        &mut self,
+        params: &[String],
+        body: &[Stmt],
+        captured: &HashMap<String, Value>,
+        args: Vec<Value>,
+        caller_env: &mut Env,
+    ) -> IResult {
+        let mut env = Env::new();
+        // 1. Seed with captured locals (variables from the enclosing scope at definition time)
+        for (k, v) in captured {
+            env.set(k, v.clone());
+        }
+        // 2. Copy current memory into the closure env so memory.* reads work
+        let initial_mem = caller_env.get_memory();
+        env.set_memory(initial_mem.clone());
+        // 3. Bind params — these shadow any captured variable with the same name
+        for (i, param) in params.iter().enumerate() {
+            env.set(param, args.get(i).cloned().unwrap_or(Value::Null));
+        }
+        let body = body.to_vec();
+        let result = match self.run_stmts(&body, &mut env) {
+            Ok(v) => Ok(v),
+            Err(Signal::Return(v)) => Ok(v),
+            Err(e) => return Err(e),
+        };
+        // 4. Propagate memory changes back to the caller
+        let new_mem = env.get_memory();
+        if new_mem != initial_mem {
+            caller_env.set_memory(new_mem);
+        }
+        result
     }
 
     // ── Observability trace emit ──────────────────────────────────────────────
@@ -2010,13 +2083,10 @@ impl Interpreter {
             _ => "exponential".to_string(),
         };
 
-        let func = match callable {
-            Value::Closure(params, body) => FunctionDef {
-                name: "<retry>".into(),
-                params,
-                body,
-                line: 0,
-            },
+        // Keep the full Closure (with captured env) so retry lambdas can reference
+        // enclosing variables like url, headers, body without workarounds.
+        let closure = match callable {
+            Value::Closure(..) => callable,
             _ => {
                 return Err(Signal::Error(
                     "retry: first argument must be a function (fn() { ... })".into(),
@@ -2024,11 +2094,10 @@ impl Interpreter {
             }
         };
 
-        let mem = env.get_memory();
         let mut last_error = Signal::Error("retry: no attempts made".into());
 
         for attempt in 0..max_attempts {
-            match self.call_user_function(&func, vec![], Some(mem.clone())) {
+            match self.call_closure(&closure, vec![], env) {
                 Ok(v) => return Ok(v),
                 Err(e) => {
                     last_error = e;
@@ -2149,6 +2218,15 @@ impl Interpreter {
             }
 
             // ── Stdin ─────────────────────────────────────────────────────────
+            "is_tty" | "stdin_is_tty" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    use std::io::IsTerminal;
+                    Ok(Value::Bool(std::io::stdin().is_terminal()))
+                }
+                #[cfg(target_arch = "wasm32")]
+                Ok(Value::Bool(false))
+            }
             "readline" => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -2174,7 +2252,12 @@ impl Interpreter {
             "read_all" | "read_stdin" => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    use std::io::Read;
+                    use std::io::{IsTerminal, Read};
+                    // Never block waiting for user to type — return null on TTY.
+                    // Callers that need TTY input should use readline() in a loop.
+                    if std::io::stdin().is_terminal() {
+                        return Ok(Value::Null);
+                    }
                     let mut buf = String::new();
                     std::io::stdin()
                         .lock()
@@ -2365,6 +2448,60 @@ impl Interpreter {
                 let data = args.get(1).cloned().unwrap_or(Value::Null);
                 self.emit_trace(&event, &data);
                 Ok(Value::Null)
+            }
+
+            // ── Test assertions (integrate with `gx test` pass/fail tracking) ──
+            "assert_eq" | "assert_equal" => {
+                self.assert_count += 1;
+                let a = args.first().cloned().unwrap_or(Value::Null);
+                let b = args.get(1).cloned().unwrap_or(Value::Null);
+                if a == b {
+                    Ok(Value::Bool(true))
+                } else {
+                    let label = args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "assert_eq".to_string());
+                    let msg = format!("{}: expected {} == {}", label, a, b);
+                    self.assert_failures.push(msg.clone());
+                    Err(Signal::AssertFail(msg))
+                }
+            }
+            "assert_true" | "assert_that" => {
+                self.assert_count += 1;
+                let cond = args.first().map(|v| v.is_truthy()).unwrap_or(false);
+                if cond {
+                    Ok(Value::Bool(true))
+                } else {
+                    let label = args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "assert_true".to_string());
+                    let msg = format!("{}: expected true, got false", label);
+                    self.assert_failures.push(msg.clone());
+                    Err(Signal::AssertFail(msg))
+                }
+            }
+            "assert_contains" => {
+                self.assert_count += 1;
+                let haystack = args.first().cloned().unwrap_or(Value::Null);
+                let needle = args.get(1).cloned().unwrap_or(Value::Null);
+                let contained = match &haystack {
+                    Value::Str(s) => needle.as_str().map(|n| s.contains(n)).unwrap_or(false),
+                    Value::Array(arr) => arr.contains(&needle),
+                    _ => false,
+                };
+                if contained {
+                    Ok(Value::Bool(true))
+                } else {
+                    let label = args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "assert_contains".to_string());
+                    let msg = format!("{}: {} does not contain {}", label, haystack, needle);
+                    self.assert_failures.push(msg.clone());
+                    Err(Signal::AssertFail(msg))
+                }
             }
 
             // ── Schema validation ─────────────────────────────────────────────
@@ -3720,7 +3857,12 @@ impl Interpreter {
             | "cleanup_old_models" => Ok(Value::Null),
 
             _ => {
-                eprintln!("[gx] warning: unknown function '{}' — returning null", name);
+                let suggestion = closest_builtin(name);
+                let hint = match suggestion {
+                    Some(s) => format!(" — did you mean '{}'?", s),
+                    None => " — returning null".to_string(),
+                };
+                eprintln!("[gx] warning: unknown function '{}'{}", name, hint);
                 Ok(Value::Null)
             }
         }
@@ -4183,6 +4325,111 @@ impl Interpreter {
 }
 
 // ── Free helper functions ─────────────────────────────────────────────────────
+
+/// Common builtins for "did you mean" suggestions on unknown function calls.
+const KNOWN_BUILTINS: &[&str] = &[
+    "log",
+    "print",
+    "say",
+    "readline",
+    "read_all",
+    "is_tty",
+    "slice",
+    "merge",
+    "len",
+    "range",
+    "to_string",
+    "to_number",
+    "type_of",
+    "is_null",
+    "abs",
+    "floor",
+    "ceil",
+    "round",
+    "sqrt",
+    "pow",
+    "min",
+    "max",
+    "random",
+    "json_stringify",
+    "json_parse",
+    "http_get",
+    "http_post",
+    "http_put",
+    "http_delete",
+    "read_file",
+    "write_file",
+    "delete_file",
+    "file_exists",
+    "list_dir",
+    "make_dir",
+    "regex_test",
+    "regex_find",
+    "regex_find_all",
+    "regex_replace",
+    "regex_split",
+    "regex_captures",
+    "date_now",
+    "date_parse",
+    "date_format",
+    "date_diff",
+    "date_add",
+    "date_parts",
+    "csv_parse",
+    "csv_stringify",
+    "yaml_parse",
+    "yaml_stringify",
+    "toml_parse",
+    "toml_stringify",
+    "load_env",
+    "get_env",
+    "set_env",
+    "retry",
+    "vector_store_new",
+    "vector_store_add",
+    "vector_store_search",
+    "cosine_similarity",
+    "schema_validate",
+    "persist_memory",
+    "load_memory",
+    "trace_log",
+    "base64_encode",
+    "base64_decode",
+    "embed",
+    "sleep",
+    "now",
+    "now_ms",
+    "get_timestamp",
+];
+
+/// Returns the closest known builtin within edit distance 2, if any.
+fn closest_builtin(name: &str) -> Option<&'static str> {
+    let mut best: Option<(&'static str, usize)> = None;
+    for &candidate in KNOWN_BUILTINS {
+        let d = levenshtein(name, candidate);
+        if d <= 2 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((candidate, d));
+        }
+    }
+    best.map(|(c, _)| c)
+}
+
+/// Standard Levenshtein edit distance.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0usize; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
 
 /// Parse and load a .env file into the current process environment.
 /// Lines of the form KEY=VALUE or KEY="VALUE" are supported.
@@ -5382,5 +5629,144 @@ helper "tool_test" {
   } remember {} communicate {} }
 }"#)
         .unwrap();
+    }
+
+    // ── v0.4.1 friction-point fixes ───────────────────────────────────────────
+
+    #[test]
+    fn test_closure_captures_locals() {
+        run(r#"
+helper "cap" {
+  brain { plan {} execute {
+    multiplier = 3
+    times = fn(n) { return n * multiplier }
+    assert times(5) == 15 "closure captures multiplier"
+
+    base = "https://x.com"
+    path = "/users"
+    build = fn() { return base + path }
+    assert build() == "https://x.com/users" "closure captures two locals"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_closure_param_shadows_capture() {
+        run(r#"
+helper "shadow" {
+  brain { plan {} execute {
+    x = 100
+    f = fn(x) { return x + 1 }
+    assert f(5) == 6 "param shadows captured var"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_closure_in_object_field() {
+        run(r#"
+helper "objfn" {
+  brain { plan {} execute {
+    handlers = {
+      "double": fn(n) { return n * 2 },
+      "square": fn(n) { return n * n }
+    }
+    assert handlers.double(21) == 42 "obj.field(args) calls closure"
+    assert handlers.square(7) == 49 "obj.field square"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_retry_captures_state() {
+        run(r#"
+helper "retrycap" {
+  brain { plan {} execute {
+    url = "https://api.test.com"
+    body = { q: "hello" }
+    result = retry(fn() {
+      return { url: url, q: body.q }
+    }, 3)
+    assert result.url == "https://api.test.com" "retry closure captures url"
+    assert result.q == "hello" "retry closure captures body"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_top_level_statements() {
+        run(r#"
+api_base = "https://api.example.com"
+max_retries = 5
+config = { timeout: 30 }
+
+helper "toplevel" {
+  brain { plan {} execute {
+    assert api_base == "https://api.example.com" "file-root string var"
+    assert max_retries == 5 "file-root number var"
+    assert config.timeout == 30 "file-root object var"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_map_filter_with_closures() {
+        run(r#"
+helper "mapfilter" {
+  brain { plan {} execute {
+    factor = 10
+    nums = [1, 2, 3, 4, 5]
+    scaled = map(nums, fn(n) { return n * factor })
+    assert scaled[0] == 10 "map captures factor"
+    assert scaled[4] == 50 "map last element"
+
+    threshold = 3
+    big = filter(nums, fn(n) { return n > threshold })
+    assert len(big) == 2 "filter captures threshold"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_assert_builtins() {
+        run(r#"
+helper "assertfns" {
+  brain { plan {} execute {
+    assert_eq(2 + 2, 4, "assert_eq")
+    assert_true(1 < 2, "assert_true")
+    assert_contains("hello world", "world", "assert_contains string")
+    assert_contains([1, 2, 3], 2, "assert_contains array")
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_is_tty_builtin() {
+        run(r#"
+helper "ttytest" {
+  brain { plan {} execute {
+    t = is_tty()
+    assert t == true or t == false "is_tty returns bool"
+  } remember {} communicate {} }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn test_assert_eq_failure() {
+        let result = run(r#"
+helper "assertfail" {
+  brain { plan {} execute {
+    assert_eq(1, 2, "should fail")
+  } remember {} communicate {} }
+}"#);
+        assert!(result.is_err(), "assert_eq(1, 2) should fail");
     }
 }

@@ -40,7 +40,7 @@ pub fn gx_value_to_json(val: &Value) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(obj)
         }
-        Value::Closure(params, _) => {
+        Value::Closure(params, _, _) => {
             serde_json::Value::String(format!("<fn({})>", params.join(", ")))
         }
     }

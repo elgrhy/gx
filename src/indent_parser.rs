@@ -608,6 +608,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
         tools: Vec::new(),
         helpers,
         top_level_brain: None,
+        top_level_stmts: Vec::new(),
     })
 }
 

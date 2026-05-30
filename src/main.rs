@@ -36,7 +36,15 @@ fn main() {
             let allow_shell = args.contains(&"--allow-shell".to_string());
             let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = args.contains(&"--no-sandbox".to_string());
-            cmd_run(file, debug, allow_shell, allow_internal_http, no_sandbox)
+            let no_limit = args.contains(&"--no-limit".to_string());
+            cmd_run(
+                file,
+                debug,
+                allow_shell,
+                allow_internal_http,
+                no_sandbox,
+                no_limit,
+            )
         }
         "check" => {
             let file = require_arg(&args, 2, "gx check <file.gx>");
@@ -91,7 +99,15 @@ fn main() {
             let allow_shell = args.contains(&"--allow-shell".to_string());
             let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = args.contains(&"--no-sandbox".to_string());
-            cmd_run(file, debug, allow_shell, allow_internal_http, no_sandbox)
+            let no_limit = args.contains(&"--no-limit".to_string());
+            cmd_run(
+                file,
+                debug,
+                allow_shell,
+                allow_internal_http,
+                no_sandbox,
+                no_limit,
+            )
         }
         cmd => {
             eprintln!("gx: unknown command '{}'\n", cmd);
@@ -127,6 +143,7 @@ fn cmd_run(
     allow_shell: bool,
     allow_internal_http: bool,
     no_sandbox: bool,
+    no_limit: bool,
 ) -> Result<(), String> {
     // Support `gx run -` to read source from stdin (used by `gx build` launchers).
     let source = if path == "-" {
@@ -163,6 +180,7 @@ fn cmd_run(
     interp.base_path = Some(path.to_string());
     interp.allow_shell = allow_shell;
     interp.allow_internal_http = allow_internal_http;
+    interp.no_loop_limit = no_limit;
 
     // Sandbox: restrict file I/O to the directory containing the script.
     if !no_sandbox {
@@ -323,6 +341,7 @@ fn print_help() {
         "  gx run <file.gx> --allow-internal-http         Allow HTTP to private/localhost IPs"
     );
     println!("  gx run <file.gx> --no-sandbox                  Disable file-path sandboxing");
+    println!("  gx run <file.gx> --no-limit                    Remove while-loop iteration cap (for REPLs, infinite I/O loops)");
     println!("  gx check <file.gx>                     Check syntax without running");
     println!("  gx init <name>                         Create a new GX project");
     println!("  gx build <file.gx> [-o name]           Build standalone launcher");
