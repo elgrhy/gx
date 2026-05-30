@@ -122,32 +122,43 @@ jobs:
             ### What's new
             See the [README](https://github.com/elgrhy/gx#readme) for the full changelog.
 
-  # Publish the `gxlang` crate to crates.io using the CARGO_REGISTRY_TOKEN secret.
-  # Marked continue-on-error so re-publishing an existing version never fails the release.
+  # Publish the `gxlang` crate to crates.io. Idempotent: if the version is
+  # already on the index (e.g. published manually), the job skips cleanly instead
+  # of failing. Requires the CARGO_REGISTRY_TOKEN secret.
   publish-crates:
     name: Publish to crates.io
     needs: release
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish to crates.io
-        run: cargo publish --locked
+      - name: Publish to crates.io (skip if version already exists)
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+          EXISTS=$(curl -s -H "User-Agent: gxlang-ci (release)" \
+            "https://crates.io/api/v1/crates/gxlang/${VERSION}" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print('yes' if d.get('version') else 'no')" 2>/dev/null || echo "no")
+          if [ "$EXISTS" = "yes" ]; then
+            echo "gxlang ${VERSION} already on crates.io — skipping."
+            exit 0
+          fi
+          cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-  # Best-effort publish to npm. Requires the NPM_TOKEN repo secret.
-  # Marked continue-on-error so a missing token never fails the whole release
-  # (npm is also published manually with `npm publish` from the npm/ directory).
+  # Publish the npm package. Idempotent: skips if the version already exists
+  # (e.g. published manually). Requires the NPM_TOKEN secret.
+  # NOTE: if the npm account enforces 2FA on publish, NPM_TOKEN must be a
+  # granular/automation token with "bypass 2FA" enabled, otherwise publish a
+  # fresh version manually with `npm publish` from the npm/ directory.
   publish-npm:
     name: Publish to npm
     needs: release
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -157,8 +168,14 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Publish npm package
-        run: npm publish
+      - name: Publish npm package (skip if version already exists)
         working-directory: npm
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "gxlang@${VERSION}" version >/dev/null 2>&1; then
+            echo "gxlang@${VERSION} already on npm — skipping."
+            exit 0
+          fi
+          npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
