@@ -141,6 +141,8 @@ pub struct Interpreter {
     /// Variables assigned at file root (top_level_stmts). Injected into every agent's env
     /// so they are accessible as normal locals alongside memory.*.
     global_vars: HashMap<String, Value>,
+    /// Call stack of frame names (agent / function / closure) for error traces.
+    call_stack: Vec<String>,
 }
 
 impl Default for Interpreter {
@@ -177,6 +179,7 @@ impl Interpreter {
             tools: HashMap::new(),
             no_loop_limit: false,
             global_vars: HashMap::new(),
+            call_stack: Vec::new(),
         }
     }
 
@@ -347,6 +350,10 @@ impl Interpreter {
 
     fn run_helper(&mut self, helper: &HelperDef) -> Result<(), Signal> {
         self.current_agent = Some(helper.name.clone());
+        // Reset the call stack at the top of each agent run, then push this agent's frame.
+        // (An error aborts the whole program, so stale frames never leak across agents.)
+        self.call_stack.clear();
+        self.call_stack.push(format!("agent \"{}\"", helper.name));
 
         // Enable trace if the agent declared trace: true
         // (Currently set via helper.goal == "trace" as a convention; full attr support later)
@@ -709,7 +716,23 @@ impl Interpreter {
         Ok(last)
     }
 
+    /// Wrapper that attaches source-line and call-stack context to runtime errors.
+    /// Only the innermost statement attaches the line (outer frames see " at line "
+    /// already present and pass the error through unchanged).
     fn run_stmt(&mut self, stmt: &Stmt, env: &mut Env) -> IResult {
+        match self.run_stmt_inner(stmt, env) {
+            Err(Signal::Error(m)) if !m.contains(" at line ") => {
+                let mut full = format!("{} at line {}", m, stmt_line(stmt));
+                if !self.call_stack.is_empty() {
+                    full.push_str(&format!("\n  in {}", self.call_stack.join(" → ")));
+                }
+                Err(Signal::Error(full))
+            }
+            other => other,
+        }
+    }
+
+    fn run_stmt_inner(&mut self, stmt: &Stmt, env: &mut Env) -> IResult {
         match stmt {
             Stmt::Assign { target, value, .. } => {
                 let val = self.eval_expr(value, env)?;
@@ -2027,7 +2050,10 @@ impl Interpreter {
             env.set(param, args.get(i).cloned().unwrap_or(Value::Null));
         }
         let body = body.to_vec();
-        let result = match self.run_stmts(&body, &mut env) {
+        self.call_stack.push("<closure>".to_string());
+        let raw = self.run_stmts(&body, &mut env);
+        self.call_stack.pop();
+        let result = match raw {
             Ok(v) => Ok(v),
             Err(Signal::Return(v)) => Ok(v),
             Err(e) => return Err(e),
@@ -2168,7 +2194,10 @@ impl Interpreter {
             env.set(param, args.get(i).cloned().unwrap_or(Value::Null));
         }
         let body = func.body.clone();
-        match self.run_stmts(&body, &mut env) {
+        self.call_stack.push(format!("{}()", func.name));
+        let raw = self.run_stmts(&body, &mut env);
+        self.call_stack.pop();
+        match raw {
             Ok(v) => Ok(v),
             Err(Signal::Return(v)) => Ok(v),
             Err(e) => Err(e),
@@ -2190,7 +2219,10 @@ impl Interpreter {
             env.set(param, args.get(i).cloned().unwrap_or(Value::Null));
         }
         let body = func.body.clone();
-        let result = match self.run_stmts(&body, &mut env) {
+        self.call_stack.push(format!("{}()", func.name));
+        let raw = self.run_stmts(&body, &mut env);
+        self.call_stack.pop();
+        let result = match raw {
             Ok(v) => Ok(v),
             Err(Signal::Return(v)) => Ok(v),
             Err(e) => return Err(e),
@@ -4326,6 +4358,44 @@ impl Interpreter {
 
 // ── Free helper functions ─────────────────────────────────────────────────────
 
+/// Extract the source line number from any statement (for error context).
+fn stmt_line(stmt: &Stmt) -> usize {
+    match stmt {
+        Stmt::Assign { line, .. }
+        | Stmt::PlusAssign { line, .. }
+        | Stmt::MinusAssign { line, .. }
+        | Stmt::MulAssign { line, .. }
+        | Stmt::DivAssign { line, .. }
+        | Stmt::If { line, .. }
+        | Stmt::ForEach { line, .. }
+        | Stmt::While { line, .. }
+        | Stmt::Break { line }
+        | Stmt::Continue { line }
+        | Stmt::TryCatch { line, .. }
+        | Stmt::Assert { line, .. }
+        | Stmt::Emit { line, .. }
+        | Stmt::Broadcast { line, .. }
+        | Stmt::Log { line, .. }
+        | Stmt::Output { line, .. }
+        | Stmt::Say { line, .. }
+        | Stmt::Return { line, .. }
+        | Stmt::Expr { line, .. }
+        | Stmt::Wait { line, .. }
+        | Stmt::ReRun { line }
+        | Stmt::EscalateToHuman { line }
+        | Stmt::Serve { line, .. }
+        | Stmt::SendMessage { line, .. }
+        | Stmt::Think { line, .. }
+        | Stmt::Observe { line, .. }
+        | Stmt::Act { line, .. }
+        | Stmt::LoopUntil { line, .. }
+        | Stmt::RepeatTimes { line, .. }
+        | Stmt::Parallel { line, .. }
+        | Stmt::Respond { line, .. }
+        | Stmt::Await { line, .. } => *line,
+    }
+}
+
 /// Common builtins for "did you mean" suggestions on unknown function calls.
 const KNOWN_BUILTINS: &[&str] = &[
     "log",
@@ -5768,5 +5838,33 @@ helper "assertfail" {
   } remember {} communicate {} }
 }"#);
         assert!(result.is_err(), "assert_eq(1, 2) should fail");
+    }
+
+    #[test]
+    fn test_runtime_error_has_line_and_stack() {
+        let result = run(r#"
+function divide(a, b) {
+  return a / b
+}
+
+helper "errctx" {
+  brain { plan {} execute {
+    y = divide(10, 0)
+  } remember {} communicate {} }
+}"#);
+        let msg = match result {
+            Err(m) => m,
+            Ok(_) => panic!("expected a runtime error"),
+        };
+        assert!(
+            msg.contains("at line"),
+            "error should include line number: {}",
+            msg
+        );
+        assert!(
+            msg.contains("divide()"),
+            "error should include stack frame: {}",
+            msg
+        );
     }
 }

@@ -464,6 +464,7 @@ gx install py.requests      # Add Python dependency
 
 | Version | Highlights |
 |---------|-----------|
+| **v0.4.2** | **Source-located runtime errors** — every runtime error now reports `at line N` plus a call-stack trace (`in agent "x" → fn() → <closure>`). Published to crates.io as `gxlang` (binary stays `gx`). |
 | **v0.4.1** | **Real closures** — lambdas capture enclosing locals (unblocks `retry()`, `map`/`filter`, functional composition) · `obj.field(args)` calls a stored closure (dispatch tables) · **Top-level statements** — `x = 1`, `load_env(".env")` at file root · `is_tty()` builtin + non-blocking `read_all()` on TTY · `--no-limit` flag + raised loop cap (10M) with wall-clock timeout removed · Test builtins `assert_eq`/`assert_true`/`assert_contains` · `gx test` single-file + `test_*.gx`/`*.test.gx` discovery · "Did you mean?" suggestions + clearer division-by-zero errors |
 | **v0.4.0** | Regex · Date/Time · CSV/YAML/TOML · TypeScript+Go+Binary bridges · AI tool use · Streaming AI · Persistent memory (SQLite) · Vector store · Schema validation · `await {}` concurrent block · Retry with backoff · Observability tracing · `string.reverse()` · Vararg `min()`/`max()` · Memory-propagating function calls |
 | **v0.3.0** | Security audit · Sandbox & SSRF protection · Shell gate · Module system (`import … as alias`) · `!` operator · Integer JSON · Range slicing `[a..b]` · `output` unreserved · Standalone `slice()`/`merge()` · `readline()` |
