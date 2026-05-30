@@ -2,7 +2,20 @@
   "name": "gxlang",
   "version": "0.4.1",
   "description": "GX — brain-first programming language for building transparent, auditable AI assistants. Regex, Date/Time, CSV/YAML/TOML, TypeScript+Go bridges, AI tool use, streaming, persistent memory, vector store.",
-  "keywords": ["gx", "language", "ai", "agent", "brain-first", "interpreter", "llm", "openai", "anthropic", "ollama", "vector-store", "regex"],
+  "keywords": [
+    "gx",
+    "language",
+    "ai",
+    "agent",
+    "brain-first",
+    "interpreter",
+    "llm",
+    "openai",
+    "anthropic",
+    "ollama",
+    "vector-store",
+    "regex"
+  ],
   "author": "Ahmed Elgarhy <ahmed@devjsx.com>",
   "license": "MIT",
   "homepage": "https://github.com/elgrhy/gx",
@@ -14,7 +27,7 @@
     "url": "https://github.com/elgrhy/gx/issues"
   },
   "bin": {
-    "gx": "./bin/gx.js"
+    "gx": "bin/gx.js"
   },
   "scripts": {
     "postinstall": "node scripts/install.js"
