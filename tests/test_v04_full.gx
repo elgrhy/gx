@@ -713,6 +713,7 @@ agent "gx_v04_full_test" {
     section("39. File I/O")
     // Use a path within the sandbox (tests/ dir) to satisfy the path restriction
     tmp_path = "tmp/gx_v04_test_io.txt"
+    make_dir("tmp")
     write_file(tmp_path, "line1\nline2\nline3")
     check(file_exists(tmp_path),               "write_file: file created")
     content = read_file(tmp_path)
