@@ -13,7 +13,7 @@ Every AI assistant today is a black box. GX makes it a glass box — every decis
 
 ```bash
 npm install -g gxlang
-gx --version   # gx 0.4.0
+gx --version   # gx 0.5.0
 ```
 
 Downloads the correct native binary for your platform (macOS arm64/x64, Linux x64/arm64, Windows x64). No Rust required.
@@ -26,12 +26,26 @@ cd my-agent
 gx run main.gx
 ```
 
-## What's New in v0.4.0
-
-The biggest GX release — now genuinely competitive with Python for agent-building.
+## What's New in v0.5.0
 
 | Feature | Example |
-|---------|---------|
+|---|---|
+| **Inline eval** | `gx -e 'say sha256("hello")'` |
+| **SHA-256** | `sha256("text")` → 64-char hex |
+| **UUID v4** | `uuid()` → `"f47ac10b-..."` |
+| **Path helpers** | `dirname`, `basename`, `path_join` |
+| **Glob** | `glob("src/**/*.gx")` |
+| **URL parsing** | `url_parse(url).host` |
+| **Group by** | `group_by(rows, "dept")` |
+| **Truncate** | `truncate("hello world", 8)` → `"hello w…"` |
+| **Token count** | `token_count(text)`, `tokens_used()` |
+| **Inline write** | `write("Loading...")` — no trailing newline |
+| **Stdlib namespace** | `use std.crypto`, `use std.fs`, `use std.net` |
+
+## v0.4.0 Features
+
+| Feature | Example |
+|---|---|
 | **Regex** | `regex_find(text, "\\$([0-9.]+)")` |
 | **Date/Time** | `date_diff(date_parse("2024-01-01"), date_now(), "days")` |
 | **CSV/YAML/TOML** | `csv_parse(read_file("data.csv"))` |
@@ -50,8 +64,6 @@ The biggest GX release — now genuinely competitive with Python for agent-build
 ## Real Agent Example
 
 ```gx
-import "utils/data.gx" as data
-
 tool "lookup_customer" {
   description: "Look up customer by ID"
   execute(customer_id) {
@@ -67,7 +79,6 @@ agent "support_bot" {
     load_memory()
     memory.session_count += 1
 
-    // Validate incoming request
     spec = { query: "string", customer_id: "number" }
     check = schema_validate(input, spec)
     if !check.ok {
@@ -75,7 +86,6 @@ agent "support_bot" {
       return
     }
 
-    // Ask AI with tool use
     response = ask openai {
       prompt:  input.query,
       tools:   [lookup_customer],
@@ -83,10 +93,22 @@ agent "support_bot" {
       stream:  true
     }
 
+    // Token tracking
+    say "Tokens used this session: {tokens_used()}"
     persist_memory()
     say response.text
   }
 }
+```
+
+## Inline Scripting
+
+```bash
+# Quick one-liners — no file needed
+gx -e 'say sha256("hello world")'
+gx -e 'say uuid()'
+gx -e 'say url_parse("https://example.com:8080/api?q=1").port'
+gx -e 'say token_count("how many tokens is this?")'
 ```
 
 ## Language Interop
@@ -103,18 +125,17 @@ use go "./service"    // Go binary with JSON protocol
 
 ## All Built-ins
 
-`ask` · `embed` · `http_get/post/put/delete` · `read_file` · `write_file` · `json_stringify/parse` · `csv_parse/stringify` · `yaml_parse/stringify` · `toml_parse/stringify` · `regex_test/find/find_all/replace/split/captures` · `date_now/parse/format/diff/add/parts` · `vector_store_new/add/search` · `cosine_similarity` · `schema_validate` · `persist_memory` · `load_memory` · `load_env` · `get_env` · `retry` · `trace_log` · `await {}` · `db_query/exec` · `base64_encode/decode` · `readline` · `shell` · and more
+`ask` · `embed` · `sha256` · `uuid` · `token_count` · `tokens_used` · `http_get/post/put/delete` · `read_file` · `write_file` · `dirname` · `basename` · `path_join` · `glob` · `json_stringify/parse` · `csv_parse/stringify` · `yaml_parse/stringify` · `toml_parse/stringify` · `regex_test/find/find_all/replace/split/captures` · `date_now/parse/format/diff/add/parts` · `vector_store_new/add/search` · `cosine_similarity` · `schema_validate` · `persist_memory` · `load_memory` · `load_env` · `get_env` · `retry` · `trace_log` · `await {}` · `db_query/exec` · `base64_encode/decode` · `readline` · `write` · `truncate` · `url_parse` · `group_by` · `shell` · and more
 
-## v0.3.0 Features Still in v0.4.0
+## Security Model
 
-- Module system: `import "file.gx" as alias`
-- `!` (not) operator: `if !result.ok { ... }`
-- Range slicing: `text[0..5]`, `arr[1..4]`
-- Integer JSON: `json_stringify({n: 50})` → `"n":50` (not `50.0`)
-- Standalone `slice()` / `merge()`
-- `output` usable as a plain variable name
-- `readline()` for stdin
-- `{{ }}` brace escaping in strings
+GX is secure by default:
+
+| Operation | Default | Flag to enable |
+|---|---|---|
+| Shell execution | Blocked | `--allow-shell` |
+| Internal HTTP (SSRF) | Blocked | `--allow-internal-http` |
+| File access | Sandboxed to script dir | `--no-sandbox` |
 
 ## Full Documentation
 
@@ -122,4 +143,4 @@ use go "./service"    // Go binary with JSON protocol
 
 ## License
 
-MIT — © 2025 Ahmed Elgarhy / DEVJSX LIMITED (London, UK)
+MIT — © 2026 Ahmed Elgarhy / DEVJSX LIMITED (London, UK)

@@ -1,6 +1,6 @@
-# GX Roadmap — Clearing the v0.4.2 Feedback (mini-claw v0.5.0 report)
+# GX Roadmap — v0.5.0 through v0.8.0
 
-Status: planning → implementation. Sequenced in **phases**, each phase a shippable release.
+**v0.5.0 is shipped.** v0.6.0 is next. Sequenced in **phases**, each a shippable release.
 Decisions locked with the owner:
 - **Phased delivery** (not one big release).
 - **No type system** — GX stays fully dynamic. Revisit later if adoption demands it.
@@ -21,8 +21,9 @@ Legend: ✅ ship target · ◐ partial-exists · ✨ new
 
 ---
 
-## Phase 1 — v0.5.0 "Daily-driver DX + stdlib + token awareness"
-The items that hurt every project. Small, high-leverage, low-risk.
+## Phase 1 — v0.5.0 "Daily-driver DX + stdlib + token awareness" ✅ SHIPPED
+
+Released 2026-05-31. All items below are live.
 
 ### 1.1 Output control (`say` newline problem) ✨
 - Add `print(x)` builtin: writes `to_display(x)` to stdout **without** trailing newline (+ flush).
@@ -69,8 +70,7 @@ Wire a `use std.X` resolver that registers a namespaced builtin set. Start with 
 - Update `print_help()` builtin list and `CLAUDE.md`.
 - Add `tests/test_stdlib.gx`, `tests/test_dx.gx`; keep `cargo test` green; `clippy -D warnings`; `fmt --check`.
 
-**Exit criteria v0.5.0:** mini-claw can drop its hand-rolled `truncate`, inline-prompt works, `gx -e` works,
-`load_env(".env")` works from any CWD, `use std.fs/crypto/collections/net` available, `token_count` + `$tokens_used` available.
+**Shipped:** `truncate`, `write` (no newline), `gx -e`, sandbox fix for `load_env`, `use std.fs/crypto/collections/net`, `token_count`, `tokens_used()`, `sha256`, `uuid`, `glob`, `dirname`, `basename`, `path_join`, `url_parse`, `group_by`. crates.io `gxlang@0.5.0` + npm `gxlang@0.5.0` live.
 
 ---
 

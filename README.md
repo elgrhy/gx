@@ -28,7 +28,7 @@ git clone https://github.com/elgrhy/gx.git && cd gx && cargo build --release
 ```
 
 ```bash
-gx --version   # gx 0.4.0
+gx --version   # gx 0.5.0
 ```
 
 ---
@@ -45,16 +45,104 @@ gx run main.gx
 agent "hello" {
   when started {
     name = "World"
-    say "Hello, {name}! GX v0.4.0 is running."
+    say "Hello, {name}! GX v0.5.0 is running."
   }
 }
 ```
 
 ---
 
-## What's New in v0.4.0
+## What's New in v0.5.0
 
-The biggest release yet — GX now competes with Python for agent-building.
+Developer experience improvements, a stdlib namespace, and crypto/filesystem builtins.
+
+### Inline Eval — No File Needed
+
+```bash
+gx -e 'say "Hello from GX"'
+gx -e 'say sha256("abc")'
+gx -e 'say uuid()'
+```
+
+Run any GX snippet directly from the terminal without creating a file.
+
+### Crypto
+
+```gx
+hash = sha256("hello world")          // 64-char hex SHA-256
+id   = uuid()                         // "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+```
+
+### File System Helpers
+
+```gx
+dir  = dirname("/home/user/report.txt")   // "/home/user"
+file = basename("/home/user/report.txt")  // "report.txt"
+path = path_join("data", "2024", "q1.csv") // "data/2024/q1.csv"
+hits = glob("reports/*.txt")             // ["reports/jan.txt", "reports/feb.txt"]
+```
+
+### Token Awareness
+
+```gx
+n    = token_count("some text")    // heuristic: ~4 chars per token
+used = tokens_used()               // cumulative tokens across all ask calls this run
+```
+
+### URL Parsing
+
+```gx
+u = url_parse("https://api.example.com:8080/v1/search?q=gx#top")
+u.scheme   // "https"
+u.host     // "api.example.com"
+u.port     // "8080"
+u.path     // "/v1/search"
+u.query    // "q=gx"
+u.fragment // "top"
+```
+
+### Data Helpers
+
+```gx
+// Group an array of objects by a field
+rows = [
+  { name: "Alice", dept: "eng" },
+  { name: "Bob",   dept: "eng" },
+  { name: "Carol", dept: "hr" }
+]
+by_dept = group_by(rows, "dept")
+// { "eng": [{name:"Alice",...},{name:"Bob",...}], "hr": [{name:"Carol",...}] }
+
+// Truncate with optional custom ellipsis
+truncate("hello world", 8)           // "hello w…"
+truncate("hello world", 8, "...")    // "hello..."
+```
+
+### Inline Output (No Newline)
+
+```gx
+write("Loading")
+for n in range(1, 4) {
+  write(".")
+}
+say ""   // newline at the end
+// prints: Loading...
+```
+
+### Optional Stdlib Namespace
+
+```gx
+use std.crypto
+use std.fs
+use std.net
+use std.collections
+```
+
+These are optional imports — all functions are already available globally. Use them for clarity in larger programs.
+
+---
+
+## What's New in v0.4.0
 
 ### Regex — Full Pattern Matching
 
@@ -71,9 +159,8 @@ caps   = regex_captures("2024-01-15", "(\\d{{4}})-(\\d{{2}})-(\\d{{2}})")
 ### Date / Time
 
 ```gx
-now   = date_now()                          // "2025-05-30T14:23:01Z"
+now   = date_now()                          // "2026-06-01T09:00:00Z"
 ts    = date_parse("2024-01-15")            // Unix timestamp
-ts2   = date_parse("Jan 15, 2024")          // auto-detects format
 fmt   = date_format(ts, "%B %d, %Y")        // "January 15, 2024"
 diff  = date_diff(ts, date_now(), "days")
 next  = date_add(ts, 7, "days")
@@ -83,39 +170,27 @@ parts = date_parts(ts)  // { year, month, day, hour, minute, second, weekday }
 ### CSV, YAML, TOML
 
 ```gx
-rows   = csv_parse(read_file("data.csv"))        // auto-types numbers & booleans
-out    = csv_stringify(rows)
-
-config = yaml_parse(read_file("config.yml"))
-yaml_out = yaml_stringify(config)
-
+rows     = csv_parse(read_file("data.csv"))
+config   = yaml_parse(read_file("config.yml"))
 manifest = toml_parse(read_file("Cargo.toml"))
-log(manifest.package.version)                    // "0.4.0"
 ```
 
 ### .env File Loading
 
 ```gx
-load_env(".env")                              // loads KEY=VALUE, never overwrites existing
-key = get_env("OPENAI_API_KEY", "")           // second arg is default
-url = get_env("API_URL", "https://localhost")
+load_env(".env")                              // sandboxed — stays within script dir
+key = get_env("OPENAI_API_KEY", "")
 ```
 
 ### Language Bridges — TypeScript, Go, Any Binary
 
 ```gx
-// TypeScript — auto-detects tsx or ts-node
 use ts.analytics
 result = ts.analytics.process(events)
 
-// Go / Rust / Java / .NET — JSON stdin/stdout protocol
 use binary "./my_rust_service"
 output = binary.transform(payload)
 
-use go "./analytics_server"
-stats = go.compute(events)
-
-// Python (unchanged)
 use py.pandas
 df = py.pandas.read_csv("data.csv")
 ```
@@ -125,9 +200,7 @@ df = py.pandas.read_csv("data.csv")
 ```gx
 tool "search_web" {
   description: "Search the web for current information"
-  params: {
-    query: { type: "string", required: true }
-  }
+  params: { query: { type: "string", required: true } }
   execute(query) {
     result = http_get("https://api.search.example.com?q={query}")
     return result.data
@@ -141,11 +214,6 @@ agent "researcher" {
       tools:  [search_web],
       model:  "gpt-4o"
     }
-    if response.tool_calls != null {
-      for each call in response.tool_calls {
-        log("AI called: " + call.name + " with " + json_stringify(call.arguments))
-      }
-    }
     say response.text
   }
 }
@@ -156,7 +224,7 @@ agent "researcher" {
 ```gx
 result = ask openai {
   prompt: "Write a 500-word essay on AI transparency",
-  stream: true    // chunks print in real-time; result.text has the full assembled text
+  stream: true
 }
 ```
 
@@ -165,12 +233,11 @@ result = ask openai {
 ```gx
 agent "counter" {
   remember { count = 0 }
-
   when started {
-    load_memory()          // loads from ~/.gx/state/counter.db (SQLite)
+    load_memory()
     memory.count += 1
     log("Run #{memory.count}")
-    persist_memory()       // saves back to SQLite
+    persist_memory()
   }
 }
 ```
@@ -180,23 +247,8 @@ agent "counter" {
 ```gx
 store = vector_store_new("docs")
 vector_store_add(store, "doc1", embed("The cat sat on the mat"), "cat story")
-vector_store_add(store, "doc2", embed("Dogs are loyal companions"),  "dog story")
-
-hits = vector_store_search(store, embed("feline pets"), 3)
+hits  = vector_store_search(store, embed("feline pets"), 3)
 log(hits[0].label)   // "cat story"
-log(hits[0].score)   // cosine similarity score
-
-sim = cosine_similarity([1.0, 0.0], [0.7, 0.7])
-```
-
-### Schema Validation
-
-```gx
-spec = { name: "string", age: "number", email: { type: "string", required: false } }
-r = schema_validate(user_input, spec)
-if !r.ok {
-  for each err in r.errors { log("Error: " + err) }
-}
 ```
 
 ### Await Block — Concurrent I/O
@@ -207,8 +259,6 @@ await {
   news:    http_get("https://api.news.com/top"),
   stocks:  http_get("https://api.stocks.com/AAPL")
 } into data
-
-log(data.weather.body)
 ```
 
 ### Retry with Backoff
@@ -217,7 +267,6 @@ log(data.weather.body)
 result = retry(fn() {
   return ask openai { prompt: "Classify this text" }
 }, 5, { delay: 1000, backoff: "exponential" })
-// Retries up to 5×: 1s, 2s, 4s, 8s, 16s — capped at 30s
 ```
 
 ### Observability — Structured JSONL Tracing
@@ -226,7 +275,6 @@ result = retry(fn() {
 trace_log("pipeline.start", { query: memory.query })
 result = ask anthropic { prompt: memory.query }
 trace_log("ai.done", { tokens: result.tokens_used })
-// Emits: {"ts":1748609381000,"agent":"my_agent","event":"ai.done","data":{...}} to stderr
 ```
 
 ---
@@ -291,8 +339,8 @@ agent "shop" {
 import "utils/math.gx"    as math
 import "utils/strings.gx" as str
 
-result = math.add(10, 32)         // 42
-label  = str.truncate(result, 5)  // "42..."
+result = math.add(10, 32)          // 42
+label  = str.truncate(result, 5)   // "42..."
 ```
 
 ### Range Slicing
@@ -329,7 +377,7 @@ while running {
   process(line)
 }
 
-// Try/catch with typed errors
+// Try/catch
 try {
   result = http_post(url, payload)
 } catch NetworkError e {
@@ -339,7 +387,7 @@ try {
 }
 
 // Await — concurrent branches
-await { a: expr1, b: expr2, c: expr3 } into results
+await { a: expr1, b: expr2 } into results
 
 // Retry with backoff
 result = retry(fn() { risky_call() }, 3, { backoff: "exponential" })
@@ -350,19 +398,24 @@ result = retry(fn() { risky_call() }, 3, { backoff: "exponential" })
 ## Built-in Reference
 
 | Category | Builtins |
-|----------|---------|
+|---|---|
 | **AI** | `ask openai/anthropic/ollama` (streaming + tool use), `embed`, `infer classifier` |
+| **Token** | `token_count(str)`, `tokens_used()` |
 | **HTTP** | `http_get`, `http_post`, `http_put`, `http_delete`, `http_stream`, `http_upload` |
-| **File I/O** | `read_file`, `write_file`, `delete_file`, `file_exists`, `list_dir`, `make_dir` |
+| **File I/O** | `read_file`, `write_file`, `append_file`, `delete_file`, `file_exists`, `list_dir`, `make_dir` |
+| **Path** | `dirname`, `basename`, `path_join`, `glob` |
 | **JSON** | `json_stringify` (integers stay integers), `json_parse` |
 | **CSV** | `csv_parse` (auto-types), `csv_stringify` |
 | **YAML** | `yaml_parse`, `yaml_stringify` |
 | **TOML** | `toml_parse`, `toml_stringify` |
 | **Regex** | `regex_test`, `regex_find`, `regex_find_all`, `regex_replace`, `regex_split`, `regex_captures`, `regex_named_captures` |
 | **Date** | `date_now`, `date_timestamp`, `date_parse`, `date_format`, `date_diff`, `date_add`, `date_parts`, `date_from_parts` |
-| **Math** | `abs`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `min(a,b,…)`, `max(a,b,…)`, `random` |
+| **Math** | `abs`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `min`, `max`, `clamp`, `random`, `pi`, `e` |
 | **String** | `.trim()`, `.upper()`, `.lower()`, `.contains()`, `.replace()`, `.split()`, `.reverse()`, `.slice()`, `.starts_with()`, `.ends_with()`, `.len()`, `.repeat()`, `.pad_left()`, `.pad_right()` |
 | **Array** | `.sort()`, `.filter_by()`, `.unique()`, `.flatten()`, `.sum()`, `.min()`, `.max()`, `.average()`, `.take()`, `.skip()`, `.map_field()` |
+| **Object** | `keys`, `values`, `entries`, `merge`, `has`, `group_by` |
+| **Crypto** | `sha256`, `uuid` / `uuid_v4` |
+| **Net** | `url_parse` |
 | **DB** | `db_query`, `db_exec` (SQLite, bundled) |
 | **Env** | `load_env`, `get_env(key, default)`, `set_env` |
 | **Shell** | `shell()` (requires `--allow-shell`) |
@@ -370,18 +423,17 @@ result = retry(fn() { risky_call() }, 3, { backoff: "exponential" })
 | **Schema** | `schema_validate(value, spec)` |
 | **Memory** | `persist_memory()`, `load_memory()` |
 | **Base64** | `base64_encode`, `base64_decode` |
-| **I/O** | `readline()`, `read_all()` |
+| **I/O** | `readline()`, `read_all()`, `write()` (no trailing newline) |
+| **Util** | `truncate`, `type_of`, `is_null`, `to_string`, `to_number`, `len` |
 | **Observability** | `trace_log(event, data)` |
 | **Retry** | `retry(fn, max, opts)` |
-| **Slice/Merge** | `slice(arr_or_str, start, end)`, `merge(obj1, obj2, …)` |
-| **Type** | `type_of`, `is_null`, `to_string`, `to_number`, `len` |
 
 ---
 
 ## Language Interop
 
 | Language | Syntax | How it works |
-|----------|--------|-------------|
+|---|---|---|
 | JavaScript | `use js.axios` | Persistent Node.js subprocess, JSON IPC |
 | TypeScript | `use ts.mylib` | Auto-detects `tsx` or `ts-node` |
 | Python | `use py.requests` | Persistent Python subprocess, JSON IPC |
@@ -392,7 +444,7 @@ result = retry(fn() { risky_call() }, 3, { backoff: "exponential" })
 
 ## Progressive Syntax
 
-Three levels that compile to the same runtime — pick the verbosity you want:
+Three levels that compile to the same runtime:
 
 ```gx
 // Level 1 — Pure intent
@@ -426,7 +478,7 @@ Communicate:
 ## AI Providers
 
 | Provider | Env Variable | Default Model |
-|----------|-------------|---------------|
+|---|---|---|
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
 | Ollama (local) | `OLLAMA_URL` (default `localhost:11434`) | `llama3` |
@@ -438,7 +490,7 @@ Communicate:
 GX is secure by default — all dangerous operations require explicit opt-in:
 
 | Operation | Default | Flag to enable |
-|-----------|---------|----------------|
+|---|---|---|
 | Shell execution | Blocked | `--allow-shell` |
 | Internal HTTP (SSRF) | Blocked | `--allow-internal-http` |
 | File access | Sandboxed to script dir | `--no-sandbox` |
@@ -449,6 +501,7 @@ GX is secure by default — all dangerous operations require explicit opt-in:
 
 ```bash
 gx run main.gx              # Run a GX program
+gx -e 'say "hello"'         # Run inline source
 gx check main.gx            # Syntax check (no execution)
 gx init my-project          # Scaffold a new project
 gx test                     # Run all *.test.gx files
@@ -456,6 +509,7 @@ gx fmt main.gx              # Format source
 gx build                    # Compile for distribution
 gx install js.axios         # Add JS dependency
 gx install py.requests      # Add Python dependency
+gx repl                     # Interactive REPL
 ```
 
 ---
@@ -463,11 +517,12 @@ gx install py.requests      # Add Python dependency
 ## Version History
 
 | Version | Highlights |
-|---------|-----------|
-| **v0.4.2** | **Source-located runtime errors** — every runtime error now reports `at line N` plus a call-stack trace (`in agent "x" → fn() → <closure>`). Published to crates.io as `gxlang` (binary stays `gx`). |
-| **v0.4.1** | **Real closures** — lambdas capture enclosing locals (unblocks `retry()`, `map`/`filter`, functional composition) · `obj.field(args)` calls a stored closure (dispatch tables) · **Top-level statements** — `x = 1`, `load_env(".env")` at file root · `is_tty()` builtin + non-blocking `read_all()` on TTY · `--no-limit` flag + raised loop cap (10M) with wall-clock timeout removed · Test builtins `assert_eq`/`assert_true`/`assert_contains` · `gx test` single-file + `test_*.gx`/`*.test.gx` discovery · "Did you mean?" suggestions + clearer division-by-zero errors |
-| **v0.4.0** | Regex · Date/Time · CSV/YAML/TOML · TypeScript+Go+Binary bridges · AI tool use · Streaming AI · Persistent memory (SQLite) · Vector store · Schema validation · `await {}` concurrent block · Retry with backoff · Observability tracing · `string.reverse()` · Vararg `min()`/`max()` · Memory-propagating function calls |
-| **v0.3.0** | Security audit · Sandbox & SSRF protection · Shell gate · Module system (`import … as alias`) · `!` operator · Integer JSON · Range slicing `[a..b]` · `output` unreserved · Standalone `slice()`/`merge()` · `readline()` |
+|---|---|
+| **v0.5.0** | **DX + stdlib** — `gx -e` inline eval · `sha256`, `uuid` · `glob`, `dirname`, `basename`, `path_join` · `url_parse` · `group_by` · `truncate` · `token_count`, `tokens_used` · `write` (no newline) · `use std.fs\|crypto\|net\|collections` · `load_env` sandbox fix |
+| **v0.4.2** | **Source-located runtime errors** — every runtime error now reports `at line N` plus a call-stack trace. Published to crates.io as `gxlang`. |
+| **v0.4.1** | **Real closures** · top-level statements · `is_tty()` · `--no-limit` flag · `assert_eq`/`assert_true`/`assert_contains` · `gx test` discovery · "Did you mean?" suggestions |
+| **v0.4.0** | Regex · Date/Time · CSV/YAML/TOML · TypeScript+Go+Binary bridges · AI tool use · Streaming AI · Persistent memory (SQLite) · Vector store · Schema validation · `await {}` · Retry with backoff · Observability tracing |
+| **v0.3.0** | Security audit · Sandbox & SSRF protection · Shell gate · Module system · `!` operator · Integer JSON · Range slicing · `readline()` |
 | **v0.2.5** | HTTPS/TLS fix · Shell stdin · Quoted object keys |
 | **v0.2.0** | `think`/`act`/`observe` · `parallel {}` · `retry:` · Multi-agent orchestration |
 | **v0.1.0** | Initial release — lexer, parser, interpreter, OpenAI/Anthropic/Ollama |
@@ -477,8 +532,8 @@ gx install py.requests      # Add Python dependency
 ## Contributing
 
 ```bash
-cargo test                       # 72 unit tests — must all pass
-gx run tests/test_v04_full.gx    # 678 integration checks
+cargo test                       # 82+ unit tests — must all pass
+gx test                          # 16 integration test files, 106+ assertions
 cargo clippy -- -D warnings      # zero warnings
 cargo fmt --check                # formatted
 ```
@@ -489,4 +544,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
-MIT — © 2025 Ahmed Elgarhy / DEVJSX LIMITED (London, UK). Company No: 16618207.
+MIT — © 2026 Ahmed Elgarhy / DEVJSX LIMITED (London, UK). Company No: 16618207.

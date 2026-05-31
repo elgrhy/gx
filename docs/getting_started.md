@@ -9,6 +9,9 @@ curl -sSf https://raw.githubusercontent.com/elgrhy/gx/main/install.sh | sh
 # npm (any platform with Node.js 16+)
 npm install -g gxlang
 
+# Cargo
+cargo install gxlang
+
 # From source (requires Rust)
 git clone https://github.com/elgrhy/gx.git
 cd gx && cargo build --release
@@ -17,7 +20,7 @@ sudo cp target/release/gx /usr/local/bin/
 
 Verify:
 ```bash
-gx version
+gx version   # gx 0.5.0
 ```
 
 ---
@@ -111,6 +114,19 @@ agent "greeter" {
 
 ---
 
+## Inline Eval — No File Needed
+
+Run GX snippets directly without creating a file:
+
+```bash
+gx -e 'say "Hello from GX"'
+gx -e 'say sha256("hello world")'
+gx -e 'say uuid()'
+gx -e 'say token_count("how many tokens is this text?")'
+```
+
+---
+
 ## Create a Project
 
 ```bash
@@ -194,15 +210,19 @@ Else
 For item in items
   log(item)
 
-// For (also works with 'each')
-For each item in items
-  log(item)
+// While
+while running {
+  line = readline()
+  if line == null { break }
+  process(line)
+}
 
 // Try / catch
-try:
+try {
   result = risky()
-catch e
+} catch e {
   log("error: " + e)
+}
 ```
 
 ---
@@ -213,6 +233,7 @@ catch e
 name = "Ahmed"
 count = 42
 say "Hello {name}, count is {count}"
+say "Literal brace: {{name}}"   // outputs: Literal brace: {name}
 ```
 
 ---
@@ -233,6 +254,35 @@ On start:
 
 ---
 
+## Stdlib Builtins (v0.5.0)
+
+```gx
+use std.crypto
+use std.fs
+use std.net
+
+// Crypto
+h = sha256("hello world")       // SHA-256 hex
+id = uuid()                     // UUID v4
+
+// Path / FS
+dir  = dirname("/a/b/c.txt")    // "/a/b"
+file = basename("/a/b/c.txt")   // "c.txt"
+path = path_join("a", "b")      // "a/b"
+hits = glob("data/*.csv")       // array of matching paths
+
+// URL
+u = url_parse("https://api.example.com:8080/v1?q=gx")
+u.host   // "api.example.com"
+u.port   // "8080"
+u.query  // "q=gx"
+
+// Token tracking
+say "Used {tokens_used()} tokens so far"
+```
+
+---
+
 ## Multi-file
 
 ```gx
@@ -241,8 +291,7 @@ import "agents/utils.gx"
 Agent app
 
 On start:
-  // Uses functions from utils.gx
-  greet("Ahmed")
+  greet("Ahmed")   // function from utils.gx
 ```
 
 ---
@@ -252,10 +301,12 @@ On start:
 ```bash
 gx init my-agent        # new project
 gx run main.gx          # run
+gx -e 'say "hi"'        # inline eval
 gx check main.gx        # syntax check only
 gx test                 # run all tests/
 gx build main.gx        # build standalone launcher → dist/main
 gx fmt main.gx          # format source
+gx repl                 # interactive REPL
 ```
 
 ---
@@ -273,19 +324,6 @@ result = { value: 5 } |> spawn agent "doubler" |> spawn agent "formatter"
 
 // Send a message to another agent's when message handler
 spawn "task" to "worker" with { task: "process data" }
-```
-
-A callable agent reads from `input` in its brain:
-
-```gx
-helper "doubler" {
-  brain {
-    plan { }
-    execute { result = input.value * 2 }
-    remember { }
-    communicate { result }
-  }
-}
 ```
 
 ---
