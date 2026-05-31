@@ -1,6 +1,6 @@
 {
   "name": "gxlang",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "GX — brain-first programming language for building transparent, auditable AI assistants. Regex, Date/Time, CSV/YAML/TOML, TypeScript+Go bridges, AI tool use, streaming, persistent memory, vector store.",
   "keywords": [
     "gx",
