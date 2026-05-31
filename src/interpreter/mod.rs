@@ -3692,6 +3692,51 @@ impl Interpreter {
                 Ok(Value::Object(obj))
             }
 
+            // ── stdlib: crypto ────────────────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "sha256" => {
+                use sha2::{Digest, Sha256};
+                let s = args.first().map(|v| v.to_string()).unwrap_or_default();
+                let mut hasher = Sha256::new();
+                hasher.update(s.as_bytes());
+                let hex: String = hasher
+                    .finalize()
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                Ok(Value::Str(hex))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "uuid" | "uuid_v4" => Ok(Value::Str(uuid::Uuid::new_v4().to_string())),
+
+            // ── stdlib: fs glob (sandbox-aware) ───────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "glob" => {
+                let pat = args.first().map(|v| v.to_string()).unwrap_or_default();
+                let full_pat = match (&self.sandbox_dir, std::path::Path::new(&pat).is_absolute()) {
+                    (Some(base), false) => base.join(&pat).to_string_lossy().into_owned(),
+                    _ => pat.clone(),
+                };
+                match glob::glob(&full_pat) {
+                    Ok(paths) => {
+                        let mut out = Vec::new();
+                        for entry in paths.flatten() {
+                            if let Some(ref base) = self.sandbox_dir {
+                                if !entry.starts_with(base) {
+                                    continue;
+                                }
+                                let rel = entry.strip_prefix(base).unwrap_or(&entry);
+                                out.push(Value::Str(rel.to_string_lossy().into_owned()));
+                            } else {
+                                out.push(Value::Str(entry.to_string_lossy().into_owned()));
+                            }
+                        }
+                        Ok(Value::Array(out))
+                    }
+                    Err(e) => Err(Signal::Error(format!("glob '{}': {}", pat, e))),
+                }
+            }
+
             // ── String utilities ──────────────────────────────────────────────
             "format" => {
                 // format("Hello {0}, you are {1}", name, age)
@@ -4559,6 +4604,9 @@ const KNOWN_BUILTINS: &[&str] = &[
     "basename",
     "group_by",
     "url_parse",
+    "sha256",
+    "uuid",
+    "glob",
     "readline",
     "read_all",
     "is_tty",

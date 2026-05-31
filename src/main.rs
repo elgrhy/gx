@@ -414,7 +414,8 @@ fn print_help() {
     println!("  Env:     env(\"NAME\"), env(\"NAME\", \"default\")");
     println!("  Util:    base64_encode, base64_decode, html_escape, url_encode");
     println!("  Stdlib:  truncate, token_count, tokens_used, write (no trailing newline)");
-    println!("           dirname, basename, path_join, group_by, url_parse");
+    println!("           dirname, basename, path_join, glob, group_by, url_parse");
+    println!("  Crypto:  sha256, uuid    (use std.fs|crypto|collections|net optional)");
     println!();
     println!("LANGUAGE:");
     println!("  agent \"name\" {{ ... }}        Define an AI agent");

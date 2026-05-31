@@ -1,0 +1,28 @@
+// v0.5.0 stdlib: crypto / fs / net (run: gx run tests/test_v05_stdlib.gx)
+
+use std.crypto
+use std.fs
+use std.net
+use std.collections
+
+// crypto: sha256 known vector + uuid shape
+assert_eq(len(sha256("abc")), 64, "sha256 hex length")
+assert_eq(sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 known vector")
+assert_eq(len(uuid()), 36, "uuid v4 length")
+
+// fs
+assert_eq(dirname("/a/b/c.txt"), "/a/b", "dirname")
+assert_eq(basename("/a/b/c.txt"), "c.txt", "basename")
+make_dir("globtmp")
+write_file("globtmp/g1.txt", "x")
+write_file("globtmp/g2.txt", "y")
+assert_eq(len(glob("globtmp/*.txt")), 2, "glob finds created files")
+delete_file("globtmp/g1.txt")
+delete_file("globtmp/g2.txt")
+
+// net
+u = url_parse("https://x.io:443/p?a=1#f")
+assert_eq(u.scheme, "https", "url scheme")
+assert_eq(u.port, "443", "url port")
+
+print("test_v05_stdlib: all assertions passed")

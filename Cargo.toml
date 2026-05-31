@@ -1,6 +1,6 @@
 [package]
 name = "gxlang"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description = "GX — brain-first programming language for building transparent, auditable AI assistants. Every AI call logged, every decision explicit, every agent debuggable."
 authors = ["Ahmed Elgarhy <ahmed@devjsx.com>"]
@@ -44,6 +44,9 @@ chrono  = { version = "0.4", features = ["serde"] }
 csv     = "1"
 serde_yaml = "0.9"
 toml    = "0.8"
+sha2    = "0.10"
+uuid    = { version = "1", features = ["v4"] }
+glob    = "0.3"
 
 # WASM-only
 [target.'cfg(target_arch = "wasm32")'.dependencies]
