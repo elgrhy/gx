@@ -1079,6 +1079,17 @@ impl Parser {
                     line,
                 })
             }
+            // db_transaction("path") { body }
+            TokenKind::Ident(ref name) if name == "db_transaction" => {
+                self.advance(); // consume `db_transaction`
+                self.expect(&TokenKind::LParen)?;
+                let path = self.parse_expr()?;
+                self.expect(&TokenKind::RParen)?;
+                self.skip_newlines();
+                self.expect(&TokenKind::LBrace)?;
+                let body = self.parse_stmts()?;
+                Ok(Stmt::DbTransaction { path, body, line })
+            }
             _ => {
                 // Helpful error: detect reserved keywords used as variable names
                 let reserved_as_var = matches!(
@@ -1616,6 +1627,18 @@ impl Parser {
         self.parse_pipeline()
     }
 
+    /// Returns true if all tokens (ignoring newlines/EOF) have been consumed.
+    fn at_end(&self) -> bool {
+        let mut pos = self.pos;
+        loop {
+            match self.tokens.get(pos).map(|t| &t.kind) {
+                None | Some(TokenKind::Eof) => return true,
+                Some(TokenKind::Newline) => pos += 1,
+                _ => return false,
+            }
+        }
+    }
+
     // |> pipeline: value |> spawn agent "name" |> spawn agent "name2"
     fn parse_pipeline(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_null_coalesce()?;
@@ -1882,6 +1905,17 @@ impl Parser {
             }
             TokenKind::NumberLit(n) => {
                 self.advance();
+                // Duration suffix: 500ms → 0.5 (seconds), 5s → 5.0 (seconds)
+                // Only when the suffix is the complete next identifier token.
+                let n = if matches!(self.peek_kind(), TokenKind::Ident(u) if u == "ms") {
+                    self.advance();
+                    n / 1000.0
+                } else if matches!(self.peek_kind(), TokenKind::Ident(u) if u == "s") {
+                    self.advance();
+                    n
+                } else {
+                    n
+                };
                 Ok(Expr::Num(n))
             }
             TokenKind::BoolLit(b) => {
@@ -2230,10 +2264,13 @@ fn parse_interpolated(s: String) -> Expr {
                 i += 1;
             }
             match Lexer::new(&expr_src).tokenize() {
-                Ok(toks) => match Parser::new(toks).parse_expr() {
-                    Ok(e) => parts.push(InterpolatedPart::Expr(e)),
-                    Err(_) => parts.push(InterpolatedPart::Literal(format!("{{{}}}", expr_src))),
-                },
+                Ok(toks) => {
+                    let mut p = Parser::new(toks);
+                    match p.parse_expr() {
+                        Ok(e) if p.at_end() => parts.push(InterpolatedPart::Expr(e)),
+                        _ => parts.push(InterpolatedPart::Literal(format!("{{{}}}", expr_src))),
+                    }
+                }
                 Err(_) => parts.push(InterpolatedPart::Literal(format!("{{{}}}", expr_src))),
             }
         } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {

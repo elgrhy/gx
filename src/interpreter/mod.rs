@@ -32,7 +32,7 @@ use builtins_datetime::{
     date_add_impl, date_diff_impl, date_format_impl, date_from_parts_impl, date_now_impl,
     date_parse_impl, date_parts_impl, date_timestamp_impl,
 };
-use builtins_db::{db_exec_impl, db_query_impl};
+use builtins_db::{db_exec_impl, db_exec_on_conn, db_query_impl, db_query_on_conn};
 #[cfg(not(target_arch = "wasm32"))]
 use builtins_http::check_url_safe;
 use builtins_http::{http_builtin, http_stream_builtin, http_upload_builtin};
@@ -145,6 +145,9 @@ pub struct Interpreter {
     call_stack: Vec<String>,
     /// Cumulative tokens used across all AI calls this session (exposed via `tokens_used()`).
     total_tokens_used: u64,
+    /// Active SQLite connection when inside a db_transaction block (non-WASM only).
+    #[cfg(not(target_arch = "wasm32"))]
+    tx_conn: Option<rusqlite::Connection>,
 }
 
 impl Default for Interpreter {
@@ -183,6 +186,8 @@ impl Interpreter {
             global_vars: HashMap::new(),
             call_stack: Vec::new(),
             total_tokens_used: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            tx_conn: None,
         }
     }
 
@@ -1203,6 +1208,8 @@ impl Interpreter {
                 Ok(result)
             }
 
+            Stmt::DbTransaction { path, body, .. } => self.run_db_transaction(path, body, env),
+
             Stmt::Expr { expr, .. } => {
                 // Auto-mutate: arr.push(x), arr.pop(), arr.sort(), arr.reverse() as statements
                 if let Expr::Call { callee, args } = expr {
@@ -1242,6 +1249,69 @@ impl Interpreter {
                 }
                 self.eval_expr(expr, env)
             }
+        }
+    }
+
+    fn run_db_transaction(
+        &mut self,
+        path: &Expr,
+        body: &[Stmt],
+        env: &mut Env,
+    ) -> Result<Value, Signal> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (path, body, env);
+            return Err(Signal::Error(
+                "db_transaction not available in playground".into(),
+            ));
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path_val = self.eval_expr(path, env)?;
+            let path_str = path_val
+                .as_str()
+                .ok_or_else(|| Signal::Error("db_transaction: path must be a string".into()))?
+                .to_string();
+            let safe = self.safe_path(&path_str)?;
+            let path_owned = safe.to_string_lossy().into_owned();
+
+            let conn = rusqlite::Connection::open(&path_owned).map_err(|e| {
+                Signal::Error(format!(
+                    "db_transaction: cannot open '{}': {}",
+                    path_owned, e
+                ))
+            })?;
+            conn.execute_batch("BEGIN")
+                .map_err(|e| Signal::Error(format!("db_transaction: BEGIN failed: {}", e)))?;
+
+            // Expose `db` variable so inner db_exec(db, sql, params) calls work naturally
+            env.set("db", Value::Str(path_owned.clone()));
+
+            self.tx_conn = Some(conn);
+            let result = self.run_stmts(body, env);
+
+            let commit_ok = match &result {
+                Ok(_) | Err(Signal::Return(_)) => {
+                    if let Some(ref c) = self.tx_conn {
+                        c.execute_batch("COMMIT").is_ok()
+                    } else {
+                        true
+                    }
+                }
+                Err(_) => {
+                    if let Some(ref c) = self.tx_conn {
+                        let _ = c.execute_batch("ROLLBACK");
+                    }
+                    true
+                }
+            };
+            self.tx_conn = None;
+
+            if !commit_ok {
+                return Err(Signal::Error("db_transaction: COMMIT failed".into()));
+            }
+            result
         }
     }
 
@@ -2396,7 +2466,9 @@ impl Interpreter {
             }
             "sleep" => {
                 if let Some(n) = args.first().and_then(|v| v.as_number()) {
-                    std::thread::sleep(std::time::Duration::from_millis(n as u64));
+                    // Argument is seconds (fractional OK). sleep(5) = 5s, sleep(0.5) = 500ms.
+                    // Use sleep(500ms) syntax sugar (lexer converts to 0.5) for sub-second delays.
+                    std::thread::sleep(std::time::Duration::from_secs_f64(n.max(0.0)));
                 }
                 Ok(Value::Null)
             }
@@ -3996,33 +4068,43 @@ impl Interpreter {
             // ── SQLite ────────────────────────────────────────────────────────
             #[cfg(not(target_arch = "wasm32"))]
             "db_query" => {
-                let raw = args
+                let _raw = args
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
                     .ok_or_else(|| Signal::Error("db_query: expected db path".into()))?;
-                let safe = self.safe_path(&raw)?;
-                let path = safe.to_string_lossy().into_owned();
                 let sql = args
                     .get(1)
                     .and_then(|v| v.as_str().map(String::from))
                     .ok_or_else(|| Signal::Error("db_query: expected SQL string".into()))?;
-                let params: Vec<Value> = args.into_iter().skip(2).collect();
-                db_query_impl(&path, &sql, params)
+                // Params: db_query(path, sql, [p1,p2]) OR db_query(path, sql, p1, p2)
+                let params: Vec<Value> = db_unpack_params(&args, 2);
+                if let Some(ref conn) = self.tx_conn {
+                    db_query_on_conn(conn, &sql, params)
+                } else {
+                    let safe = self.safe_path(&_raw)?;
+                    let path = safe.to_string_lossy().into_owned();
+                    db_query_impl(&path, &sql, params)
+                }
             }
             #[cfg(not(target_arch = "wasm32"))]
             "db_exec" => {
-                let raw = args
+                let _raw = args
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
                     .ok_or_else(|| Signal::Error("db_exec: expected db path".into()))?;
-                let safe = self.safe_path(&raw)?;
-                let path = safe.to_string_lossy().into_owned();
                 let sql = args
                     .get(1)
                     .and_then(|v| v.as_str().map(String::from))
                     .ok_or_else(|| Signal::Error("db_exec: expected SQL string".into()))?;
-                let params: Vec<Value> = args.into_iter().skip(2).collect();
-                db_exec_impl(&path, &sql, params)
+                // Params: db_exec(path, sql, [p1,p2]) OR db_exec(path, sql, p1, p2)
+                let params: Vec<Value> = db_unpack_params(&args, 2);
+                if let Some(ref conn) = self.tx_conn {
+                    db_exec_on_conn(conn, &sql, params)
+                } else {
+                    let safe = self.safe_path(&_raw)?;
+                    let path = safe.to_string_lossy().into_owned();
+                    db_exec_impl(&path, &sql, params)
+                }
             }
 
             // ── Functional: map / filter ──────────────────────────────────────
@@ -4552,6 +4634,19 @@ impl Interpreter {
 
 // ── Free helper functions ─────────────────────────────────────────────────────
 
+/// Unpack db params: supports both `db_exec(path, sql, [p1,p2])` and `db_exec(path, sql, p1, p2)`.
+/// `start` is the index of the first param (after path and sql).
+fn db_unpack_params(args: &[Value], start: usize) -> Vec<Value> {
+    let rest: Vec<Value> = args[start.min(args.len())..].to_vec();
+    // If there's exactly one arg and it's an array, unpack it as the param list
+    if rest.len() == 1 {
+        if let Value::Array(items) = &rest[0] {
+            return items.clone();
+        }
+    }
+    rest
+}
+
 /// Extract the source line number from any statement (for error context).
 fn stmt_line(stmt: &Stmt) -> usize {
     match stmt {
@@ -4586,7 +4681,8 @@ fn stmt_line(stmt: &Stmt) -> usize {
         | Stmt::RepeatTimes { line, .. }
         | Stmt::Parallel { line, .. }
         | Stmt::Respond { line, .. }
-        | Stmt::Await { line, .. } => *line,
+        | Stmt::Await { line, .. }
+        | Stmt::DbTransaction { line, .. } => *line,
     }
 }
 

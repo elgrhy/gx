@@ -310,6 +310,12 @@ pub enum Stmt {
         into_var: String,
         line: usize,
     },
+    /// db_transaction("path.db") { body } — executes body inside a single SQLite transaction
+    DbTransaction {
+        path: Expr,
+        body: Vec<Stmt>,
+        line: usize,
+    },
 }
 
 // ── HTTP route declaration ────────────────────────────────────────────────────

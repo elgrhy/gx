@@ -1,0 +1,218 @@
+// GX production-readiness feature tests
+// Covers all 18+ improvements from user feedback (GClaw agentic system)
+
+// ── #1 Early return / guard clauses ──────────────────────────────────────────
+
+fn check_value(x) {
+  if x < 0 { return "negative" }
+  if x == 0 { return "zero" }
+  return "positive"
+}
+
+assert check_value(-5) == "negative" "early return: negative guard"
+assert check_value(0) == "zero"      "early return: zero guard"
+assert check_value(7) == "positive"  "early return: positive path"
+
+// ── #2 Regex ─────────────────────────────────────────────────────────────────
+
+assert regex_test("Hello World", "^Hello") == true    "regex_test: match"
+assert regex_test("abc", "^\\d+") == false            "regex_test: no match"
+
+found = regex_find("Total: $42.50", "\\$([0-9.]+)")
+assert found == "42.50" "regex_find: capture group"
+
+nums = regex_find_all("a1 b2 c3", "\\d")
+assert len(nums) == 3 "regex_find_all: count"
+
+cleaned = regex_replace("**bold** text", "\\*\\*", "")
+assert cleaned == "bold text" "regex_replace: strip markdown"
+
+parts = regex_split("one two three", "\\s+")
+assert len(parts) == 3 "regex_split: word split"
+
+// ── #3 String interpolation ───────────────────────────────────────────────────
+
+name = "World"
+greeting = "Hello {name}!"
+assert greeting == "Hello World!" "string interpolation: basic"
+
+x = 42
+msg = "Value is {x} and doubled is {x * 2}"
+assert msg == "Value is 42 and doubled is 84" "string interpolation: expression"
+
+// ── #5 Top-level fn ───────────────────────────────────────────────────────────
+
+fn strip_md(text) {
+  t = regex_replace(text, "\\*\\*|__", "")
+  t = regex_replace(t, "^#{1,6} ", "")
+  return t
+}
+
+assert strip_md("**Hello**") == "Hello"    "fn: strip bold"
+assert strip_md("# Heading") == "Heading"  "fn: strip h1"
+
+fn add(a, b) {
+  return a + b
+}
+assert add(3, 4) == 7 "fn: arithmetic"
+
+// ── #9 to_lower / to_upper ────────────────────────────────────────────────────
+
+assert to_lower("Hello WORLD") == "hello world" "to_lower: basic"
+assert to_upper("hello world") == "HELLO WORLD" "to_upper: basic"
+assert to_lower("ABC123") == "abc123"            "to_lower: with digits"
+
+// ── #10 sleep — takes seconds now ─────────────────────────────────────────────
+
+// sleep(0) should be a no-op and not crash
+sleep(0)
+assert true "sleep(0): no crash"
+
+// Duration suffix: 500ms = 0.5 seconds, 0s = 0 seconds
+assert 500ms == 0.5   "duration suffix: 500ms = 0.5"
+assert 1s == 1.0      "duration suffix: 1s = 1.0"
+assert 2s == 2.0      "duration suffix: 2s"
+assert 100ms == 0.1   "duration suffix: 100ms"
+
+// ── #11 Array utilities: contains, filter, map ───────────────────────────────
+
+users = [1, 2, 3, 4, 5]
+assert contains(users, 3) == true  "contains: found"
+assert contains(users, 9) == false "contains: not found"
+
+evens = filter(users, fn(n) { n % 2 == 0 })
+assert len(evens) == 2 "filter: even numbers"
+
+doubled = map(users, fn(n) { n * 2 })
+assert doubled[0] == 2  "map: first element doubled"
+assert doubled[4] == 10 "map: last element doubled"
+
+// Method-style also works
+words = ["hello", "world", "gx"]
+assert words.contains("gx") == true  "array.contains: found"
+assert words.contains("foo") == false "array.contains: not found"
+
+// ── #12 object_merge ──────────────────────────────────────────────────────────
+
+base = { name: "Alice", role: "user" }
+overrides = { role: "admin", level: 5 }
+merged = object_merge(base, overrides)
+assert merged["name"] == "Alice" "object_merge: base key preserved"
+assert merged["role"] == "admin" "object_merge: override wins"
+assert merged["level"] == 5     "object_merge: new key added"
+
+// ── #13 Log levels ───────────────────────────────────────────────────────────
+
+// These should not crash (output goes to stderr when level matches)
+log_debug("debug message")
+log_info("info message")
+log_warn("warn message")
+log_error("error message")
+assert true "log levels: no crash"
+
+// ── #16 env_require ───────────────────────────────────────────────────────────
+
+// env_require("HOME") should return a non-null value on any Unix system
+home = env_require("HOME")
+assert home != null "env_require: HOME is set"
+
+// Missing key should throw — catch it
+try {
+  env_require("GX_NONEXISTENT_KEY_XYZ_12345")
+  assert false "env_require: should have thrown"
+} catch e {
+  assert e.message != null "env_require: error caught"
+}
+
+// ── #18 Typed errors / try-catch ─────────────────────────────────────────────
+
+// Catch-all
+try {
+  x = 1 / 0
+} catch e {
+  assert e.kind == "RuntimeError" "typed catch: division by zero kind"
+}
+
+// JSON parse error
+try {
+  data = json_parse("{not valid json}")
+} catch e {
+  assert e.kind == "JsonParseError" "typed catch: json parse error kind"
+}
+
+// ── #19 ! operator ───────────────────────────────────────────────────────────
+
+flag = true
+assert !flag == false        "! operator: negate true"
+assert !false == true        "! operator: negate false"
+assert !(1 == 2) == true     "! operator: negate comparison"
+assert !null == true         "! operator: negate null"
+
+is_admin = false
+if !is_admin {
+  result = "not admin"
+} else {
+  result = "admin"
+}
+assert result == "not admin" "! operator: if guard"
+
+// ── Additional: object / array utilities ─────────────────────────────────────
+
+// has() for objects
+obj = { key: "value", count: 0 }
+assert has(obj, "key") == true   "has: existing key"
+assert has(obj, "missing") == false "has: missing key"
+
+// keys() and values()
+k = keys(obj)
+assert len(k) == 2 "keys: count"
+
+// json_stringify + json_parse round-trip
+payload = { name: "test", value: 42 }
+json_str = json_stringify(payload)
+parsed = json_parse(json_str)
+assert parsed["name"] == "test" "json round-trip: name"
+assert parsed["value"] == 42    "json round-trip: value"
+
+// ── SQLite db_query / db_exec ─────────────────────────────────────────────────
+
+db_path = "tmp/test_production.db"
+db_exec(db_path, "CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY, name TEXT)", [])
+db_exec(db_path, "DELETE FROM items", [])
+db_exec(db_path, "INSERT INTO items(name) VALUES(?)", ["alpha"])
+db_exec(db_path, "INSERT INTO items(name) VALUES(?)", ["beta"])
+
+rows = db_query(db_path, "SELECT name FROM items ORDER BY name", [])
+assert len(rows) == 2       "db_exec/query: row count"
+assert rows[0]["name"] == "alpha" "db_exec/query: first row"
+assert rows[1]["name"] == "beta"  "db_exec/query: second row"
+
+// ── db_transaction ────────────────────────────────────────────────────────────
+
+db_exec(db_path, "DELETE FROM items", [])
+
+db_transaction(db_path) {
+  db_exec(db, "INSERT INTO items(name) VALUES(?)", ["tx_row_1"])
+  db_exec(db, "INSERT INTO items(name) VALUES(?)", ["tx_row_2"])
+  db_exec(db, "INSERT INTO items(name) VALUES(?)", ["tx_row_3"])
+}
+
+tx_rows = db_query(db_path, "SELECT name FROM items ORDER BY name", [])
+assert len(tx_rows) == 3          "db_transaction: all rows committed"
+assert tx_rows[0]["name"] == "tx_row_1" "db_transaction: row 1"
+assert tx_rows[2]["name"] == "tx_row_3" "db_transaction: row 3"
+
+// Transaction rollback on error
+try {
+  db_transaction(db_path) {
+    db_exec(db, "INSERT INTO items(name) VALUES(?)", ["should_rollback"])
+    // Force an error: bad SQL
+    db_exec(db, "INVALID SQL STATEMENT", [])
+  }
+} catch e {
+  assert e.message != null "db_transaction: rollback error caught"
+}
+
+// The "should_rollback" row should NOT be in the DB
+after_rollback = db_query(db_path, "SELECT name FROM items WHERE name=?", ["should_rollback"])
+assert len(after_rollback) == 0 "db_transaction: rollback removed row"

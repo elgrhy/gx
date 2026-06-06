@@ -28,7 +28,7 @@ git clone https://github.com/elgrhy/gx.git && cd gx && cargo build --release
 ```
 
 ```bash
-gx --version   # gx 0.5.0
+gx --version   # gx 0.5.1
 ```
 
 ---
@@ -45,10 +45,24 @@ gx run main.gx
 agent "hello" {
   when started {
     name = "World"
-    say "Hello, {name}! GX v0.5.0 is running."
+    say "Hello, {name}! GX v0.5.1 is running."
   }
 }
 ```
+
+---
+
+## What's New in v0.5.1
+
+Production-readiness patch based on real-world feedback from the GClaw agentic system.
+
+- **`db_transaction(path) { body }`** — native SQLite transactions with automatic COMMIT/ROLLBACK; `db` variable exposed inside the block for parameterised queries
+- **`db_exec` / `db_query` array params** — `db_exec(db, sql, [p1, p2])` now works alongside the existing spread form
+- **`sleep(n)` takes seconds** — `sleep(5)` = 5 s; use `sleep(0.5)` or `sleep(500ms)` for sub-second delays
+- **Duration suffix literals** — `500ms` → 0.5 s, `5s` → 5 s; works in any expression including function arguments
+- **Regex quantifier fix** — `{1,6}` patterns in string literals are no longer incorrectly interpolated; only complete, valid expressions inside `{…}` are substituted
+
+> **Upgrading from v0.5.0:** `sleep()` now takes **seconds** instead of milliseconds. Replace `sleep(5000)` with `sleep(5)`.
 
 ---
 
@@ -518,6 +532,7 @@ gx repl                     # Interactive REPL
 
 | Version | Highlights |
 |---|---|
+| **v0.5.1** | **Production patch** — `db_transaction` block · `sleep(seconds)` · `500ms`/`5s` duration literals · array-form `db_exec(db, sql, [params])` · regex quantifier interpolation fix |
 | **v0.5.0** | **DX + stdlib** — `gx -e` inline eval · `sha256`, `uuid` · `glob`, `dirname`, `basename`, `path_join` · `url_parse` · `group_by` · `truncate` · `token_count`, `tokens_used` · `write` (no newline) · `use std.fs\|crypto\|net\|collections` · `load_env` sandbox fix |
 | **v0.4.2** | **Source-located runtime errors** — every runtime error now reports `at line N` plus a call-stack trace. Published to crates.io as `gxlang`. |
 | **v0.4.1** | **Real closures** · top-level statements · `is_tty()` · `--no-limit` flag · `assert_eq`/`assert_true`/`assert_contains` · `gx test` discovery · "Did you mean?" suggestions |
