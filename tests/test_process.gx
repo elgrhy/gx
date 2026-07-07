@@ -1,0 +1,243 @@
+// Native process runtime: process_run, process_spawn, process_wait,
+// process_kill, process_exists, process_status, process_read
+// (run: gx run tests/test_process.gx --allow-process --no-sandbox)
+//
+// NOTE: this file assumes a Unix-like environment (macOS/Linux), matching
+// the rest of this test suite's conventions — it uses echo/sh/cat/pwd as
+// real, standalone executables. Windows-specific behavior (no shell
+// involved, cmd.exe quirks) is covered separately by the Rust-level
+// #[cfg(windows)] tests in src/interpreter/builtins_process.rs.
+
+// ── Normal execution ───────────────────────────────────────────────────────────
+
+r = process_run({ command: "echo", args: ["hello", "world"] })
+assert r.ok == true "process_run: normal execution succeeds"
+assert contains(r.stdout, "hello world") == true "process_run: stdout captured"
+assert r.exit_code == 0 "process_run: exit_code is 0 on success"
+assert r.timed_out == false "process_run: timed_out is false on normal completion"
+assert r.killed == false "process_run: killed is false on normal completion"
+assert r.truncated == false "process_run: truncated is false for small output"
+assert r.stdout_truncated == false "process_run: stdout_truncated is false for small output"
+assert r.stdout_bytes == len(r.stdout) "process_run: stdout_bytes matches actual output for untruncated output"
+
+// ── Argument handling: spaces and unicode never get shell-split ──────────────
+
+// If "a b" were incorrectly split into two argv entries (the shell-string
+// failure mode this API exists to avoid), printf would print 3 lines, not 2.
+spaced = process_run({ command: "printf", args: ["%s\\n", "a b", "c"] })
+lines = split(trim(spaced.stdout), "\n")
+assert len(lines) == 2 "process_run: argument containing a space is not split"
+assert lines[0] == "a b" "process_run: spaced argument arrives intact"
+assert lines[1] == "c" "process_run: second argument unaffected"
+
+uni = process_run({ command: "echo", args: ["héllo-世界"] })
+assert contains(uni.stdout, "héllo-世界") == true "process_run: unicode argument round-trips"
+
+// ── stdin / stdout / stderr ───────────────────────────────────────────────────
+
+stdin_result = process_run({ command: "cat", stdin: "piped content\n" })
+assert contains(stdin_result.stdout, "piped content") == true "process_run: stdin is piped to the child"
+
+streams = process_run({ command: "sh", args: ["-c", "echo out-line; echo err-line 1>&2"] })
+assert contains(streams.stdout, "out-line") == true "process_run: stdout captured separately"
+assert contains(streams.stderr, "err-line") == true "process_run: stderr captured separately"
+assert contains(streams.stdout, "err-line") == false "process_run: stderr does not leak into stdout"
+
+// ── Working directory / environment variables ────────────────────────────────
+
+cwd_result = process_run({ command: "pwd", cwd: "/tmp" })
+cwd_out = trim(cwd_result.stdout)
+assert(cwd_out == "/tmp" or cwd_out == "/private/tmp") "process_run: cwd is applied"
+
+env_result = process_run({
+  command: "sh",
+  args: ["-c", "echo $GX_TEST_VAR"],
+  env: { GX_TEST_VAR: "test-value-123" }
+})
+assert contains(env_result.stdout, "test-value-123") == true "process_run: env vars are passed to the child"
+
+// ── Non-zero exit / invalid executable — result objects, never thrown ────────
+
+fail_result = process_run({ command: "false" })
+assert fail_result.ok == false "process_run: non-zero exit is ok:false"
+assert fail_result.exit_code == 1 "process_run: exit_code reflects the real code"
+assert fail_result.error_kind == null "process_run: plain non-zero exit has no special error_kind"
+
+missing_result = process_run({ command: "gx-definitely-does-not-exist-xyz123" })
+assert missing_result.ok == false "process_run: missing executable is ok:false"
+assert missing_result.error_kind == "not_found" "process_run: missing executable reports not_found"
+
+// ── Timeout ────────────────────────────────────────────────────────────────────
+
+timeout_result = process_run({ command: "sleep", args: ["5"], timeout: 1 })
+assert timeout_result.ok == false "process_run: timed-out process is ok:false"
+assert timeout_result.timed_out == true "process_run: timed_out flag is set"
+assert timeout_result.error_kind == "timeout" "process_run: error_kind is 'timeout'"
+
+// ── process_spawn / process_status / process_exists / process_kill / process_wait ──
+
+// process_spawn on a command that can't even start has no real process to
+// hand back a handle for, so it returns the same result-object shape
+// process_run would — process_wait must accept that directly rather than
+// throwing, so this chain stays robust whether or not the spawn succeeded.
+failed_spawn = process_spawn({ command: "gx-definitely-does-not-exist-xyz123" })
+assert type_of(failed_spawn) == "object" "process_spawn: failed spawn returns a result object, not a handle"
+failed_wait = process_wait(failed_spawn)
+assert failed_wait.ok == false "process_wait: passes through an already-failed spawn result"
+assert failed_wait.error_kind == "not_found" "process_wait: preserves the original error_kind"
+
+h = process_spawn({ command: "sleep", args: ["10"] })
+assert process_exists(h) == true "process_spawn: handle exists while running"
+
+status = process_status(h)
+assert status.running == true "process_status: running is true"
+assert status.command == "sleep" "process_status: command is recorded"
+assert status.pid > 0 "process_status: pid is a positive number"
+assert status.exit_reason == "running" "process_status: exit_reason is 'running'"
+assert status.cwd == null "process_status: cwd is null when none was given"
+assert status.stdin_bytes == 0 "process_status: stdin_bytes is 0 when no stdin was given"
+assert status.truncated == false "process_status: truncated is false"
+
+killed = process_kill(h)
+assert killed == true "process_kill: returns true when a running process is killed"
+
+waited = process_wait(h)
+assert waited.killed == true "process_wait: reflects that the process was killed"
+assert waited.ok == false "process_wait: killed process is ok:false"
+
+// process_wait finalizes and releases the handle — it should behave like an
+// unknown handle afterward.
+assert process_exists(h) == false "process_wait: handle no longer exists after wait"
+assert process_status(h) == null "process_wait: status is null after the handle is released"
+
+// process_status reports cwd/stdin_bytes when given, and exit_reason for a
+// finished process.
+h_meta = process_spawn({ command: "cat", cwd: "/tmp", stdin: "hello" })
+meta_status = process_status(h_meta)
+meta_cwd = meta_status.cwd
+assert(meta_cwd == "/tmp" or meta_cwd == "/private/tmp") "process_status: cwd reflects the resolved directory"
+assert meta_status.stdin_bytes == 5 "process_status: stdin_bytes reflects the given stdin ('hello' = 5 bytes)"
+process_wait(h_meta)
+
+h_ok = process_spawn({ command: "echo", args: ["x"] })
+sleep(0.1)
+ok_status = process_status(h_ok)
+assert ok_status.exit_reason == "exited" "process_status: exit_reason is 'exited' for a clean success"
+process_wait(h_ok)
+
+h_fail = process_spawn({ command: "false" })
+sleep(0.1)
+fail_status = process_status(h_fail)
+assert fail_status.exit_reason == "exited_error" "process_status: exit_reason is 'exited_error' for a non-zero exit"
+process_wait(h_fail)
+
+// ── process_read: pull-based incremental output ───────────────────────────────
+
+h2 = process_spawn({ command: "sh", args: ["-c", "echo first; sleep 0.3; echo second"] })
+sleep(0.15)
+r1 = process_read(h2)
+assert contains(r1.stdout, "first") == true "process_read: first chunk is available early"
+assert contains(r1.stdout, "second") == false "process_read: second chunk not yet produced"
+final = process_wait(h2)
+assert contains(final.stdout, "second") == true "process_wait: collects output produced after the last process_read"
+
+// ── Output truncation is never silent ─────────────────────────────────────────
+
+// 32 MiB cap + a bit — confirms truncation is detected and reported, and
+// that stdout_bytes reports the real total, not just what's retained.
+huge_total = 33 * 1024 * 1024
+huge_result = process_run({
+  command: "sh",
+  args: ["-c", "yes 0123456789 | head -c " + to_string(huge_total)]
+})
+assert huge_result.ok == true "process_run: truncation does not affect exit success"
+assert huge_result.truncated == true "process_run: truncated is true past the 32 MiB cap"
+assert huge_result.stdout_truncated == true "process_run: stdout_truncated is true past the cap"
+assert huge_result.stdout_bytes == huge_total "process_run: stdout_bytes reports the real total, not the capped amount"
+assert len(huge_result.stdout) < huge_result.stdout_bytes "process_run: retained stdout is smaller than the real total once truncated"
+
+// ── Input size limits: oversized fields are rejected before use ──────────────
+
+try {
+  process_run({ command: "x".repeat(5000) })
+  assert false "process_run should reject an oversized command"
+} catch e {
+  assert true "process_run rejects an oversized command"
+}
+
+try {
+  process_run({ command: "echo", cwd: "/".repeat(5000) })
+  assert false "process_run should reject an oversized cwd"
+} catch e {
+  assert true "process_run rejects an oversized cwd"
+}
+
+try {
+  process_run({ command: "echo", args: ["x".repeat(2 * 1024 * 1024)] })
+  assert false "process_run should reject an oversized args element"
+} catch e {
+  assert true "process_run rejects an oversized args element"
+}
+
+try {
+  process_run({ command: "echo", env: { MY_VAR: "x".repeat(2 * 1024 * 1024) } })
+  assert false "process_run should reject an oversized env value"
+} catch e {
+  assert true "process_run rejects an oversized env value"
+}
+
+try {
+  process_run({ command: "cat", stdin: "x".repeat(11 * 1024 * 1024) })
+  assert false "process_run should reject oversized stdin"
+} catch e {
+  assert true "process_run rejects oversized stdin"
+}
+
+// ── Unknown handles behave predictably, never throw ───────────────────────────
+
+assert process_exists("no-such-handle") == false "process_exists: unknown handle -> false"
+assert process_kill("no-such-handle") == false "process_kill: unknown handle -> false"
+assert process_status("no-such-handle") == null "process_status: unknown handle -> null"
+assert process_read("no-such-handle") == null "process_read: unknown handle -> null"
+
+// ── Invalid spec: programmer errors, thrown ───────────────────────────────────
+
+try {
+  process_run({ args: ["no-command-field"] })
+  assert false "process_run should reject a spec missing 'command'"
+} catch e {
+  assert true "process_run rejects a spec missing 'command'"
+}
+
+try {
+  process_run({ command: "echo", args: [1, 2, 3] })
+  assert false "process_run should reject non-string elements in 'args'"
+} catch e {
+  assert true "process_run rejects non-string elements in 'args'"
+}
+
+try {
+  process_run({ command: "echo", timeout: -1 })
+  assert false "process_run should reject a negative timeout"
+} catch e {
+  assert true "process_run rejects a negative timeout"
+}
+
+// ── Concurrent processes don't interfere with each other ─────────────────────
+
+names = ["proc-a", "proc-b", "proc-c"]
+concurrent_handles = []
+i = 0
+while i < len(names) {
+  concurrent_handles = push(concurrent_handles, process_spawn({ command: "echo", args: [names[i]] }))
+  i += 1
+}
+i = 0
+while i < len(names) {
+  cr = process_wait(concurrent_handles[i])
+  assert cr.ok == true "concurrent process {i} succeeded"
+  assert contains(cr.stdout, names[i]) == true "concurrent process {i} produced its own output"
+  i += 1
+}
+
+print("test_process: all assertions passed")

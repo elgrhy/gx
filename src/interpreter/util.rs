@@ -242,6 +242,54 @@ pub(super) fn cron_matches(expr: &str, unix_secs: u64) -> bool {
         && cron_field_matches(fields[4], dow, 0, 6)
 }
 
+/// Extract a string argument at position `i`. Used by builtins with no
+/// meaningful maximum length, or that validate size separately (e.g. against
+/// a length computed from several combined fields). Prefer
+/// [`arg_str_checked`] whenever a per-argument maximum is known: it checks
+/// length on the borrow *before* cloning, so attacker-controlled data that's
+/// going to be rejected for being oversized is never fully copied first.
+pub(super) fn arg_str(args: &[Value], i: usize, who: &str) -> Result<String, Signal> {
+    args.get(i)
+        .and_then(|v| v.as_str().map(String::from))
+        .ok_or_else(|| {
+            Signal::Error(format!(
+                "{} requires a string argument at position {}",
+                who,
+                i + 1
+            ))
+        })
+}
+
+/// Like [`arg_str`], but rejects a value longer than `max_len` bytes before
+/// ever cloning it — the length check runs on the borrowed `&str` handed
+/// back by `Value::as_str()`, which is O(1) (a `String`/`&str`'s byte length
+/// is already known, not computed by scanning), so an oversized argument
+/// costs nothing beyond that check to reject.
+pub(super) fn arg_str_checked(
+    args: &[Value],
+    i: usize,
+    who: &str,
+    max_len: usize,
+) -> Result<String, Signal> {
+    let raw = args.get(i).and_then(|v| v.as_str()).ok_or_else(|| {
+        Signal::Error(format!(
+            "{} requires a string argument at position {}",
+            who,
+            i + 1
+        ))
+    })?;
+    if raw.len() > max_len {
+        return Err(Signal::Error(format!(
+            "{} argument at position {} exceeds the maximum allowed length of {} bytes (got {})",
+            who,
+            i + 1,
+            max_len,
+            raw.len()
+        )));
+    }
+    Ok(raw.to_string())
+}
+
 // Suppress the Signal unused-import warning in this module (it's imported for
 // the return type of Signal-free helpers above that return plain types).
 const _: Option<Signal> = None;

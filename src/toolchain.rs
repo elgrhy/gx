@@ -753,6 +753,10 @@ pub fn test(path: Option<&str>) -> Result<(), String> {
 
         let mut interp = Interpreter::new();
         interp.base_path = Some(file.to_string());
+        // `gx test` runs trusted local test files, so exercise the real
+        // capability-gated code path rather than forcing every process-
+        // runtime test to special-case a missing --allow-process flag.
+        interp.allow_process = true;
 
         match interp.run_program(&program) {
             Ok(_) => {

@@ -52,6 +52,59 @@ agent "hello" {
 
 ---
 
+## What's New (Unreleased)
+
+### Native Process Runtime — the recommended replacement for `shell()`
+
+`process_run`/`process_spawn` (+ `process_wait`/`process_kill`/`process_exists`/
+`process_status`/`process_read`) run external programs via a real argument
+array — `Command::new(command).args(args)` — never through a shell. No
+quoting dialect, no shell-injection surface, consistent behavior across
+Linux/macOS/Windows. Every spawned process is owned by the runtime for its
+full lifetime: reaped the instant it exits (no zombies), killed automatically
+if the program exits first (no orphans), with an optional `timeout` and true
+concurrent execution.
+
+```gx
+result = process_run({ command: "git", args: ["status", "--short"], cwd: repo_dir })
+if result.ok { say result.stdout } else { say "failed: {result.error_kind}" }
+```
+
+Gated by its own `--allow-process` flag, independent of `--allow-shell` — an
+app can allow structured process execution while fully disabling shell
+string execution. `gx.json`'s `dependencies.process: [...]` restricts which
+executables may run, the same allowlist already used for JS/Python bridge
+modules. `shell()` remains fully supported for cases that genuinely need
+shell syntax (pipes, redirects, globs) — see
+[Process Runtime](docs/language_reference.md#process-runtime-recommended)
+for the full migration guide.
+
+As part of this work, the JS and TypeScript bridges (`use js.X`/`use ts.X`)
+were fixed: both now run through a persistent, JSON-IPC process the same way
+the Python bridge already did, instead of a fragile per-call invocation that
+— in both cases — would hang forever the moment it was actually exercised.
+No GX-facing API changed.
+
+Output is never silently lost, either: every result carries `truncated`/
+`stdout_bytes`/`stderr_bytes` so a process that produces more than the 32 MiB
+retention cap is detectable, not silently incomplete. And `process_status`
+now reports `cwd`, `exit_reason`, and `stdin_bytes` alongside `pid`/timing —
+enough to log a process's full lifecycle without exposing `env`/`stdin`
+content.
+
+### Crypto primitives
+
+`hmac_sha256`/`hmac_sha512`, `secure_compare` (constant-time), `secure_random`,
+`ed25519_generate_keypair`/`ed25519_sign`/`ed25519_verify`, and HS256-only
+`jwt_sign`/`jwt_verify` — all cryptographic math delegated to audited crates
+(`hmac`, `ed25519-dalek`, `jsonwebtoken`, `subtle`, `getrandom`), with
+production input-size limits and a 32-byte minimum JWT secret. See the
+Crypto section in [docs/language_reference.md](docs/language_reference.md)
+for HMAC/JWT/Ed25519 webhook-verification examples (Slack, Discord, generic
+HMAC).
+
+---
+
 ## What's New in v0.5.1
 
 Production-readiness patch based on real-world feedback from the GClaw agentic system.

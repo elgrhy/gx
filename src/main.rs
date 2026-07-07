@@ -34,6 +34,7 @@ fn main() {
             let file = require_arg(&args, 2, "gx run <file.gx>");
             let debug = args.contains(&"--debug".to_string());
             let allow_shell = args.contains(&"--allow-shell".to_string());
+            let allow_process = args.contains(&"--allow-process".to_string());
             let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = args.contains(&"--no-sandbox".to_string());
             let no_limit = args.contains(&"--no-limit".to_string());
@@ -41,6 +42,7 @@ fn main() {
                 file,
                 debug,
                 allow_shell,
+                allow_process,
                 allow_internal_http,
                 no_sandbox,
                 no_limit,
@@ -87,10 +89,18 @@ fn main() {
         "-e" | "eval" => {
             let src = require_arg(&args, 2, "gx -e '<source>'");
             let allow_shell = args.contains(&"--allow-shell".to_string());
+            let allow_process = args.contains(&"--allow-process".to_string());
             let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = args.contains(&"--no-sandbox".to_string());
             let no_limit = args.contains(&"--no-limit".to_string());
-            cmd_eval(src, allow_shell, allow_internal_http, no_sandbox, no_limit)
+            cmd_eval(
+                src,
+                allow_shell,
+                allow_process,
+                allow_internal_http,
+                no_sandbox,
+                no_limit,
+            )
         }
         "repl" => cmd_repl(),
         "version" | "--version" | "-v" => {
@@ -105,6 +115,7 @@ fn main() {
         file if file.ends_with(".gx") => {
             let debug = args.contains(&"--debug".to_string());
             let allow_shell = args.contains(&"--allow-shell".to_string());
+            let allow_process = args.contains(&"--allow-process".to_string());
             let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = args.contains(&"--no-sandbox".to_string());
             let no_limit = args.contains(&"--no-limit".to_string());
@@ -112,6 +123,7 @@ fn main() {
                 file,
                 debug,
                 allow_shell,
+                allow_process,
                 allow_internal_http,
                 no_sandbox,
                 no_limit,
@@ -149,6 +161,7 @@ fn cmd_run(
     path: &str,
     debug: bool,
     allow_shell: bool,
+    allow_process: bool,
     allow_internal_http: bool,
     no_sandbox: bool,
     no_limit: bool,
@@ -187,6 +200,7 @@ fn cmd_run(
     let mut interp = Interpreter::new();
     interp.base_path = Some(path.to_string());
     interp.allow_shell = allow_shell;
+    interp.allow_process = allow_process;
     interp.allow_internal_http = allow_internal_http;
     interp.no_loop_limit = no_limit;
 
@@ -225,8 +239,14 @@ fn cmd_run(
                             .filter_map(|v| v.as_str().map(String::from))
                             .collect::<Vec<_>>()
                     });
+                    let process_commands = json["dependencies"]["process"].as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    });
                     interp.allowed_js_modules = js_modules;
                     interp.allowed_py_modules = py_modules;
+                    interp.allowed_process_commands = process_commands;
                 }
             }
         }
@@ -240,6 +260,7 @@ fn cmd_run(
 fn cmd_eval(
     src: &str,
     allow_shell: bool,
+    allow_process: bool,
     allow_internal_http: bool,
     no_sandbox: bool,
     no_limit: bool,
@@ -248,6 +269,7 @@ fn cmd_eval(
 
     let mut interp = Interpreter::new();
     interp.allow_shell = allow_shell;
+    interp.allow_process = allow_process;
     interp.allow_internal_http = allow_internal_http;
     interp.no_loop_limit = no_limit;
 
@@ -371,6 +393,7 @@ fn print_help() {
     println!("USAGE:");
     println!("  gx run <file.gx> [--debug]                     Run a GX program");
     println!("  gx run <file.gx> --allow-shell                 Enable shell()/exec() builtins");
+    println!("  gx run <file.gx> --allow-process               Enable process_run/process_spawn (recommended over shell())");
     println!(
         "  gx run <file.gx> --allow-internal-http         Allow HTTP to private/localhost IPs"
     );
@@ -415,7 +438,11 @@ fn print_help() {
     println!("  Util:    base64_encode, base64_decode, html_escape, url_encode");
     println!("  Stdlib:  truncate, token_count, tokens_used, write (no trailing newline)");
     println!("           dirname, basename, path_join, glob, group_by, url_parse");
-    println!("  Crypto:  sha256, uuid    (use std.fs|crypto|collections|net optional)");
+    println!("  Crypto:  sha256, uuid, hmac_sha256, hmac_sha512, secure_compare,");
+    println!("           secure_random, ed25519_generate_keypair, ed25519_sign,");
+    println!("           ed25519_verify, jwt_sign, jwt_verify");
+    println!("  Process: process_run, process_spawn, process_wait, process_kill,");
+    println!("           process_exists, process_status, process_read (--allow-process)");
     println!();
     println!("LANGUAGE:");
     println!("  agent \"name\" {{ ... }}        Define an AI agent");

@@ -3,11 +3,14 @@
 mod bridge_impl;
 mod builtins_ast;
 mod builtins_base64;
+mod builtins_crypto;
 mod builtins_data;
 mod builtins_datetime;
 mod builtins_db;
 mod builtins_http;
 mod builtins_json;
+#[cfg(not(target_arch = "wasm32"))]
+mod builtins_process;
 mod builtins_regex;
 mod builtins_vector;
 mod util;
@@ -20,10 +23,16 @@ use std::collections::HashMap;
 
 // Re-export public JSON helpers so other crates can use them.
 pub use builtins_json::{gx_value_to_json, json_to_gx_value};
+// Re-exported so bridge.rs can classify its own subprocess-spawn errors
+// (executable not found vs. permission denied) the same way the native
+// process runtime does.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use builtins_process::{classify_spawn_error, SpawnErrorKind};
 
 // Bring extracted free functions into scope for use inside eval_call_expr.
 use builtins_ast::gx_ast_to_value;
 use builtins_base64::{base64_decode, base64_encode};
+use builtins_crypto::{crypto_builtin, hex_encode};
 use builtins_data::{
     csv_parse_impl, csv_stringify_impl, toml_parse_impl, toml_stringify_impl, yaml_parse_impl,
     yaml_stringify_impl,
@@ -105,8 +114,8 @@ pub struct Interpreter {
     imports: Vec<ImportDecl>,
     pub events: Vec<(String, Vec<(String, Value)>)>,
     event_bus: HashMap<String, Vec<Value>>,
-    #[allow(dead_code)]
     js_bridge: Option<Bridge>,
+    ts_bridge: Option<Bridge>,
     py_bridge: Option<Bridge>,
     pub base_path: Option<String>,
     pub assert_count: usize,
@@ -122,10 +131,17 @@ pub struct Interpreter {
     // Security flags — set explicitly; all default to off (safe)
     pub allow_shell: bool,
     pub allow_internal_http: bool,
+    pub allow_process: bool,
     pub sandbox_dir: Option<std::path::PathBuf>,
     // None = open mode (no gx.json); Some(list) = restrict to list
     pub allowed_js_modules: Option<Vec<String>>,
     pub allowed_py_modules: Option<Vec<String>>,
+    pub allowed_process_commands: Option<Vec<String>>,
+    /// Native processes spawned via `process_spawn`, keyed by an opaque handle
+    /// (UUID) string. Every entry owns its child + background reader/reaper
+    /// threads for its full lifetime — see `builtins_process`.
+    #[cfg(not(target_arch = "wasm32"))]
+    processes: HashMap<String, std::sync::Arc<builtins_process::ProcessState>>,
     /// Module registry: alias → list of functions from that module.
     /// Used so that intra-module calls (e.g. `pad_right` calling `repeat_str`)
     /// resolve correctly when the module is loaded under a namespace.
@@ -156,6 +172,17 @@ impl Default for Interpreter {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Interpreter {
+    /// Guarantees no process spawned via `process_spawn` outlives the
+    /// interpreter that started it — killed, reaped, no leaked handles.
+    /// (`exit()` bypasses `Drop` by calling `std::process::exit` directly,
+    /// so it also calls `cleanup_processes()` explicitly before exiting.)
+    fn drop(&mut self) {
+        self.cleanup_processes();
+    }
+}
+
 impl Interpreter {
     pub fn new() -> Self {
         Interpreter {
@@ -165,6 +192,7 @@ impl Interpreter {
             events: Vec::new(),
             event_bus: HashMap::new(),
             js_bridge: None,
+            ts_bridge: None,
             py_bridge: None,
             base_path: None,
             assert_count: 0,
@@ -175,9 +203,13 @@ impl Interpreter {
             current_agent: None,
             allow_shell: false,
             allow_internal_http: false,
+            allow_process: false,
             sandbox_dir: None,
             allowed_js_modules: None,
             allowed_py_modules: None,
+            allowed_process_commands: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            processes: HashMap::new(),
             module_functions: HashMap::new(),
             binary_bridges: HashMap::new(),
             trace_enabled: false,
@@ -3771,15 +3803,21 @@ impl Interpreter {
                 let s = args.first().map(|v| v.to_string()).unwrap_or_default();
                 let mut hasher = Sha256::new();
                 hasher.update(s.as_bytes());
-                let hex: String = hasher
-                    .finalize()
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
-                Ok(Value::Str(hex))
+                Ok(Value::Str(hex_encode(&hasher.finalize())))
             }
             #[cfg(not(target_arch = "wasm32"))]
             "uuid" | "uuid_v4" => Ok(Value::Str(uuid::Uuid::new_v4().to_string())),
+
+            // ── Crypto: HMAC / secure compare / secure random / Ed25519 / JWT ──
+            "hmac_sha256"
+            | "hmac_sha512"
+            | "secure_compare"
+            | "secure_random"
+            | "ed25519_generate_keypair"
+            | "ed25519_sign"
+            | "ed25519_verify"
+            | "jwt_sign"
+            | "jwt_verify" => crypto_builtin(name, &args),
 
             // ── stdlib: fs glob (sandbox-aware) ───────────────────────────────
             #[cfg(not(target_arch = "wasm32"))]
@@ -3941,6 +3979,23 @@ impl Interpreter {
                 map.insert("ok".into(), Value::Bool(output.status.success()));
                 Ok(Value::Object(map))
             }
+
+            // ── Native process runtime ──────────────────────────────────────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "process_run" => self.process_run(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "process_spawn" => self.process_spawn(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "process_wait" => self.process_wait(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "process_kill" => self.process_kill(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "process_exists" => self.process_exists(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "process_status" => self.process_status(&args),
+            #[cfg(not(target_arch = "wasm32"))]
+            "process_read" => self.process_read(&args),
+
             "input" => {
                 use std::io::{self, Write};
                 let prompt = args
@@ -3960,6 +4015,11 @@ impl Interpreter {
                 ))
             }
             "exit" => {
+                // std::process::exit does not run destructors, so any
+                // still-running process_spawn children must be reaped here
+                // explicitly rather than relying on Interpreter's Drop impl.
+                #[cfg(not(target_arch = "wasm32"))]
+                self.cleanup_processes();
                 let code = args.first().and_then(|v| v.as_number()).unwrap_or(0.0) as i32;
                 std::process::exit(code);
             }
@@ -4703,6 +4763,22 @@ const KNOWN_BUILTINS: &[&str] = &[
     "sha256",
     "uuid",
     "glob",
+    "hmac_sha256",
+    "hmac_sha512",
+    "secure_compare",
+    "secure_random",
+    "ed25519_generate_keypair",
+    "ed25519_sign",
+    "ed25519_verify",
+    "jwt_sign",
+    "jwt_verify",
+    "process_run",
+    "process_spawn",
+    "process_wait",
+    "process_kill",
+    "process_exists",
+    "process_status",
+    "process_read",
     "readline",
     "read_all",
     "is_tty",

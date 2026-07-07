@@ -8,60 +8,6 @@ use std::collections::HashMap;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Interpreter {
-    pub fn call_js(&mut self, module: &str, method: &str, args: &[Value]) -> Result<Value, Signal> {
-        use crate::bridge::{json_to_value, value_to_json};
-        use std::process::Command;
-
-        let json_args = serde_json::to_string(&args.iter().map(value_to_json).collect::<Vec<_>>())
-            .unwrap_or_else(|_| "[]".into());
-
-        let script = format!(
-            r#"try {{
-  const mod = require('{}');
-  const parts = '{}' .split('.');
-  let fn_ref = mod;
-  for (const p of parts) {{ fn_ref = fn_ref[p]; }}
-  const args = {};
-  const result = typeof fn_ref === 'function' ? fn_ref(...args) : fn_ref;
-  if (result && typeof result.then === 'function') {{
-    result.then(r => console.log(JSON.stringify({{ok:true,result:r && r.data !== undefined ? r.data : r}})))
-          .catch(e => console.log(JSON.stringify({{ok:false,error:String(e)}})));
-  }} else {{
-    console.log(JSON.stringify({{ok:true,result:result}}));
-  }}
-}} catch(e) {{ console.log(JSON.stringify({{ok:false,error:String(e)}})); }}"#,
-            module, method, json_args
-        );
-
-        let output = Command::new("node")
-            .arg("-e")
-            .arg(&script)
-            .output()
-            .map_err(|e| Signal::Error(format!("Failed to run node: {}", e)))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().last().unwrap_or("").trim();
-
-        if last_line.is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Signal::Error(format!("JS error: {}", stderr.trim())));
-        }
-
-        match serde_json::from_str::<serde_json::Value>(last_line) {
-            Ok(json) => {
-                if json["ok"].as_bool() == Some(true) {
-                    Ok(json_to_value(&json["result"]))
-                } else {
-                    Err(Signal::Error(format!(
-                        "JS error: {}",
-                        json["error"].as_str().unwrap_or("unknown")
-                    )))
-                }
-            }
-            Err(_) => Ok(Value::Str(last_line.to_string())),
-        }
-    }
-
     pub fn bridge_call(
         &mut self,
         namespace: &str,
@@ -96,17 +42,37 @@ impl Interpreter {
             _ => {}
         }
         match namespace {
-            "js" => self.call_js(module, method, args),
-            "ts" => {
-                // TypeScript bridge — lazy-init, shared with JS bridge slot
+            "js" => {
+                // Persistent Node process speaking the JSON-IPC protocol
+                // (see bridge.rs) — module/method/args are passed as JSON
+                // values, never spliced into a script string, and the
+                // process is reused across calls instead of paying Node's
+                // ~50-100ms startup cost on every single call.
                 if self.js_bridge.is_none() {
-                    match Bridge::new_typescript() {
+                    match Bridge::new_js() {
                         Ok(b) => self.js_bridge = Some(b),
                         Err(e) => return Err(Signal::Error(e)),
                     }
                 }
                 let bridge = self
                     .js_bridge
+                    .as_mut()
+                    .ok_or_else(|| Signal::Error("JS bridge unavailable".into()))?;
+                bridge.call(module, method, args).map_err(Signal::Error)
+            }
+            "ts" => {
+                // TypeScript bridge — its own slot, independent of the plain
+                // JS bridge above, since a program may use both namespaces
+                // at once and they run through different runners (tsx/
+                // ts-node vs plain node).
+                if self.ts_bridge.is_none() {
+                    match Bridge::new_typescript() {
+                        Ok(b) => self.ts_bridge = Some(b),
+                        Err(e) => return Err(Signal::Error(e)),
+                    }
+                }
+                let bridge = self
+                    .ts_bridge
                     .as_mut()
                     .ok_or_else(|| Signal::Error("TypeScript bridge unavailable".into()))?;
                 bridge.call(module, method, args).map_err(Signal::Error)

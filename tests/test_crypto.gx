@@ -1,0 +1,194 @@
+// Crypto builtins: HMAC, secure_compare, secure_random, Ed25519, JWT
+// (run: gx run tests/test_crypto.gx)
+
+// ── HMAC-SHA256 / HMAC-SHA512 ─────────────────────────────────────────────────
+
+// Well-known test vector: HMAC-SHA256("key", "The quick brown fox jumps over the lazy dog")
+mac256 = hmac_sha256("key", "The quick brown fox jumps over the lazy dog")
+assert mac256 == "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8" "hmac_sha256 known test vector"
+assert len(hmac_sha256("key", "message")) == 64 "hmac_sha256 hex length"
+assert len(hmac_sha512("key", "message")) == 128 "hmac_sha512 hex length"
+
+assert hmac_sha256("k1", "msg") == hmac_sha256("k1", "msg") "hmac_sha256 is deterministic"
+assert hmac_sha256("k1", "msg") != hmac_sha256("k2", "msg") "hmac_sha256 is key-sensitive"
+assert hmac_sha256("key", "msg1") != hmac_sha256("key", "msg2") "hmac_sha256 is message-sensitive"
+
+// Practical use: verifying a webhook signature (Slack/GitHub/Stripe-style:
+// HMAC-SHA256 of the raw body, compared against an incoming hex header).
+signing_secret = "whsec_test_secret"
+body = "payload=hello"
+expected_sig = hmac_sha256(signing_secret, body)
+incoming_sig = hmac_sha256(signing_secret, body) // what an honest sender would compute
+assert secure_compare(expected_sig, incoming_sig) == true "webhook signature verification: matching sig accepted"
+tampered_sig = hmac_sha256(signing_secret, "payload=tampered")
+assert secure_compare(expected_sig, tampered_sig) == false "webhook signature verification: tampered body rejected"
+
+// ── secure_compare ────────────────────────────────────────────────────────────
+
+assert secure_compare("abc", "abc") == true "secure_compare: equal strings"
+assert secure_compare("abc", "abd") == false "secure_compare: unequal strings"
+assert secure_compare("abc", "abcd") == false "secure_compare: different lengths never panics"
+assert secure_compare("", "") == true "secure_compare: two empty strings"
+
+// ── secure_random ─────────────────────────────────────────────────────────────
+
+r16 = secure_random(16)
+assert len(r16) == 32 "secure_random(16) -> 32 hex chars"
+assert r16 != secure_random(16) "secure_random produces different output each call"
+assert len(secure_random(0)) == 0 "secure_random(0) -> empty string"
+
+try {
+  secure_random(-1)
+  assert false "secure_random(-1) should have been rejected"
+} catch e {
+  assert true "secure_random rejects negative length"
+}
+
+// ── Ed25519: keygen / sign / verify ───────────────────────────────────────────
+
+kp = ed25519_generate_keypair()
+assert len(kp.public_key) == 64 "ed25519 public_key is 32 bytes (64 hex chars)"
+assert len(kp.private_key) == 64 "ed25519 private_key is 32 bytes (64 hex chars)"
+assert kp.public_key != kp.private_key "ed25519 keypair: public and private keys differ"
+
+message = "attack at dawn"
+signature = ed25519_sign(kp.private_key, message)
+assert len(signature) == 128 "ed25519 signature is 64 bytes (128 hex chars)"
+assert ed25519_verify(kp.public_key, message, signature) == true "ed25519_verify: valid signature accepted"
+
+// Invalid signature: tampered message
+assert ed25519_verify(kp.public_key, "attack at dusk", signature) == false "ed25519_verify: tampered message rejected"
+
+// Invalid signature: wrong keypair
+kp2 = ed25519_generate_keypair()
+assert ed25519_verify(kp2.public_key, message, signature) == false "ed25519_verify: wrong public key rejected"
+
+// Malformed inputs must return false, never throw or crash
+assert ed25519_verify("not-hex-at-all", message, signature) == false "ed25519_verify: malformed public key -> false"
+assert ed25519_verify(kp.public_key, message, "not-hex-at-all") == false "ed25519_verify: malformed signature -> false"
+assert ed25519_verify("aabb", message, signature) == false "ed25519_verify: too-short public key -> false"
+assert ed25519_verify(kp.public_key, message, "aabb") == false "ed25519_verify: too-short signature -> false"
+assert ed25519_verify("", "", "") == false "ed25519_verify: empty inputs -> false"
+
+// Malformed key on the signing path IS a programmer error -> should raise
+try {
+  ed25519_sign("not-hex-at-all", message)
+  assert false "ed25519_sign should have rejected a malformed private key"
+} catch e {
+  assert true "ed25519_sign rejects malformed private key"
+}
+try {
+  ed25519_sign("aabb", message) // too short
+  assert false "ed25519_sign should have rejected a short private key"
+} catch e {
+  assert true "ed25519_sign rejects short private key"
+}
+
+// ── JWT: creation + verification ──────────────────────────────────────────────
+
+// JWT secrets must be at least 32 bytes (HS256 minimum) — pad these out.
+secret = "super-secret-value".repeat(2)
+now = date_timestamp()
+payload = { sub: "user-123", role: "admin", exp: now + 3600, iat: now }
+token = jwt_sign(payload, secret)
+assert len(split(token, ".")) == 3 "jwt_sign produces a 3-part dot-separated token"
+
+verified = jwt_verify(token, secret)
+assert verified.valid == true "jwt_verify: valid token accepted"
+assert verified.reason == null "jwt_verify: valid token has no reason"
+assert verified.payload.sub == "user-123" "jwt_verify: payload round-trips 'sub'"
+assert verified.payload.role == "admin" "jwt_verify: payload round-trips 'role'"
+assert verified.header.alg == "HS256" "jwt_verify: header reports alg HS256"
+
+// Wrong secret (still >= 32 bytes, so this tests a *wrong* secret, not a *short* one)
+wrong = jwt_verify(token, "not-the-secret".repeat(3))
+assert wrong.valid == false "jwt_verify: wrong secret rejected"
+
+// Expired token
+expired_payload = { sub: "user-1", exp: now - 3600 }
+expired_token = jwt_sign(expired_payload, secret)
+expired = jwt_verify(expired_token, secret)
+assert expired.valid == false "jwt_verify: expired token rejected"
+assert contains(expired.reason, "expired") == true "jwt_verify: expired reason mentions expiry"
+
+// Not-yet-valid token (nbf in the future)
+nbf_payload = { sub: "user-1", exp: now + 3600, nbf: now + 1800 }
+nbf_token = jwt_sign(nbf_payload, secret)
+nbf_result = jwt_verify(nbf_token, secret)
+assert nbf_result.valid == false "jwt_verify: nbf-in-the-future token rejected"
+
+// Malformed / garbage tokens never throw — always a structured result
+garbage_cases = ["", "not-a-jwt", "a.b", "a.b.c.d.e", "...", token + "tampered"]
+i = 0
+while i < len(garbage_cases) {
+  bad_result = jwt_verify(garbage_cases[i], secret)
+  assert bad_result.valid == false "jwt_verify: garbage input rejected without throwing"
+  i += 1
+}
+
+// alg:"none" forgery — the classic JWT bypass attack
+none_header = replace(replace(base64_encode("{\"alg\":\"none\",\"typ\":\"JWT\"}"), "+", "-"), "/", "_")
+none_header = replace(none_header, "=", "")
+none_payload = replace(replace(base64_encode("{\"sub\":\"attacker\",\"exp\":9999999999}"), "+", "-"), "/", "_")
+none_payload = replace(none_payload, "=", "")
+none_token = none_header + "." + none_payload + "."
+none_result = jwt_verify(none_token, secret)
+assert none_result.valid == false "jwt_verify: alg:none forgery rejected"
+
+// Unsupported algorithm (RS256) — checked before signature verification even runs
+alg_header = replace(replace(base64_encode("{\"alg\":\"RS256\",\"typ\":\"JWT\"}"), "+", "-"), "/", "_")
+alg_header = replace(alg_header, "=", "")
+alg_token = alg_header + "." + none_payload + ".fakesignature"
+alg_result = jwt_verify(alg_token, secret)
+assert alg_result.valid == false "jwt_verify: RS256 token rejected"
+assert contains(alg_result.reason, "HS256") == true "jwt_verify: rejection reason names HS256 as the only supported alg"
+
+// jwt_sign requires an object payload
+try {
+  jwt_sign("not an object", secret)
+  assert false "jwt_sign should reject a non-object payload"
+} catch e {
+  assert true "jwt_sign rejects non-object payload"
+}
+
+// ── Input-size limits (production DoS guards) ─────────────────────────────────
+
+// Oversized HMAC message -> generation function, raises an error
+huge_message = "x".repeat(10485761) // 10 MiB + 1 byte
+try {
+  hmac_sha256("key", huge_message)
+  assert false "hmac_sha256 should reject an oversized message"
+} catch e {
+  assert true "hmac_sha256 rejects oversized message"
+}
+
+// Oversized Ed25519 signature -> verification function, returns false (never throws)
+huge_signature = "ab".repeat(300) // 600 hex chars, well over the 128 a real signature needs
+assert ed25519_verify(kp.public_key, message, huge_signature) == false "ed25519_verify: oversized signature -> false, not an error"
+
+// Oversized Ed25519 message -> verification function, returns false (never throws)
+huge_ed_message = "x".repeat(10485761)
+assert ed25519_verify(kp.public_key, huge_ed_message, signature) == false "ed25519_verify: oversized message -> false, not an error"
+
+// Oversized JWT token -> structured invalid result, never throws
+huge_token = "x".repeat(8193) // 1 byte over the 8 KiB token cap
+huge_result = jwt_verify(huge_token, secret)
+assert huge_result.valid == false "jwt_verify: oversized token rejected"
+assert huge_result.payload == null "jwt_verify: oversized token has null payload"
+assert huge_result.header == null "jwt_verify: oversized token has null header"
+assert huge_result.reason == "input_too_large" "jwt_verify: oversized token reason is 'input_too_large'"
+
+// Short JWT secret -> jwt_sign raises (generation function)
+try {
+  jwt_sign({ sub: "user-1" }, "too-short")
+  assert false "jwt_sign should reject a secret shorter than 32 bytes"
+} catch e {
+  assert true "jwt_sign rejects a secret shorter than 32 bytes"
+}
+
+// Short JWT secret on verify -> structured invalid result, never throws
+short_secret_result = jwt_verify(token, "short")
+assert short_secret_result.valid == false "jwt_verify: short secret rejected"
+assert contains(short_secret_result.reason, "32 bytes") == true "jwt_verify: short-secret reason mentions the 32-byte minimum"
+
+print("test_crypto: all assertions passed")

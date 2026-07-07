@@ -182,6 +182,9 @@ pub struct Bridge {
     _child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// Present only for the TypeScript bridge (see `new_typescript`) — a
+    /// temp file holding the shim source, cleaned up on `Drop`.
+    shim_path: Option<std::path::PathBuf>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -196,40 +199,63 @@ pub enum BridgeKind {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Bridge {
+    /// Take stdin/stdout from a just-spawned child and assemble the
+    /// `Bridge` — the one piece of bookkeeping every constructor below
+    /// needs, regardless of what was spawned or how.
+    fn finish(
+        mut child: Child,
+        kind: BridgeKind,
+        shim_path: Option<std::path::PathBuf>,
+        process_label: &str,
+    ) -> Result<Self, String> {
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("Failed to get {} stdin pipe", process_label))?;
+        let stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| format!("Failed to get {} stdout pipe", process_label))?,
+        );
+        Ok(Bridge {
+            kind,
+            _child: child,
+            stdin,
+            stdout,
+            shim_path,
+        })
+    }
+
     pub fn new_js() -> Result<Self, String> {
         // Check node is available
         if !command_exists("node") {
             return Err("Node.js not found. Install from https://nodejs.org".into());
         }
-        let mut child = Command::new("node")
-            .arg("--input-type=module")
+        // The shim is passed via `-e` (a command-line argument, exactly like
+        // the Python bridge's `-c JS_SHIM` below) — NOT written to stdin.
+        // JS_SHIM is CommonJS (`require('readline')`), so it must run in
+        // Node's default CommonJS mode, not `--input-type=module` (which
+        // rejects `require`). Just as important: passing it via `-e` leaves
+        // stdin completely free for the shim's own `readline` interface to
+        // consume the ongoing stream of JSON-IPC request lines — writing the
+        // shim to stdin instead (the previous, never-exercised approach)
+        // meant Node was simultaneously trying to read its own script AND
+        // the shim's request protocol from the same pipe, and in
+        // `--input-type=module` mode never even started executing since ES
+        // modules aren't evaluated until stdin reaches EOF, which the bridge
+        // deliberately never sends (the pipe stays open for the process's
+        // whole lifetime) — the process would simply hang forever.
+        let child = Command::new("node")
+            .arg("-e")
+            .arg(JS_SHIM)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to start Node.js: {}", e))?;
 
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or("Failed to get Node.js stdin pipe")?;
-        let stdout = BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or("Failed to get Node.js stdout pipe")?,
-        );
-
-        // Send the shim code
-        // Use CommonJS shim (avoid --input-type=module issues)
-        writeln!(stdin, "{}", JS_SHIM).map_err(|e| format!("Shim write failed: {}", e))?;
-
-        Ok(Bridge {
-            kind: BridgeKind::Js,
-            _child: child,
-            stdin,
-            stdout,
-        })
+        Self::finish(child, BridgeKind::Js, None, "Node.js")
     }
 
     /// TypeScript bridge — tries `tsx` first (fast, zero-config), then `ts-node`.
@@ -247,39 +273,43 @@ impl Bridge {
                 .into());
         };
 
-        // Inject the same JS shim — it works with both CJS and ESM runners.
-        let mut child = Command::new(runner)
-            .args(if runner == "node" {
-                &["--input-type=module"][..]
-            } else {
-                &[][..]
-            })
+        // The shim is written to a temp file and passed as a plain file
+        // argument — not stdin, and not a per-tool `-e`/`--eval` flag.
+        // `node -e` is what the JS bridge above uses and has verified
+        // works, but `tsx`/`ts-node`'s exact inline-eval flag support isn't
+        // something to rely on uniformly across all three possible
+        // runners. Running a file path is the one invocation every
+        // JS/TS runner supports identically, and — just as important —
+        // it leaves stdin completely free for the shim's own
+        // request/response protocol from the very first byte, avoiding the
+        // exact hang class documented on `new_js` above (this bridge
+        // previously wrote the shim to stdin *and* passed
+        // `--input-type=module`, which would have hung forever the moment
+        // the plain-`node` fallback path actually ran, for the same reason
+        // `new_js` did before it was fixed).
+        let shim_path = write_shim_to_temp_file("ts", JS_SHIM)?;
+        let child = Command::new(runner)
+            .arg(&shim_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("Failed to start TypeScript runner ({}): {}", runner, e))?;
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&shim_path);
+                format!("Failed to start TypeScript runner ({}): {}", runner, e)
+            })?;
 
-        let mut stdin = child.stdin.take().ok_or("Failed to get TS runner stdin")?;
-        let stdout = BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or("Failed to get TS runner stdout")?,
-        );
-        writeln!(stdin, "{}", JS_SHIM).map_err(|e| format!("Shim write failed: {}", e))?;
-
-        Ok(Bridge {
-            kind: BridgeKind::TypeScript,
-            _child: child,
-            stdin,
-            stdout,
-        })
+        Self::finish(
+            child,
+            BridgeKind::TypeScript,
+            Some(shim_path),
+            "TypeScript runner",
+        )
     }
 
     pub fn new_python() -> Result<Self, String> {
         let python = find_python().ok_or("Python 3 not found. Install from https://python.org")?;
-        let mut child = Command::new(&python)
+        let child = Command::new(&python)
             .arg("-c")
             .arg(PY_SHIM)
             .stdin(Stdio::piped())
@@ -288,23 +318,7 @@ impl Bridge {
             .spawn()
             .map_err(|e| format!("Failed to start Python: {}", e))?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("Failed to get Python stdin pipe")?;
-        let stdout = BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or("Failed to get Python stdout pipe")?,
-        );
-
-        Ok(Bridge {
-            kind: BridgeKind::Python,
-            _child: child,
-            stdin,
-            stdout,
-        })
+        Self::finish(child, BridgeKind::Python, None, "Python")
     }
 
     /// Generic binary bridge — calls any executable that reads JSON lines from stdin
@@ -317,22 +331,29 @@ impl Bridge {
                 path
             ));
         }
-        let mut child = Command::new(path)
+        let child = Command::new(path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("Failed to start binary '{}': {}", path, e))?;
+            .map_err(|e| {
+                // Same classification the native process runtime uses
+                // (`builtins_process::classify_spawn_error`) — the exists()
+                // check above catches a missing file, but not "exists but
+                // isn't executable", which shows up here as a permission
+                // error and deserves a more specific message than the OS's.
+                use crate::interpreter::classify_spawn_error;
+                use crate::interpreter::SpawnErrorKind;
+                match classify_spawn_error(&e) {
+                    SpawnErrorKind::PermissionDenied => format!(
+                        "Binary bridge: '{}' exists but isn't executable ({}). Try: chmod +x {}",
+                        path, e, path
+                    ),
+                    _ => format!("Failed to start binary '{}': {}", path, e),
+                }
+            })?;
 
-        let stdin = child.stdin.take().ok_or("Failed to get binary stdin")?;
-        let stdout = BufReader::new(child.stdout.take().ok_or("Failed to get binary stdout")?);
-
-        Ok(Bridge {
-            kind: BridgeKind::Binary(path.to_string()),
-            _child: child,
-            stdin,
-            stdout,
-        })
+        Self::finish(child, BridgeKind::Binary(path.to_string()), None, "binary")
     }
 
     pub fn call(&mut self, module: &str, method: &str, args: &[Value]) -> Result<Value, String> {
@@ -381,6 +402,9 @@ impl Bridge {
 impl Drop for Bridge {
     fn drop(&mut self) {
         let _ = writeln!(self.stdin, r#"{{"type":"exit"}}"#);
+        if let Some(path) = &self.shim_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -425,6 +449,39 @@ pub fn json_to_value(v: &serde_json::Value) -> Value {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
+/// Monotonic counter making every temp shim filename unique within this
+/// process — see the note on `write_shim_to_temp_file` for why this can't
+/// just be the PID.
+#[cfg(not(target_arch = "wasm32"))]
+static SHIM_FILE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write `source` to a uniquely-named temp file and return its path.
+///
+/// The filename must be unique *per bridge instance*, not just per OS
+/// process: `Interpreter::new_typescript()` is a lazy singleton within one
+/// `Interpreter`, but `parallel {}` runs multiple independent `Interpreter`s
+/// concurrently in the same process (see `eval_parallel_map`), and each one
+/// can create its own TypeScript bridge at the same time. Using only the PID
+/// here previously meant two concurrently-created bridges could collide on
+/// the same filename — one's `Drop` deleting the file out from under the
+/// other's still-starting `node`/`tsx`/`ts-node` process, which then failed
+/// immediately with "Bridge process ended unexpectedly". A per-instance
+/// counter closes that race.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_shim_to_temp_file(label: &str, source: &str) -> Result<std::path::PathBuf, String> {
+    let n = SHIM_FILE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "gx_bridge_shim_{}_{}_{}.js",
+        label,
+        std::process::id(),
+        n
+    ));
+    std::fs::write(&path, source)
+        .map_err(|e| format!("Failed to write bridge shim to {}: {}", path.display(), e))?;
+    Ok(path)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn command_exists(cmd: &str) -> bool {
     Command::new(if cfg!(windows) { "where" } else { "which" })
@@ -442,4 +499,116 @@ fn find_python() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run `f` on a background thread and fail *with its real panic message*
+    /// if it doesn't finish within `timeout` — a hung bridge is exactly the
+    /// regression class this guards against (both `new_js` and
+    /// `new_typescript` have, at different points, actually hung forever;
+    /// see their doc comments). Using `is_finished()` + `join()` rather than
+    /// a channel means an assertion failure inside `f` is reported as that
+    /// failure, not misreported as a timeout.
+    fn with_timeout<F: FnOnce() + Send + 'static>(timeout: std::time::Duration, f: F) {
+        let handle = std::thread::spawn(f);
+        let start = std::time::Instant::now();
+        while !handle.is_finished() {
+            if start.elapsed() > timeout {
+                panic!(
+                    "operation did not complete within {:?} — likely hung",
+                    timeout
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if let Err(e) = handle.join() {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[test]
+    fn js_bridge_call_completes_without_hanging() {
+        if !command_exists("node") {
+            eprintln!("skipping js_bridge_call_completes_without_hanging: node not installed");
+            return;
+        }
+        with_timeout(std::time::Duration::from_secs(10), || {
+            let mut bridge = Bridge::new_js().expect("failed to start JS bridge");
+            let result = bridge
+                .call(
+                    "path",
+                    "join",
+                    &[Value::Str("a".into()), Value::Str("b".into())],
+                )
+                .expect("bridge call failed");
+            assert_eq!(result, Value::Str("a/b".to_string()));
+        });
+    }
+
+    #[test]
+    fn typescript_bridge_call_completes_without_hanging() {
+        // In this environment this exercises the plain-`node` fallback path
+        // (neither tsx nor ts-node installed) — the exact path that used to
+        // hang forever before this milestone's fix.
+        if !command_exists("node") {
+            eprintln!(
+                "skipping typescript_bridge_call_completes_without_hanging: node not installed"
+            );
+            return;
+        }
+        with_timeout(std::time::Duration::from_secs(10), || {
+            let mut bridge = Bridge::new_typescript().expect("failed to start TS bridge");
+            let result = bridge
+                .call("path", "basename", &[Value::Str("/a/b/c.txt".into())])
+                .expect("bridge call failed");
+            assert_eq!(result, Value::Str("c.txt".to_string()));
+        });
+    }
+
+    #[test]
+    fn typescript_bridge_cleans_up_shim_temp_file_on_drop() {
+        if !command_exists("node") {
+            eprintln!(
+                "skipping typescript_bridge_cleans_up_shim_temp_file_on_drop: node not installed"
+            );
+            return;
+        }
+        let shim_path = {
+            let bridge = Bridge::new_typescript().expect("failed to start TS bridge");
+            bridge
+                .shim_path
+                .clone()
+                .expect("expected a shim temp file for the TypeScript bridge")
+        };
+        // `bridge` was dropped at the end of the block above.
+        assert!(
+            !shim_path.exists(),
+            "shim temp file {:?} was not cleaned up on Drop",
+            shim_path
+        );
+    }
+
+    #[test]
+    fn python_bridge_call_completes_without_hanging() {
+        if find_python().is_none() {
+            eprintln!(
+                "skipping python_bridge_call_completes_without_hanging: python not installed"
+            );
+            return;
+        }
+        with_timeout(std::time::Duration::from_secs(10), || {
+            let mut bridge = Bridge::new_python().expect("failed to start Python bridge");
+            let result = bridge
+                .call(
+                    "os.path",
+                    "join",
+                    &[Value::Str("a".into()), Value::Str("b".into())],
+                )
+                .expect("bridge call failed");
+            assert_eq!(result, Value::Str("a/b".to_string()));
+        });
+    }
 }

@@ -1,0 +1,78 @@
+// Native process runtime demo — the recommended replacement for shell()
+// Run with: gx run docs/examples/process_runtime.gx --allow-process
+
+agent "build_agent" {
+  remember {
+    results = []
+  }
+
+  when started {
+    say "Process runtime demo starting..."
+  }
+
+  brain {
+    plan {
+      plan = { action: "demo_process" }
+    }
+
+    execute {
+      if plan.action == "demo_process" {
+
+        // process_run: run to completion, get a structured result — no
+        // shell involved, so `args` never needs escaping.
+        log("--- process_run: git status ---")
+        result = process_run({ command: "git", args: ["status", "--short"] })
+        if result.ok {
+          say "git status: {len(result.stdout)} bytes of output"
+        } else {
+          say "git failed: {result.error_kind}"
+        }
+
+        // Arguments containing spaces or special characters are safe —
+        // they're never re-parsed by a shell.
+        log("--- process_run: argument safety ---")
+        safe = process_run({ command: "echo", args: ["not; rm -rf /", "still just text"] })
+        say "echo treated it as plain text: {safe.stdout}"
+
+        // A command that doesn't exist is a result, not a thrown error.
+        log("--- process_run: missing executable ---")
+        missing = process_run({ command: "definitely-not-installed-xyz" })
+        say "missing command -> ok={missing.ok} error_kind={missing.error_kind}"
+
+        // timeout: a runaway process gets killed automatically.
+        log("--- process_run: timeout ---")
+        capped = process_run({ command: "sleep", args: ["5"], timeout: 1 })
+        say "timed_out={capped.timed_out}"
+
+        // process_spawn + process_wait: background execution with a handle.
+        log("--- process_spawn / process_wait ---")
+        handle = process_spawn({ command: "sleep", args: ["1"] })
+        say "spawned, still running: {process_exists(handle)}"
+
+        // process_status: non-blocking diagnostics snapshot — safe to log,
+        // never includes env/stdin content.
+        status = process_status(handle)
+        say "status: pid={status.pid} exit_reason={status.exit_reason}"
+
+        finished = process_wait(handle)
+        say "finished: ok={finished.ok}"
+
+        // truncated / stdout_bytes / stderr_bytes: never silently lose data.
+        log("--- process_run: output truncation is never silent ---")
+        big = process_run({ command: "sh", args: ["-c", "echo hello world"] })
+        say "truncated={big.truncated} stdout_bytes={big.stdout_bytes}"
+
+        log("--- Process runtime demo complete ---")
+        say "All process_run/process_spawn calls completed."
+      }
+    }
+
+    remember {
+      memory.last_run = get_timestamp()
+    }
+
+    communicate {
+      emit "process_demo_done" { results: memory.results }
+    }
+  }
+}
