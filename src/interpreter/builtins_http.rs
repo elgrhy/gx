@@ -336,29 +336,31 @@ pub(super) fn http_upload_builtin(args: &[Value]) -> Result<Value, Signal> {
 
 /// Reject URLs that target private / loopback / link-local ranges to prevent SSRF.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn check_url_safe(url: &str, allow_internal: bool) -> Result<(), Signal> {
-    if allow_internal {
-        return Ok(());
-    }
-    if url.starts_with("file://") {
-        return Err(Signal::Error(
-            "HTTP functions do not allow file:// URLs.".into(),
-        ));
-    }
+/// Extract the bare host (no scheme, no port, no brackets around IPv6) from
+/// a URL — pure string classification, no capability decision.
+fn extract_host(url: &str) -> String {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
     let host_port = rest.split('/').next().unwrap_or(rest);
-    let host = if host_port.starts_with('[') {
+    if host_port.starts_with('[') {
         host_port
             .split(']')
             .next()
             .unwrap_or(host_port)
             .trim_start_matches('[')
+            .to_string()
     } else {
-        host_port.split(':').next().unwrap_or(host_port)
-    };
+        host_port.split(':').next().unwrap_or(host_port).to_string()
+    }
+}
+
+/// Whether `host` refers to a private/loopback/link-local address — the
+/// classification the capability runtime needs (internal vs. external
+/// network) but shouldn't have to know how to compute itself; that's HTTP's
+/// own domain knowledge.
+fn is_internal_host(host: &str) -> bool {
     let host_lower = host.to_lowercase();
     if host_lower == "localhost"
         || host_lower == "ip6-localhost"
@@ -367,30 +369,57 @@ pub(super) fn check_url_safe(url: &str, allow_internal: bool) -> Result<(), Sign
         || host_lower == "::1"
         || host_lower == "::"
     {
-        return Err(Signal::Error(format!(
-            "SSRF protection: requests to '{}' are blocked. \
-             Use --allow-internal-http to allow internal network access.",
-            host
-        )));
+        return true;
     }
     let octets: Vec<&str> = host.split('.').collect();
     if octets.len() == 4 {
         if let (Ok(a), Ok(b)) = (octets[0].parse::<u8>(), octets[1].parse::<u8>()) {
-            let blocked = a == 127
+            return a == 127
                 || a == 10
                 || a == 0
                 || (a == 172 && (16..=31).contains(&b))
                 || (a == 192 && b == 168)
                 || (a == 169 && b == 254)
                 || (a == 100 && (64..=127).contains(&b));
-            if blocked {
-                return Err(Signal::Error(format!(
-                    "SSRF protection: requests to private/internal address '{}' are blocked. \
-                     Use --allow-internal-http to allow internal network access.",
-                    host
-                )));
-            }
         }
     }
-    Ok(())
+    false
+}
+
+/// Classify the URL (HTTP's own job) and authorize it (the Capability
+/// Runtime's job — see `crate::capability`). This subsystem never decides
+/// on its own whether a request is allowed; it only knows how to tell
+/// internal from external and asks `capabilities` for the answer.
+pub(super) fn check_url_safe(
+    url: &str,
+    capabilities: &crate::capability::Capabilities,
+) -> Result<(), Signal> {
+    use crate::capability::Resource;
+    if url.starts_with("file://") {
+        return Err(Signal::Error(
+            "HTTP functions do not allow file:// URLs.".into(),
+        ));
+    }
+    let host = extract_host(url);
+    let internal = is_internal_host(&host);
+    let resource = if internal {
+        Resource::InternalNetwork
+    } else {
+        Resource::ExternalNetwork
+    };
+    capabilities.authorize(resource, None).map_err(|_| {
+        if internal {
+            Signal::Error(format!(
+                "SSRF protection: requests to '{}' are blocked. \
+                 Use --allow-internal-http to allow internal network access.",
+                host
+            ))
+        } else {
+            Signal::Error(format!(
+                "External network access to '{}' is restricted by gx.json's \
+                 capabilities.external_network setting.",
+                host
+            ))
+        }
+    })
 }

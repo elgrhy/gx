@@ -686,23 +686,17 @@ fn spawn_error_object(kind: &SpawnErrorKind, message: &str) -> Value {
 
 impl super::Interpreter {
     fn check_process_capability(&self, command: &str) -> Result<(), Signal> {
-        if !self.allow_process {
-            return Err(Signal::Error(
-                "Native process execution is disabled by default. \
-                 Run with --allow-process to enable process_run/process_spawn."
-                    .into(),
-            ));
-        }
-        if let Some(ref allowed) = self.allowed_process_commands {
-            if !allowed.iter().any(|c| c == command) {
-                return Err(Signal::Error(format!(
-                    "'{}' is not listed in gx.json dependencies.process. \
-                     Add it there to allow launching this executable.",
-                    command
-                )));
-            }
-        }
-        Ok(())
+        self.capabilities
+            .authorize(crate::capability::Resource::Process, Some(command))
+            .map_err(|e| {
+                let hint = match &e {
+                    crate::capability::Denial::NotInAllowlist { .. } => {
+                        " — add it to gx.json's dependencies.process to allow it."
+                    }
+                    _ => "",
+                };
+                Signal::Error(format!("{}{}", e, hint))
+            })
     }
 
     /// Resolve `cwd` through the sandbox if one is active; `None` cwd is a no-op.
@@ -988,7 +982,7 @@ mod tests {
 
     fn interp() -> Interpreter {
         let mut i = Interpreter::new();
-        i.allow_process = true;
+        i.capabilities.process = true;
         i
     }
 
@@ -1049,7 +1043,7 @@ mod tests {
 
     #[test]
     fn process_run_rejects_when_capability_not_granted() {
-        let mut i = Interpreter::new(); // allow_process left false
+        let mut i = Interpreter::new(); // capabilities.process left false
         let (cmd, _) = echo_cmd();
         let err = i.process_run(&[obj(&[("command", s(cmd))])]);
         assert!(err.is_err());
@@ -1058,7 +1052,8 @@ mod tests {
     #[test]
     fn process_run_enforces_gx_json_allowlist() {
         let mut i = interp();
-        i.allowed_process_commands = Some(vec!["git".to_string()]);
+        i.capabilities.process_executables =
+            crate::capability::Allowlist::only(["git".to_string()]);
         let (cmd, _) = echo_cmd(); // not "git" -> should be rejected
         let err = i.process_run(&[obj(&[("command", s(cmd))])]);
         assert!(err.is_err());
@@ -1618,7 +1613,8 @@ mod tests {
     #[test]
     fn process_run_sandbox_violation_on_cwd_is_rejected() {
         let mut i = interp();
-        i.sandbox_dir = Some(std::path::PathBuf::from("/tmp"));
+        i.capabilities.filesystem =
+            crate::capability::FilesystemAccess::Sandboxed(std::path::PathBuf::from("/tmp"));
         let err = i.process_run(&[obj(&[
             ("command", s("pwd")),
             ("cwd", s("/etc")), // outside the sandbox
@@ -1630,7 +1626,8 @@ mod tests {
     #[test]
     fn process_run_cwd_inside_sandbox_is_allowed() {
         let mut i = interp();
-        i.sandbox_dir = Some(std::path::PathBuf::from("/tmp"));
+        i.capabilities.filesystem =
+            crate::capability::FilesystemAccess::Sandboxed(std::path::PathBuf::from("/tmp"));
         let result = i
             .process_run(&[obj(&[("command", s("pwd")), ("cwd", s("/tmp"))])])
             .unwrap();

@@ -54,8 +54,8 @@ use builtins_vector::{
     vector_store_search_impl, vector_store_size_impl,
 };
 use util::{
-    cron_matches, helper_is_callable_only, infer_error_kind, normalize_path_no_symlink,
-    parse_gx_source, strip_html_tags, value_to_json,
+    cron_matches, helper_is_callable_only, infer_error_kind, parse_gx_source, strip_html_tags,
+    value_to_json,
 };
 
 // ── Control flow signals ──────────────────────────────────────────────────────
@@ -128,15 +128,13 @@ pub struct Interpreter {
     queued_messages: HashMap<String, Vec<(String, Value)>>,
     // name of the currently-running helper (set by run_helper)
     current_agent: Option<String>,
-    // Security flags — set explicitly; all default to off (safe)
-    pub allow_shell: bool,
-    pub allow_internal_http: bool,
-    pub allow_process: bool,
-    pub sandbox_dir: Option<std::path::PathBuf>,
-    // None = open mode (no gx.json); Some(list) = restrict to list
-    pub allowed_js_modules: Option<Vec<String>>,
-    pub allowed_py_modules: Option<Vec<String>>,
-    pub allowed_process_commands: Option<Vec<String>>,
+    /// The single source of truth for what this interpreter is allowed to
+    /// access — see `crate::capability`. Replaces the previously-scattered
+    /// allow_shell/allow_process/allow_internal_http/sandbox_dir/
+    /// allowed_js_modules/allowed_py_modules/allowed_process_commands
+    /// fields; every dangerous operation authorizes through this instead of
+    /// its own ad-hoc check.
+    pub capabilities: crate::capability::Capabilities,
     /// Native processes spawned via `process_spawn`, keyed by an opaque handle
     /// (UUID) string. Every entry owns its child + background reader/reaper
     /// threads for its full lifetime — see `builtins_process`.
@@ -201,13 +199,7 @@ impl Interpreter {
             ready_agents: std::collections::HashSet::new(),
             queued_messages: HashMap::new(),
             current_agent: None,
-            allow_shell: false,
-            allow_internal_http: false,
-            allow_process: false,
-            sandbox_dir: None,
-            allowed_js_modules: None,
-            allowed_py_modules: None,
-            allowed_process_commands: None,
+            capabilities: crate::capability::Capabilities::new(),
             #[cfg(not(target_arch = "wasm32"))]
             processes: HashMap::new(),
             module_functions: HashMap::new(),
@@ -223,28 +215,40 @@ impl Interpreter {
         }
     }
 
-    /// Resolve `path_str` against the sandbox directory and verify the
-    /// resolved path is still inside it. Returns the absolute resolved path.
-    /// When `sandbox_dir` is None (open mode) the path is returned as-is.
+    /// Resolve `path_str` against the filesystem capability's access scope
+    /// (see `crate::capability::Capabilities::resolve_path`) and verify the
+    /// resolved path is still inside it when sandboxed.
     fn safe_path(&self, path_str: &str) -> Result<std::path::PathBuf, Signal> {
-        let Some(ref base) = self.sandbox_dir else {
-            return Ok(std::path::PathBuf::from(path_str));
-        };
-        let raw = std::path::Path::new(path_str);
-        let resolved = if raw.is_absolute() {
-            normalize_path_no_symlink(raw)
-        } else {
-            normalize_path_no_symlink(&base.join(raw))
-        };
-        if !resolved.starts_with(base) {
-            return Err(Signal::Error(format!(
-                "Access denied: '{}' is outside the allowed directory '{}'. \
-                 Run with --no-sandbox to disable path restrictions.",
-                path_str,
-                base.display()
-            )));
-        }
-        Ok(resolved)
+        self.capabilities.resolve_path(path_str).map_err(|e| {
+            // --no-sandbox only ever helps the OutsideSandbox case — an
+            // operator --deny filesystem can't be worked around by it, so
+            // don't suggest a "fix" that wouldn't actually fix anything.
+            let hint = match &e {
+                crate::capability::Denial::OutsideSandbox { .. } => {
+                    " Run with --no-sandbox to disable path restrictions."
+                }
+                _ => "",
+            };
+            Signal::Error(format!("Access denied: {}.{}", e, hint))
+        })
+    }
+
+    /// Authorize an AI provider call, with an actionable hint when it's
+    /// specifically the gx.json allowlist that's missing this provider —
+    /// shared by all four AI call sites (Think, AskAI, Embed,
+    /// InferClassifier) so they don't each repeat the same wrapping.
+    fn authorize_ai_provider(&self, provider: &str) -> Result<(), Signal> {
+        self.capabilities
+            .authorize(crate::capability::Resource::AiProviders, Some(provider))
+            .map_err(|e| {
+                let hint = match &e {
+                    crate::capability::Denial::NotInAllowlist { .. } => {
+                        " — add it to gx.json's dependencies.ai to allow it."
+                    }
+                    _ => "",
+                };
+                Signal::Error(format!("{}{}", e, hint))
+            })
     }
 
     /// Route output to a capture buffer instead of stdout.
@@ -1119,6 +1123,7 @@ impl Interpreter {
                     Some(mc) => self.eval_expr(mc, env)?.as_number().unwrap_or(0.0),
                     None => 0.0,
                 };
+                self.authorize_ai_provider(provider)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     let mut params: HashMap<String, Value> = HashMap::new();
@@ -1300,6 +1305,9 @@ impl Interpreter {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
+            self.capabilities
+                .authorize(crate::capability::Resource::Database, None)
+                .map_err(|e| Signal::Error(e.to_string()))?;
             let path_val = self.eval_expr(path, env)?;
             let path_str = path_val
                 .as_str()
@@ -1653,6 +1661,7 @@ impl Interpreter {
                     .get("model")
                     .and_then(|v| v.as_str().map(String::from));
                 let effective_model = param_model.or_else(|| model.clone());
+                self.authorize_ai_provider(provider)?;
                 let result = ai::ask_ai(provider, effective_model.as_deref(), &resolved);
                 self.record_tokens(&result);
                 self.append_ai_trace(env, &result);
@@ -1661,6 +1670,7 @@ impl Interpreter {
 
             Expr::Embed { text } => {
                 let t = self.eval_expr(text, env)?;
+                self.authorize_ai_provider("openai")?;
                 Ok(ai::embed_text(&t.to_string()))
             }
 
@@ -1671,6 +1681,7 @@ impl Interpreter {
                     Value::Array(arr) => arr.iter().map(|v| v.to_string()).collect(),
                     other => vec![other.to_string()],
                 };
+                self.authorize_ai_provider("openai")?;
                 Ok(ai::infer_classifier(&input_val, &class_list, "openai"))
             }
 
@@ -1947,6 +1958,14 @@ impl Interpreter {
 
         let helpers = self.helpers.clone();
         let functions = self.functions.clone();
+        // Spawned agents must inherit what the parent was granted — a fresh
+        // Interpreter::new() defaults to shell/process/internal-network
+        // denied, so without this a `spawn agent` call silently lost every
+        // capability the top-level script had, regardless of what it had
+        // been granted (a real functional gap, not just a security one:
+        // multi-agent orchestration couldn't use process_run/shell/etc. at
+        // all from inside a spawned agent).
+        let capabilities = self.capabilities.clone();
         let agent = agent_name.to_string();
         let input_json = crate::interpreter::gx_value_to_json(&input_val);
 
@@ -1956,6 +1975,7 @@ impl Interpreter {
             let mut child = Interpreter::new();
             child.helpers = helpers;
             child.functions = functions;
+            child.capabilities = capabilities;
             let input = crate::interpreter::json_to_gx_value(&input_json);
             let result = child
                 .call_agent(&agent, input)
@@ -2015,6 +2035,7 @@ impl Interpreter {
                 let input_json = gx_value_to_json(&input_val);
                 let helpers = self.helpers.clone();
                 let functions = self.functions.clone();
+                let capabilities = self.capabilities.clone();
                 let agent = agent_name.clone();
                 let timeout = timeout_ms
                     .as_ref()
@@ -2027,6 +2048,7 @@ impl Interpreter {
                     let mut child = Interpreter::new();
                     child.helpers = helpers;
                     child.functions = functions;
+                    child.capabilities = capabilities;
                     let input = json_to_gx_value(&input_json);
                     let result = child
                         .call_agent(&agent, input)
@@ -2584,6 +2606,9 @@ impl Interpreter {
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_default();
+                self.capabilities
+                    .authorize(crate::capability::Resource::Environment, Some(&key))
+                    .map_err(|e| Signal::Error(e.to_string()))?;
                 let default = args.get(1).cloned().unwrap_or(Value::Null);
                 match std::env::var(&key) {
                     Ok(v) => Ok(Value::Str(v)),
@@ -2595,6 +2620,9 @@ impl Interpreter {
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_default();
+                self.capabilities
+                    .authorize(crate::capability::Resource::Environment, Some(&key))
+                    .map_err(|e| Signal::Error(e.to_string()))?;
                 let val = args.get(1).map(|v| v.to_string()).unwrap_or_default();
                 std::env::set_var(&key, &val);
                 Ok(Value::Null)
@@ -3273,7 +3301,7 @@ impl Interpreter {
             "http_get" | "fetch" | "http_post" | "http_put" | "http_delete" => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(url) = args.first().and_then(|v| v.as_str()) {
-                    check_url_safe(url, self.allow_internal_http)?;
+                    check_url_safe(url, &self.capabilities)?;
                 }
                 http_builtin(name, &args)
             }
@@ -3315,7 +3343,7 @@ impl Interpreter {
                     _ => vec![],
                 };
                 #[cfg(not(target_arch = "wasm32"))]
-                check_url_safe(&url, self.allow_internal_http)?;
+                check_url_safe(&url, &self.capabilities)?;
                 let method_name = match method.to_uppercase().as_str() {
                     "POST" => "http_post",
                     "PUT" => "http_put",
@@ -3365,7 +3393,7 @@ impl Interpreter {
                         _ => String::new(),
                     };
                     if !url.is_empty() {
-                        check_url_safe(&url, self.allow_internal_http)?;
+                        check_url_safe(&url, &self.capabilities)?;
                     }
                 }
                 http_stream_builtin(&args)
@@ -3376,7 +3404,7 @@ impl Interpreter {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(Value::Object(m)) = args.first() {
                     if let Some(url) = m.get("url").and_then(|v| v.as_str()) {
-                        check_url_safe(url, self.allow_internal_http)?;
+                        check_url_safe(url, &self.capabilities)?;
                     }
                 }
                 http_upload_builtin(&args)
@@ -3822,8 +3850,12 @@ impl Interpreter {
             // ── stdlib: fs glob (sandbox-aware) ───────────────────────────────
             #[cfg(not(target_arch = "wasm32"))]
             "glob" => {
+                self.capabilities
+                    .authorize(crate::capability::Resource::Filesystem, None)
+                    .map_err(|e| Signal::Error(e.to_string()))?;
                 let pat = args.first().map(|v| v.to_string()).unwrap_or_default();
-                let full_pat = match (&self.sandbox_dir, std::path::Path::new(&pat).is_absolute()) {
+                let sandbox = self.capabilities.sandbox_dir();
+                let full_pat = match (sandbox, std::path::Path::new(&pat).is_absolute()) {
                     (Some(base), false) => base.join(&pat).to_string_lossy().into_owned(),
                     _ => pat.clone(),
                 };
@@ -3831,7 +3863,7 @@ impl Interpreter {
                     Ok(paths) => {
                         let mut out = Vec::new();
                         for entry in paths.flatten() {
-                            if let Some(ref base) = self.sandbox_dir {
+                            if let Some(base) = sandbox {
                                 if !entry.starts_with(base) {
                                     continue;
                                 }
@@ -3946,13 +3978,9 @@ impl Interpreter {
 
             // ── Process / System ──────────────────────────────────────────────
             "shell" | "exec" => {
-                if !self.allow_shell {
-                    return Err(Signal::Error(
-                        "shell() is disabled by default. \
-                         Run with --allow-shell to enable OS command execution."
-                            .into(),
-                    ));
-                }
+                self.capabilities
+                    .authorize(crate::capability::Resource::Shell, None)
+                    .map_err(|e| Signal::Error(e.to_string()))?;
                 let cmd = args
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
@@ -4128,6 +4156,9 @@ impl Interpreter {
             // ── SQLite ────────────────────────────────────────────────────────
             #[cfg(not(target_arch = "wasm32"))]
             "db_query" => {
+                self.capabilities
+                    .authorize(crate::capability::Resource::Database, None)
+                    .map_err(|e| Signal::Error(e.to_string()))?;
                 let _raw = args
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
@@ -4148,6 +4179,9 @@ impl Interpreter {
             }
             #[cfg(not(target_arch = "wasm32"))]
             "db_exec" => {
+                self.capabilities
+                    .authorize(crate::capability::Resource::Database, None)
+                    .map_err(|e| Signal::Error(e.to_string()))?;
                 let _raw = args
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
@@ -6244,5 +6278,70 @@ helper "errctx" {
             "error should include stack frame: {}",
             msg
         );
+    }
+
+    #[test]
+    fn spawned_agent_inherits_parent_capabilities() {
+        // Regression test for a real bug: `spawn agent ... with {...}` used
+        // to construct the child with a bare Interpreter::new() and copy
+        // only helpers/functions, silently resetting every capability grant
+        // to its default-denied state regardless of what the parent script
+        // had been given. If that regresses, `process_run` inside the
+        // spawned agent below fails (`ok: false`), the assert fails, and
+        // `run_program` returns Err — this test panics on `.unwrap()`.
+        //
+        // A `timeout` clause is required here specifically: `spawn agent`
+        // *without* one runs `call_agent` synchronously on the same
+        // Interpreter (trivially "inherits" everything since there's no
+        // second Interpreter at all) — only the `timeout` form goes through
+        // `call_agent_with_timeout`'s separate thread + fresh Interpreter,
+        // which is the actual code path that had the bug.
+        let src = r#"
+helper "worker" {
+  brain {
+    plan { }
+    execute {
+      result = process_run({ command: "echo", args: ["inherited"] })
+      assert result.ok == true "spawned agent must inherit process capability"
+    }
+    remember { }
+    communicate { result.ok }
+  }
+}
+
+ok = spawn agent "worker" with { } timeout 5000
+assert ok == true "spawn agent result reflects the child's process_run success"
+"#;
+        let tokens = Lexer::new(src).tokenize().unwrap();
+        let program = Parser::new(tokens).parse().unwrap();
+        let mut interp = Interpreter::new();
+        interp.capabilities.process = true;
+        interp.run_program(&program).unwrap();
+    }
+
+    #[test]
+    fn parallel_map_inherits_parent_capabilities() {
+        let src = r#"
+helper "worker" {
+  brain {
+    plan { }
+    execute {
+      result = process_run({ command: "echo", args: ["x"] })
+    }
+    remember { }
+    communicate { result.ok }
+  }
+}
+
+results = parallel {
+  a: spawn agent "worker" with { }
+}
+assert results.a == true "parallel{} spawned agent must inherit process capability"
+"#;
+        let tokens = Lexer::new(src).tokenize().unwrap();
+        let program = Parser::new(tokens).parse().unwrap();
+        let mut interp = Interpreter::new();
+        interp.capabilities.process = true;
+        interp.run_program(&program).unwrap();
     }
 }

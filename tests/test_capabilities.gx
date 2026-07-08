@@ -1,0 +1,62 @@
+// Capability Runtime: crate::capability::Capabilities — the single place
+// GX authorizes access to shell/process/network/database/environment/AI/
+// bridges. `gx test` grants only `process` (see toolchain::test), so this
+// file checks: (1) resources that were always open by default stay open
+// after being made capability-aware, (2) shell — never granted by `gx
+// test` — is still denied, and (3) capabilities correctly propagate into
+// a `spawn agent ... timeout` call, which runs on its own thread with its
+// own Interpreter (see src/interpreter/mod.rs's call_agent_with_timeout).
+//
+// gx.json-driven restriction and --deny are covered at the Rust level
+// (src/capability.rs, src/main.rs) since `gx test` doesn't load a manifest
+// or accept CLI flags — there's nothing for a GX script here to observe.
+
+// ── Previously-unguarded resources stay open by default ──────────────────────
+
+db_path = "tests/tmp/test_capabilities.db"
+db_exec(db_path, "CREATE TABLE IF NOT EXISTS caps(id INTEGER PRIMARY KEY, name TEXT)", [])
+db_exec(db_path, "DELETE FROM caps", [])
+db_exec(db_path, "INSERT INTO caps(name) VALUES(?)", ["default-open"])
+rows = db_query(db_path, "SELECT name FROM caps", [])
+assert len(rows) == 1 "database: default-open, unaffected by adding the Database resource gate"
+assert rows[0].name == "default-open" "database: query result is correct"
+
+set_env("GX_CAP_TEST_VAR", "hello")
+assert get_env("GX_CAP_TEST_VAR") == "hello" "environment: default-open, set_env/get_env still work"
+assert get_env("GX_CAP_TEST_TOTALLY_UNSET", "fallback") == "fallback" "environment: default value still returned for a missing var"
+
+// ── shell() stays denied — `gx test` only grants `process` ───────────────────
+
+try {
+  shell("echo should-not-run")
+  assert false "shell() should still be denied under gx test (only `process` is granted)"
+} catch e {
+  assert contains(e.message, "disabled by default") == true "shell(): denial message matches the Capability Runtime convention"
+}
+
+// ── process — explicitly granted by gx test — still works ────────────────────
+
+r = process_run({ command: "echo", args: ["capability-smoke-test"] })
+assert r.ok == true "process: still works when explicitly granted (regression check for the migration to Capabilities)"
+
+// ── Spawned agents inherit the parent's capabilities ──────────────────────────
+// (this is the actual bug the Capability Runtime milestone fixed: a
+// `timeout`-form spawn agent runs on its own thread with its own
+// Interpreter — before the fix, that Interpreter silently reset every
+// capability grant back to its default-denied state.)
+
+helper "cap_worker" {
+  brain {
+    plan { }
+    execute {
+      result = process_run({ command: "echo", args: ["from-spawned-agent"] })
+    }
+    remember { }
+    communicate { result.ok }
+  }
+}
+
+spawned_ok = spawn agent "cap_worker" with { } timeout 5000
+assert spawned_ok == true "spawn agent (timeout form): inherits the parent's process capability"
+
+print("test_capabilities: all assertions passed")

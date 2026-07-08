@@ -1361,27 +1361,169 @@ output = binary.transform(payload)
 ```
 
 **How it works:**
-- JS calls: one-shot `node -e` subprocess per call
-- Python calls: persistent child process with JSON IPC (no 200ms startup per call)
-- TypeScript: auto-detects `tsx` or `ts-node`
-- Go/Binary: compiled binary with JSON stdin/stdout protocol
+- JS/Python/TypeScript calls: a persistent child process per bridge, speaking
+  a newline-delimited JSON IPC protocol — not a new subprocess per call
+- Go/Binary: compiled binary with the same JSON stdin/stdout protocol
 
 ---
 
-## Security Model
+## Capability Runtime
+
+Every GX subsystem that touches something outside the interpreter's own
+memory — the filesystem, a subprocess, a network socket, a database file, an
+AI provider, a bridge module — authorizes through one place:
+`crate::capability::Capabilities`. No subsystem implements its own
+allow/deny logic; it asks the Capability Runtime, which decides, and the
+subsystem executes (or doesn't).
+
+This is deliberately framed as *capability*, not *permission*. A permission
+check answers "can I execute this operation right now?" at the call site
+where it happens. A capability answers "what resources is this program
+allowed to access?" — a property of the whole running program, decided once,
+in one place, and consulted consistently everywhere. That's what lets new
+GX subsystems (a future package manager, native plugins, a distributed
+runtime) integrate into the same model without inventing their own.
+
+### What's gated
+
+| Resource | Default | Grantable via |
+|---|---|---|
+| `shell` (`shell()`/`exec()`) | denied | `--allow-shell` only |
+| `process` (`process_run`/`process_spawn`) | denied | `--allow-process` only |
+| `internal_network` (HTTP to private/loopback addresses) | denied | `--allow-internal-http` only |
+| `external_network` (HTTP to public addresses) | **open** | restrict via `gx.json` |
+| `http_server` (`serve on port ...`) | **open** | restrict via `gx.json` |
+| `database` (`db_query`/`db_exec`/`db_transaction`) | **open** | restrict via `gx.json` |
+| `environment` (`env`/`get_env`/`set_env`) | **open** | restrict via `gx.json` (denylist) |
+| `ai` (`ask`/`embed`/`infer classifier`) | **open** | restrict via `gx.json` (allowlist) |
+| `js`/`ts`/`py`/`binary`/`go`/`rust_bin` (bridge modules/executables) | **open** | restrict via `gx.json` (allowlist) |
+| `filesystem` | sandboxed to script dir | `--no-sandbox` (unrestricted) |
+
+**Why the split.** `shell`, `process`, and `internal_network` are the three
+resources that can execute arbitrary code or reach otherwise-unreachable
+network addresses — they stay deny-by-default and only a CLI flag can grant
+them; `gx.json` can narrow what they're allowed to do (e.g. the process
+executable allowlist) but can never turn them on. `gx.json` ships next to
+the script it describes, so a manifest is only as trustworthy as the script
+itself — an explicit CLI flag is a decision made by whoever *invokes* `gx`,
+a stronger, out-of-band signal. Everything else in the table above was
+already unconditionally available in earlier GX versions (this is what
+"backward compatible" requires), so it stays open by default; what's new is
+that it's now *possible* to restrict, through the same manifest mechanism
+GX already used for `dependencies.js`/`dependencies.py`.
+
+### CLI flags
 
 | Flag | Effect |
 |---|---|
-| *(default)* | File I/O sandboxed to script dir; shell, process, and internal HTTP blocked |
-| `--allow-shell` | Enable `shell()` builtin |
+| *(default)* | File I/O sandboxed to script dir; shell, process, internal-network blocked |
+| `--allow-shell` | Enable `shell()`/`exec()` |
 | `--allow-process` | Enable `process_run`/`process_spawn` (independent of `--allow-shell`) |
 | `--allow-internal-http` | Allow HTTP to private/localhost IPs |
 | `--no-sandbox` | Disable file-path sandboxing |
+| `--deny <resource>` | Force-deny a resource, overriding everything else (repeatable) |
 | `--no-limit` | Remove while-loop iteration cap |
 
-`gx.json`'s `dependencies.process: [...]` further restricts *which*
-executables `process_run`/`process_spawn` may launch, the same allowlist
-mechanism as `dependencies.js`/`dependencies.py` for bridge modules.
+`--deny` always wins — not even `--allow-shell` can override a matching
+`--deny shell`. It exists for the operator invoking `gx` (a deployment
+script, a CI job) to enforce a stricter posture than the script or its
+manifest asks for, without having to edit either.
+
+### gx.json schema
+
+```json
+{
+  "dependencies": {
+    "js": ["axios"],
+    "ts": ["some-module"],
+    "py": ["requests"],
+    "binary": ["./my_service"],
+    "go": ["./my_go_service"],
+    "rust_bin": ["./my_rust_service"],
+    "process": ["git", "docker"],
+    "ai": ["anthropic", "openai"]
+  },
+  "capabilities": {
+    "http_server": false,
+    "database": false,
+    "external_network": false,
+    "env_deny": ["AWS_SECRET_ACCESS_KEY", "DATABASE_PASSWORD"]
+  }
+}
+```
+
+`dependencies.*` allowlists apply the same rule for every namespace:
+**declaring a list restricts that namespace to exactly those names; an
+undeclared key stays open.** This is the same convention GX already used
+for `dependencies.js`/`dependencies.py`/`dependencies.process`, just
+extended uniformly to `ts`/`binary`/`go`/`rust_bin`/`ai` — those previously
+had *no* allowlist mechanism at all.
+
+`capabilities.*` restricts the resources that aren't a name list: set to
+`false` to deny, omit to leave at the default (open). `env_deny` is an exact
+list of environment variable names to block — not a glob pattern — reading
+or writing any other variable is unaffected.
+
+Both sections are loaded from the directory containing the script being run
+(or the current directory for `gx -e`/`gx eval`) — independent of whether
+`--no-sandbox` was passed. File-path sandboxing and the dependency/capability
+allowlists are different concerns; disabling one no longer silently disables
+the other.
+
+### Precedence
+
+1. `--deny <resource>` — operator override, always wins.
+2. `--allow-shell` / `--allow-process` / `--allow-internal-http` — the only
+   way to grant these three; `gx.json` cannot.
+3. `gx.json`'s `dependencies.*` / `capabilities.*` — narrows what's open by
+   default, or narrows the process/bridge allowlist once a CLI flag has
+   granted the underlying resource.
+4. Built-in default (the table above).
+
+### Spawned agents and `parallel {}`
+
+`spawn agent "name" with { ... } timeout N` and `parallel { key: spawn agent
+... }` each run on their own OS thread with their own `Interpreter`. That
+child interpreter inherits the parent's full capability grants — it does
+not start from a fresh, all-denied default. A multi-agent program that was
+granted `--allow-process` at the top level can use `process_run` from
+inside a spawned agent exactly as if it were called directly.
+
+### `gx build`
+
+`--allow-shell`/`--allow-process`/`--allow-internal-http`/`--deny` are also
+accepted by `gx build`, baked into the generated launcher's own `gx run`
+invocation — a distributed binary's end user generally has no way to know
+which flags the program needs, so the developer decides at build time
+instead. If a `gx.json` sits next to the source file, `gx build` copies it
+into `dist/` alongside the launcher, which `cd`s into its own directory
+before running — so the manifest's allowlists still apply to the built
+binary no matter where it's invoked from.
+
+### Migrating from the old flags
+
+Nothing to change for existing scripts: `--allow-shell`, `--allow-process`,
+`--allow-internal-http`, `--no-sandbox`, and `dependencies.js`/
+`dependencies.py`/`dependencies.process` behave exactly as before — they
+now route through `Capabilities` internally, but the CLI surface and
+`gx.json` schema are unchanged and fully backward compatible. To adopt the
+new, stricter posture: add a `capabilities` section to `gx.json` for the
+resources you want to restrict, and extend `dependencies.*` to the bridge
+namespaces (`ts`/`binary`/`go`/`rust_bin`) or `ai` providers you want
+restricted — both were previously ungated entirely.
+
+### Production best practices
+
+- Treat `--deny` as the operator's tool, not the developer's — use it in
+  deployment configs to enforce a floor the script/manifest can't raise.
+- If a script only needs specific AI providers, declare `dependencies.ai` —
+  don't rely on the default-open behavior in a compliance-sensitive deployment.
+- If a script never needs a listening server, set `capabilities.http_server:
+  false` — closes an attack surface with a `serve` call the script never
+  legitimately reaches.
+- `env_deny` names exact variables, not patterns — list the specific secrets
+  a script shouldn't be able to read (cloud credentials, database passwords)
+  rather than trying to guess a pattern that covers all of them.
 
 ---
 

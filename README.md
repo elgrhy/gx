@@ -54,6 +54,39 @@ agent "hello" {
 
 ## What's New (Unreleased)
 
+### Capability Runtime — one place that authorizes everything dangerous
+
+Every GX subsystem that touches something outside the interpreter's own
+memory — filesystem, process execution, shell, HTTP client/server, SQLite,
+AI providers, environment variables, and every bridge (`js`/`ts`/`py`/
+`binary`/`go`/`rust_bin`) — now authorizes through a single
+`Capabilities` value instead of each subsystem implementing its own check.
+This closed several real gaps: AI provider calls, `env`/`get_env`/`set_env`,
+`serve on port ...`, SQLite access, and the `ts`/`binary`/`go`/`rust_bin`
+bridges had **no gate at all** before this — `use binary "/any/path"` would
+spawn an arbitrary executable regardless of `--allow-process`. None of that
+is deny-by-default now (existing scripts keep working unchanged), but all of
+it is now restrictable via `gx.json`'s new `capabilities` section.
+
+```json
+{
+  "dependencies": { "process": ["git"], "ai": ["anthropic"] },
+  "capabilities": { "http_server": false, "env_deny": ["AWS_SECRET_ACCESS_KEY"] }
+}
+```
+
+Also fixed: spawned agents (`spawn agent ... timeout N`, `parallel { ... }`)
+used to run on a fresh, all-denied `Interpreter` regardless of what the
+parent script had been granted — a multi-agent program couldn't use
+`process_run` from inside a spawned agent even with `--allow-process` at the
+top level. Capabilities now inherit correctly. A new `--deny <resource>`
+CLI flag lets whoever invokes `gx` force-deny a resource regardless of what
+the script or its manifest grants, and `gx build` now accepts the same
+`--allow-*`/`--deny` flags and bakes them into the generated launcher, since
+a distributed binary's end user has no way to pass them itself. See
+[Capability Runtime](docs/language_reference.md#capability-runtime) for the
+full model and migration notes.
+
 ### Native Process Runtime — the recommended replacement for `shell()`
 
 `process_run`/`process_spawn` (+ `process_wait`/`process_kill`/`process_exists`/

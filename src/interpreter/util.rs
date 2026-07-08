@@ -181,24 +181,6 @@ pub(super) fn infer_error_kind(msg: &str) -> &'static str {
     }
 }
 
-/// Resolve `..` and `.` without touching the filesystem (no symlink resolution).
-pub(super) fn normalize_path_no_symlink(path: &std::path::Path) -> std::path::PathBuf {
-    use std::path::Component;
-    let mut out: Vec<Component> = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(out.last(), Some(Component::Normal(_))) {
-                    out.pop();
-                }
-            }
-            other => out.push(other),
-        }
-    }
-    out.iter().collect()
-}
-
 /// Cron expression field matcher. Supports: *, n, */n, n-m
 pub(super) fn cron_field_matches(field: &str, value: u64, min: u64, max: u64) -> bool {
     if field == "*" {

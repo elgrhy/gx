@@ -7,6 +7,7 @@
 pub mod ai;
 pub mod ast;
 pub mod bridge;
+pub mod capability;
 pub mod indent_parser;
 pub mod interpreter;
 pub mod lexer;

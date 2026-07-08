@@ -3,6 +3,7 @@
 mod ai;
 mod ast;
 mod bridge;
+mod capability;
 mod indent_parser;
 mod interpreter;
 mod lexer;
@@ -38,6 +39,13 @@ fn main() {
             let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = args.contains(&"--no-sandbox".to_string());
             let no_limit = args.contains(&"--no-limit".to_string());
+            let deny = match parse_deny_flags(&args) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    process::exit(1);
+                }
+            };
             cmd_run(
                 file,
                 debug,
@@ -46,6 +54,7 @@ fn main() {
                 allow_internal_http,
                 no_sandbox,
                 no_limit,
+                deny,
             )
         }
         "check" => {
@@ -63,7 +72,24 @@ fn main() {
                 .position(|a| a == "--output" || a == "-o")
                 .and_then(|i| args.get(i + 1))
                 .map(|s| s.as_str());
-            toolchain::build(file, output)
+            let allow_shell = args.contains(&"--allow-shell".to_string());
+            let allow_process = args.contains(&"--allow-process".to_string());
+            let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
+            let deny = match parse_deny_flags(&args) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    process::exit(1);
+                }
+            };
+            toolchain::build(
+                file,
+                output,
+                allow_shell,
+                allow_process,
+                allow_internal_http,
+                deny,
+            )
         }
         "install" => {
             let pkg = require_arg(&args, 2, "gx install <js.package|py.package>");
@@ -93,6 +119,13 @@ fn main() {
             let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = args.contains(&"--no-sandbox".to_string());
             let no_limit = args.contains(&"--no-limit".to_string());
+            let deny = match parse_deny_flags(&args) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    process::exit(1);
+                }
+            };
             cmd_eval(
                 src,
                 allow_shell,
@@ -100,6 +133,7 @@ fn main() {
                 allow_internal_http,
                 no_sandbox,
                 no_limit,
+                deny,
             )
         }
         "repl" => cmd_repl(),
@@ -119,6 +153,13 @@ fn main() {
             let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = args.contains(&"--no-sandbox".to_string());
             let no_limit = args.contains(&"--no-limit".to_string());
+            let deny = match parse_deny_flags(&args) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    process::exit(1);
+                }
+            };
             cmd_run(
                 file,
                 debug,
@@ -127,6 +168,7 @@ fn main() {
                 allow_internal_http,
                 no_sandbox,
                 no_limit,
+                deny,
             )
         }
         cmd => {
@@ -157,6 +199,7 @@ fn parse_file(source: &str, path: &str) -> Result<crate::ast::Program, String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_run(
     path: &str,
     debug: bool,
@@ -165,6 +208,7 @@ fn cmd_run(
     allow_internal_http: bool,
     no_sandbox: bool,
     no_limit: bool,
+    deny: Vec<capability::Resource>,
 ) -> Result<(), String> {
     // Support `gx run -` to read source from stdin (used by `gx build` launchers).
     let source = if path == "-" {
@@ -199,57 +243,42 @@ fn cmd_run(
 
     let mut interp = Interpreter::new();
     interp.base_path = Some(path.to_string());
-    interp.allow_shell = allow_shell;
-    interp.allow_process = allow_process;
-    interp.allow_internal_http = allow_internal_http;
+    interp.capabilities.shell = allow_shell;
+    interp.capabilities.process = allow_process;
+    interp.capabilities.internal_network = allow_internal_http;
     interp.no_loop_limit = no_limit;
+
+    // The directory a manifest/sandbox would be rooted at: the script's own
+    // directory, or cwd when reading from stdin (`gx run -`).
+    let script_path = if path == "-" {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    } else {
+        std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path))
+    };
+    let script_dir = if path == "-" {
+        script_path.clone()
+    } else {
+        script_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf()
+    };
+    let script_dir = std::fs::canonicalize(&script_dir).unwrap_or(script_dir);
 
     // Sandbox: restrict file I/O to the directory containing the script.
     if !no_sandbox {
-        let script_path = if path == "-" {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        } else {
-            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path))
-        };
-        let sandbox = if path == "-" {
-            script_path.clone()
-        } else {
-            script_path
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .to_path_buf()
-        };
-        // Canonicalize the sandbox dir so it's always absolute.
-        let sandbox = std::fs::canonicalize(&sandbox).unwrap_or(sandbox);
-        interp.sandbox_dir = Some(sandbox.clone());
+        interp.capabilities.filesystem =
+            capability::FilesystemAccess::Sandboxed(script_dir.clone());
+    }
 
-        // Load gx.json from the sandbox directory (if present) to build the
-        // module allowlist for JS/Python bridge calls.
-        let manifest_path = sandbox.join("gx.json");
-        if manifest_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let js_modules = json["dependencies"]["js"].as_array().map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect::<Vec<_>>()
-                    });
-                    let py_modules = json["dependencies"]["py"].as_array().map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect::<Vec<_>>()
-                    });
-                    let process_commands = json["dependencies"]["process"].as_array().map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect::<Vec<_>>()
-                    });
-                    interp.allowed_js_modules = js_modules;
-                    interp.allowed_py_modules = py_modules;
-                    interp.allowed_process_commands = process_commands;
-                }
-            }
-        }
+    // Load gx.json's dependency/capability declarations independent of
+    // sandboxing — file-access confinement and the allowlists governing
+    // bridges/AI/process/network are different concerns, and disabling one
+    // (`--no-sandbox`) must not silently disable the other.
+    load_capability_manifest(&mut interp.capabilities, &script_dir);
+
+    for resource in deny {
+        interp.capabilities.deny(resource);
     }
 
     interp
@@ -257,6 +286,7 @@ fn cmd_run(
         .map_err(|e| format!("{}: {}", path, e))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_eval(
     src: &str,
     allow_shell: bool,
@@ -264,20 +294,32 @@ fn cmd_eval(
     allow_internal_http: bool,
     no_sandbox: bool,
     no_limit: bool,
+    deny: Vec<capability::Resource>,
 ) -> Result<(), String> {
     let program = parse_file(src, "<eval>")?;
 
     let mut interp = Interpreter::new();
-    interp.allow_shell = allow_shell;
-    interp.allow_process = allow_process;
-    interp.allow_internal_http = allow_internal_http;
+    interp.capabilities.shell = allow_shell;
+    interp.capabilities.process = allow_process;
+    interp.capabilities.internal_network = allow_internal_http;
     interp.no_loop_limit = no_limit;
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
 
     // Sandbox relative file I/O to the current working directory for inline scripts.
     if !no_sandbox {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-        interp.sandbox_dir = Some(cwd);
+        interp.capabilities.filesystem = capability::FilesystemAccess::Sandboxed(cwd.clone());
+    }
+
+    // Previously `gx -e`/`gx eval` never loaded gx.json at all, unlike
+    // `gx run` — so the same script behaved differently (allowlists
+    // silently unenforced) depending only on which command ran it. Loading
+    // it here, from cwd, makes both commands consistent.
+    load_capability_manifest(&mut interp.capabilities, &cwd);
+
+    for resource in deny {
+        interp.capabilities.deny(resource);
     }
 
     interp
@@ -379,6 +421,45 @@ fn require_arg<'a>(args: &'a [String], idx: usize, usage: &str) -> &'a str {
     })
 }
 
+/// Parse every `--deny <resource>` occurrence (repeatable) into operator-level
+/// capability denials — see `capability::Capabilities::deny`. These always
+/// win over any grant from a CLI --allow-* flag or gx.json, by design: the
+/// operator invoking `gx` has the final say over the script/manifest it runs.
+fn parse_deny_flags(args: &[String]) -> Result<Vec<capability::Resource>, String> {
+    let mut out = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--deny" {
+            let value = args.get(i + 1).ok_or("--deny requires a resource name")?;
+            let resource = capability::Resource::parse(value).ok_or_else(|| {
+                format!(
+                    "--deny: unknown resource '{}'. Valid resources: shell, process, \
+                     filesystem, internal_network, external_network, http_server, database, \
+                     environment, ai, js, ts, py, binary, go, rust_bin.",
+                    value
+                )
+            })?;
+            out.push(resource);
+        }
+    }
+    Ok(out)
+}
+
+/// Load `gx.json` from `dir` (if present) and apply it to `capabilities` —
+/// shared by `cmd_run` and `cmd_eval` so both behave identically instead of
+/// only one of them honoring the manifest. Deliberately independent of
+/// `--no-sandbox`: file-sandboxing and the dependency/capability allowlists
+/// are different concerns, and disabling one should not silently disable
+/// the other.
+fn load_capability_manifest(capabilities: &mut capability::Capabilities, dir: &Path) {
+    let manifest_path = dir.join("gx.json");
+    let Ok(content) = std::fs::read_to_string(&manifest_path) else {
+        return;
+    };
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+        capabilities.apply_manifest(&json);
+    }
+}
+
 fn print_usage() {
     eprintln!("Usage: gx <command> [options]");
     eprintln!("       gx <file.gx>");
@@ -398,11 +479,13 @@ fn print_help() {
         "  gx run <file.gx> --allow-internal-http         Allow HTTP to private/localhost IPs"
     );
     println!("  gx run <file.gx> --no-sandbox                  Disable file-path sandboxing");
+    println!("  gx run <file.gx> --deny <resource>             Force-deny a capability, overriding gx.json (repeatable)");
     println!("  gx run <file.gx> --no-limit                    Remove while-loop iteration cap (for REPLs, infinite I/O loops)");
     println!("  gx -e '<source>'                       Run inline GX source (no temp file)");
     println!("  gx check <file.gx>                     Check syntax without running");
     println!("  gx init <name>                         Create a new GX project");
-    println!("  gx build <file.gx> [-o name]           Build standalone launcher");
+    println!("  gx build <file.gx> [-o name] [--allow-shell|--allow-process|--allow-internal-http|--deny <r>]");
+    println!("                                          Build standalone launcher (capability flags baked in)");
     println!("  gx install <js.pkg|py.pkg>             Install a package");
     println!("  gx fmt <file.gx>                       Format GX source code");
     println!("  gx make <spec.gx|\"description\"> [--out dir]  Generate a complete project");
@@ -420,6 +503,16 @@ fn print_help() {
     );
     println!("  gx install js.axios");
     println!("  gx repl");
+    println!();
+    println!("CAPABILITY RUNTIME (gx.json):");
+    println!("  \"dependencies\": {{ \"js\": [...], \"ts\": [...], \"py\": [...],");
+    println!("                    \"binary\": [...], \"go\": [...], \"rust_bin\": [...],");
+    println!("                    \"process\": [...], \"ai\": [...] }}   Restrict each to the listed names");
+    println!("  \"capabilities\": {{ \"http_server\": false, \"database\": false,");
+    println!("                     \"external_network\": false,");
+    println!("                     \"env_deny\": [\"SECRET_NAME\"] }}   Restrict what was open by default");
+    println!("  Declaring a list/false restricts; an undeclared key stays at its default.");
+    println!("  gx.json can never grant shell/process/internal-network — only --allow-* can.");
     println!();
     println!("AI PROVIDERS (set env vars):");
     println!("  OPENAI_API_KEY=sk-...      OpenAI (gpt-4o-mini default)");
@@ -459,4 +552,89 @@ fn print_help() {
     println!("  use py.requests               Import Python package");
     println!();
     println!("  Docs: docs/  |  Examples: docs/examples/");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_deny_flags_collects_every_occurrence() {
+        let args: Vec<String> = ["gx", "run", "f.gx", "--deny", "shell", "--deny", "database"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let denied = parse_deny_flags(&args).unwrap();
+        assert_eq!(
+            denied,
+            vec![capability::Resource::Shell, capability::Resource::Database]
+        );
+    }
+
+    #[test]
+    fn parse_deny_flags_rejects_an_unknown_resource_name() {
+        let args: Vec<String> = ["gx", "run", "f.gx", "--deny", "not-a-real-thing"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(parse_deny_flags(&args).is_err());
+    }
+
+    #[test]
+    fn parse_deny_flags_rejects_a_dangling_flag_with_no_value() {
+        let args: Vec<String> = ["gx", "run", "f.gx", "--deny"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(parse_deny_flags(&args).is_err());
+    }
+
+    #[test]
+    fn parse_deny_flags_returns_empty_when_absent() {
+        let args: Vec<String> = ["gx", "run", "f.gx"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(parse_deny_flags(&args).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn load_capability_manifest_applies_gxjson_from_the_given_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("gx_main_test_manifest_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("gx.json"),
+            r#"{ "capabilities": { "http_server": false } }"#,
+        )
+        .unwrap();
+
+        let mut caps = capability::Capabilities::new();
+        assert!(caps
+            .authorize(capability::Resource::HttpServer, None)
+            .is_ok());
+        load_capability_manifest(&mut caps, &dir);
+        assert!(caps
+            .authorize(capability::Resource::HttpServer, None)
+            .is_err());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_capability_manifest_is_a_no_op_when_no_gxjson_exists() {
+        let dir =
+            std::env::temp_dir().join(format!("gx_main_test_no_manifest_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut caps = capability::Capabilities::new();
+        load_capability_manifest(&mut caps, &dir);
+        // Defaults untouched — no panic, no spurious restriction.
+        assert!(caps
+            .authorize(capability::Resource::HttpServer, None)
+            .is_ok());
+        assert!(caps.authorize(capability::Resource::Shell, None).is_err());
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }

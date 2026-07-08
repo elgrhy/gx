@@ -1,0 +1,61 @@
+// Capability Runtime demo — see docs/language_reference.md#capability-runtime
+//
+// Run with defaults:
+//   gx run docs/examples/capabilities.gx --allow-process
+// Run with an operator override that blocks database access regardless of
+// what the script or a gx.json manifest would otherwise grant:
+//   gx run docs/examples/capabilities.gx --allow-process --deny database
+//
+// Every db_exec/db_query call below is wrapped in try/catch specifically so
+// this file behaves sensibly under *either* invocation — --deny denies the
+// resource for the whole script, not just one call, so a robust script
+// checks at each call site rather than assuming a resource stays available
+// once it has been used successfully.
+
+log("--- resources open by default: no flag needed ---")
+
+// AI providers, environment variables, external HTTP, the SQLite database,
+// and every bridge (js/ts/py/binary/go/rust_bin) were already unconditionally
+// available before the Capability Runtime existed — none of that changed,
+// since existing scripts must keep working unmodified. What changed is that
+// all of it is now *restrictable* through gx.json, uniformly.
+set_env("CAPABILITIES_DEMO_VAR", "example-value")
+env_value = get_env("CAPABILITIES_DEMO_VAR")
+say "env: {env_value}"
+
+db_path = "capabilities_demo.db"
+try {
+  db_exec(db_path, "CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY, text TEXT)", [])
+  db_exec(db_path, "INSERT INTO notes(text) VALUES(?)", ["database access is open by default"])
+  row = db_query(db_path, "SELECT text FROM notes ORDER BY id DESC LIMIT 1", [])
+  say "database: {row[0].text}"
+} catch e {
+  say "database: denied — {e.message}"
+}
+
+log("--- shell/process/internal-network: deny by default, CLI-flag only ---")
+
+shell_result = process_run({ command: "true" })
+if shell_result.ok {
+  say "process: allowed (--allow-process was passed)"
+} else {
+  say "process: denied — {shell_result.error_kind}"
+}
+
+try {
+  shell("echo this needs --allow-shell")
+  say "shell: allowed"
+} catch e {
+  say "shell: denied by default — {e.message}"
+}
+
+log("--- operator override: --deny always wins, checked again here ---")
+
+try {
+  db_query(db_path, "SELECT 1 as one", [])
+  say "database: still allowed (run with --deny database to see this denied instead)"
+} catch e {
+  say "database: denied — {e.message}"
+}
+
+log("--- capabilities.gx demo complete ---")

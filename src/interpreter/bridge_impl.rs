@@ -3,6 +3,7 @@
 use super::{Env, IResult, Interpreter, Signal};
 use crate::ast::{Expr, RouteDecl};
 use crate::bridge::Bridge;
+use crate::capability::Resource;
 use crate::value::Value;
 use std::collections::HashMap;
 
@@ -15,31 +16,39 @@ impl Interpreter {
         method: &str,
         args: &[Value],
     ) -> Result<Value, Signal> {
-        // Enforce module allowlist when a gx.json manifest declares dependencies.
-        match namespace {
-            "js" => {
-                if let Some(ref allowed) = self.allowed_js_modules.clone() {
-                    if !allowed.iter().any(|m| m == module) {
-                        return Err(Signal::Error(format!(
-                            "JS module '{}' is not listed in gx.json dependencies. \
-                             Add it with: gx install js.{}",
-                            module, module
-                        )));
-                    }
-                }
-            }
-            "py" => {
-                if let Some(ref allowed) = self.allowed_py_modules.clone() {
-                    if !allowed.iter().any(|m| m == module) {
-                        return Err(Signal::Error(format!(
-                            "Python module '{}' is not listed in gx.json dependencies. \
-                             Add it with: gx install py.{}",
-                            module, module
-                        )));
-                    }
-                }
-            }
-            _ => {}
+        // Every bridge namespace authorizes through the same Capability
+        // Runtime call, scoped to `module` — no namespace implements its
+        // own allowlist logic anymore. `js`/`py`/`process` already had one
+        // before this milestone; `ts`/`binary`/`go`/`rust_bin` previously
+        // had *no* check at all (arbitrary-executable loading, unguarded)
+        // — this closes that gap uniformly rather than bolting a fix onto
+        // just the namespaces that happened to be reported.
+        let resource = match namespace {
+            "js" => Some(Resource::JsBridge),
+            "ts" => Some(Resource::TsBridge),
+            "py" => Some(Resource::PyBridge),
+            "binary" => Some(Resource::BinaryBridge),
+            "go" => Some(Resource::GoBridge),
+            "rust_bin" => Some(Resource::RustBinBridge),
+            _ => None,
+        };
+        if let Some(resource) = resource {
+            self.capabilities
+                .authorize(resource, Some(module))
+                .map_err(|e| {
+                    // Only the "not in the allowlist" case has a useful,
+                    // specific next step (declare it in gx.json); an
+                    // operator --deny can't be worked around from a
+                    // manifest, so that message stands on its own.
+                    let hint = match &e {
+                        crate::capability::Denial::NotInAllowlist { .. } => format!(
+                            " — add it to gx.json's dependencies.{} to allow it.",
+                            resource.name()
+                        ),
+                        _ => String::new(),
+                    };
+                    Signal::Error(format!("{}{}", e, hint))
+                })?;
         }
         match namespace {
             "js" => {
@@ -129,6 +138,9 @@ impl Interpreter {
         env: &mut Env,
     ) -> IResult {
         use super::builtins_json::json_to_gx_value;
+        self.capabilities
+            .authorize(Resource::HttpServer, None)
+            .map_err(|e| Signal::Error(e.to_string()))?;
         let port = self
             .eval_expr(port_expr, env)?
             .as_number()
@@ -204,5 +216,81 @@ impl Interpreter {
             let _ = request.respond(response);
         }
         Ok(Value::Null)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::capability::{Allowlist, Resource};
+
+    // `use binary "path"`/`use go "path"` currently can't be reached
+    // through either GX parser (parse_import only accepts the dotted
+    // `namespace.identifier` form used by js/py — a pre-existing gap,
+    // unrelated to this milestone). These tests call `bridge_call`
+    // directly to verify the capability check itself is correct
+    // regardless of whether the surface syntax to reach it exists yet.
+
+    #[test]
+    fn binary_bridge_denied_by_allowlist_fails_before_spawning() {
+        let mut i = Interpreter::new();
+        i.capabilities.binary_executables = Allowlist::only(["/bin/echo".to_string()]);
+        let err = i
+            .bridge_call("binary", "/bin/definitely-not-allowed", "run", &[])
+            .unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("not listed in gx.json's allowlist"),
+            "expected an allowlist denial, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn binary_bridge_allowed_by_allowlist_proceeds_past_the_capability_check() {
+        let mut i = Interpreter::new();
+        i.capabilities.binary_executables = Allowlist::only(["/bin/echo".to_string()]);
+        // Past the capability check, it fails for a different reason
+        // (echo isn't a JSON-IPC binary) — proves authorization isn't
+        // what blocked it.
+        let err = i
+            .bridge_call("binary", "/bin/echo", "run", &[])
+            .unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(
+            !msg.contains("not listed in gx.json's allowlist"),
+            "should have passed the capability check, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn go_and_ts_bridges_are_denied_by_the_same_mechanism_as_js_py() {
+        let mut i = Interpreter::new();
+        i.capabilities.go_executables = Allowlist::only(["./allowed-service".to_string()]);
+        let err = i
+            .bridge_call("go", "./not-allowed-service", "run", &[])
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("not listed in gx.json's allowlist"));
+    }
+
+    #[test]
+    fn operator_deny_blocks_a_bridge_even_with_no_allowlist_declared() {
+        let mut i = Interpreter::new();
+        i.capabilities.deny(Resource::BinaryBridge);
+        let err = i
+            .bridge_call("binary", "/bin/echo", "run", &[])
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("explicitly denied"));
+    }
+
+    #[test]
+    fn http_server_denied_fails_before_binding_the_port() {
+        let mut i = Interpreter::new();
+        i.capabilities.http_server = false;
+        let mut env = Env::new();
+        let port_expr = Expr::Num(0.0);
+        let err = i.run_serve(&port_expr, &[], &mut env).unwrap_err();
+        assert!(format!("{:?}", err).contains("disabled by default"));
     }
 }
