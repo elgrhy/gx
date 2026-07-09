@@ -505,6 +505,22 @@ fn parse_one_stmt(
         ));
     }
 
+    // ── Respond stream (SSE) ─────────────────────────────────────────────────────
+    // respond stream
+    //   sse_send("event", { ... })
+    if lower == "respond stream" {
+        let children = sub_block(lines, start + 1, line.indent);
+        let body = parse_stmts(children, false)?;
+        let consumed = 1 + children.len();
+        return Ok((
+            Stmt::RespondStream {
+                body,
+                line: line.no,
+            },
+            consumed,
+        ));
+    }
+
     // ── Respond ────────────────────────────────────────────────────────────────
     // respond html "..."  |  respond json { ... }  |  respond "..."
     if lower.starts_with("respond ") {

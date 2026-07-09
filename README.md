@@ -54,6 +54,46 @@ agent "hello" {
 
 ## What's New (Unreleased)
 
+### Production HTTP Runtime — a real SSRF defense, request headers, concurrency, SSE
+
+The HTTP client's SSRF protection used to check only the URL string once,
+before the request — meaning it missed three real bypass classes: a
+redirect from an allowed external host to `169.254.169.254`, a hostname
+that simply *resolves* to a private address, and an IP written in a
+non-dotted-decimal form (`http://2130706433/` is `127.0.0.1`). It's now
+backed by a custom DNS resolver that validates the *actual resolved
+address* on every connection `ureq` makes, including every redirect hop —
+closing all three, verified with local (not flaky-external-service)
+regression tests. `http_stream`/`http_upload` were also quietly bypassing
+this protection *and* had no timeout at all, since they called `ureq`
+directly instead of going through the shared, capability-aware agent;
+`http_upload`'s file paths bypassed the Capability Runtime's sandboxing
+entirely. All fixed. Every result now carries `body_bytes`/`truncated`
+(bodies cap at 32 MiB, never silently) and a stable `error_kind`
+(`timeout`/`dns_error`/`blocked`/`http_status`/...) so a script can branch
+on failure cause without string-matching. A per-call `timeout` (seconds)
+is now accepted directly.
+
+The HTTP server gained the single fix that mattered most: **`request.headers`
+now exists.** It didn't before — which meant verifying a webhook signature
+(Slack, Discord, GitHub, Stripe) was structurally impossible, not just
+inconvenient, since there was no way to read the signature header at all.
+Also new: `request.params` (`/users/:id` path parameters), `request.query_params`
+(parsed query string), `request.remote_addr`, a 32 MiB request body cap
+(rejected with `413` before the route runs), and `respond stream { ... }` +
+`sse_send(event, data)` for real Server-Sent Events instead of one buffered
+response per request. The server itself moved from handling one request at
+a time to a small worker pool (`tiny_http`'s own recommended pattern) — a
+slow route waiting on an AI provider no longer blocks every other route,
+including unrelated webhooks. A route that throws now returns a generic
+500 to the client and logs the real error server-side, instead of echoing
+internal error text back to whoever sent the request.
+
+See [HTTP Client](docs/language_reference.md#http-client) and
+[HTTP Server](docs/language_reference.md#http-server) for the full
+reference, and `docs/examples/production_http.gx` for a runnable webhook +
+SSE + path-params example.
+
 ### Capability Runtime — one place that authorizes everything dangerous
 
 Every GX subsystem that touches something outside the interpreter's own

@@ -304,6 +304,14 @@ pub enum Stmt {
         status: u16,
         line: usize,
     },
+    /// respond stream { ... } — a Server-Sent Events / chunked streaming
+    /// response. The body runs statement-by-statement against the still-open
+    /// connection; `sse_send(event?, data)` inside it writes one frame at a
+    /// time instead of the whole route producing one buffered response.
+    RespondStream {
+        body: Vec<Stmt>,
+        line: usize,
+    },
     /// await { a: expr, b: expr } — run all branches concurrently, collect results as object
     Await {
         bindings: Vec<(String, Expr)>,

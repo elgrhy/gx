@@ -10,6 +10,32 @@ pub(super) fn value_to_json(v: &Value) -> String {
         .unwrap_or_else(|_| "null".into())
 }
 
+/// Percent-decode (`application/x-www-form-urlencoded` style: `+` as space)
+/// a URL-encoded string. Decodes into raw bytes first and UTF-8-decodes
+/// once at the end (lossily) — decoding each `%XX` escape straight to a
+/// `char` would split multi-byte UTF-8 sequences apart (e.g. `%C3%A9`, the
+/// two-byte encoding of 'é', would become the two separate characters "Ã©"
+/// instead of one 'é'), which is exactly what the previous inline version
+/// of this logic did.
+pub(super) fn url_decode(s: &str) -> String {
+    let bytes = s.replace('+', " ").into_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Strip HTML tags, decode common entities, collapse whitespace.
 pub(super) fn strip_html_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len());

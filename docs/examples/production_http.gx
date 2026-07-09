@@ -1,0 +1,66 @@
+// Production HTTP Runtime demo — see docs/language_reference.md#http-server
+// and docs/language_reference.md#http-client
+//
+// Run: gx run docs/examples/production_http.gx --no-sandbox
+// Then, from another terminal:
+//   curl http://localhost:18080/health
+//   curl http://localhost:18080/users/42?role=admin
+//   curl -X POST http://localhost:18080/webhook \
+//        -H "X-Signature: $(echo -n '{\"event\":\"ping\"}' | openssl dgst -sha256 -hmac test-secret | cut -d' ' -f2)" \
+//        -d '{"event":"ping"}'
+//   curl -N http://localhost:18080/events
+
+serve on port 18080 {
+
+  route GET "/health" {
+    respond json { ok: true }
+  }
+
+  // Path parameters (`:id`) and the parsed query object — previously the
+  // only way to get either was hand-parsing request.path/request.query.
+  route GET "/users/:id" {
+    respond json {
+      user_id: request.params.id,
+      role: request.query_params.role,
+      from: request.remote_addr
+    }
+  }
+
+  // Webhook signature verification — this exact pattern was structurally
+  // impossible before this milestone, because request.headers didn't
+  // exist. WEBHOOK_SECRET would come from env() in a real deployment.
+  route POST "/webhook" {
+    secret = "test-secret"
+    signature = request.headers["x-signature"]
+    expected = hmac_sha256(secret, request.body)
+    if signature == null {
+      respond text 401 "missing signature"
+    } else if !secure_compare(expected, signature) {
+      respond text 401 "invalid signature"
+    } else {
+      respond json { verified: true, event: request.json.event }
+    }
+  }
+
+  // A route that throws never leaks its error text to the caller — the
+  // client gets a generic 500, the real error goes to the server's own
+  // log (see the terminal running this script).
+  route GET "/boom" {
+    x = 1 / 0
+  }
+
+  // Server-Sent Events: send incremental updates on one open connection
+  // instead of buffering a single response. `curl -N` disables curl's own
+  // output buffering so you can watch the events arrive in real time.
+  route GET "/events" {
+    respond stream {
+      i = 0
+      while i < 5 {
+        sse_send("tick", { seq: i, ts: date_now() })
+        sleep(1)
+        i += 1
+      }
+      sse_send("done", { total: 5 })
+    }
+  }
+}

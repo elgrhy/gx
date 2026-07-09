@@ -1,0 +1,76 @@
+// Production HTTP Runtime: client-side hardening added in this milestone.
+// (run: gx run tests/test_http.gx --no-sandbox)
+//
+// Server-side hardening (headers/params/query exposure, concurrency, body
+// size limits, SSE, generic 500s) is covered by Rust-level integration
+// tests in src/interpreter/bridge_impl.rs — those spin up a real server on
+// a background thread and make real HTTP requests against it, which is
+// more deterministic here than orchestrating a background `gx` subprocess
+// would be (this file doesn't assume `gx` itself is on PATH).
+//
+// This file does make real requests to public internet hosts (example.com),
+// matching the existing convention in tests/test_tools.gx.
+
+// ── SSRF protection: literal internal addresses ───────────────────────────────
+// A literal internal IP is caught by the cheap string pre-check, which
+// throws (the same convention capability denials use elsewhere — e.g.
+// shell()/process_run on a disallowed command — since this is a policy
+// violation, not a request-level failure like a timeout or a 404).
+
+try {
+  http_get("http://192.168.1.1/")
+  assert false "http_get: literal private IP should have been blocked"
+} catch e {
+  assert contains(e.message, "SSRF protection") == true "http_get: literal private IP is blocked by default"
+}
+
+try {
+  http_get("http://127.0.0.1:1/")
+  assert false "http_get: loopback should have been blocked"
+} catch e {
+  assert contains(e.message, "SSRF protection") == true "http_get: loopback is blocked by default"
+}
+
+// ── SSRF protection: IP-address obfuscation ───────────────────────────────────
+// 2130706433 is the decimal encoding of 127.0.0.1 — a classic SSRF-filter
+// bypass technique. It doesn't *look* like an internal host as a string, so
+// the cheap pre-check lets it through; the resolver-based check classifies
+// the real resolved address instead, catching it as a *result* (ok: false)
+// rather than a thrown error, since by this point it's indistinguishable
+// from any other connection failure until the result comes back.
+
+decimal_ip = http_get("http://2130706433/")
+assert decimal_ip.ok == false "http_get: decimal-encoded loopback IP is still blocked"
+assert decimal_ip.error_kind == "blocked" "http_get: decimal-IP block is reported via error_kind"
+
+// ── Result shape: body_bytes / truncated always present ──────────────────────
+
+r = http_get("https://example.com")
+assert r.ok == true "http_get: normal external request succeeds"
+assert type_of(r.body_bytes) == "number" "http_get: body_bytes is always present"
+assert r.truncated == false "http_get: truncated is false for a small response"
+assert r.body_bytes == len(r.body) "http_get: body_bytes matches the retained body for an untruncated response"
+
+// ── Per-call timeout ───────────────────────────────────────────────────────────
+// A 1-second timeout against an endpoint that deliberately waits 5s.
+
+slow = http_get("https://httpbin.org/delay/5", { timeout: 1 })
+assert slow.ok == false "http_get: per-call timeout fires before the server responds"
+
+// ── http_put / http_delete: fixed to match http_get/http_post's shape ────────
+// http_put previously lost its status code entirely on a non-2xx response
+// (missing the Status error arm http_get/http_post already had, so a
+// failed PUT reported status: 0 — indistinguishable from a connection
+// failure). Asserting a real status code came back (whatever it is) is
+// the actual regression check; the specific value depends on the external
+// service's behavior at test time.
+put_result = http_put("https://httpbin.org/status/404", {})
+assert put_result.status > 0 "http_put: non-2xx response still reports a real status code, not 0"
+assert put_result.error_kind == "http_status" "http_put: non-2xx response is classified as http_status, not a generic error"
+
+// ── url_decode: UTF-8 correctness (previously split multi-byte sequences) ────
+
+assert url_decode("caf%C3%A9") == "café" "url_decode: multi-byte UTF-8 percent-escapes decode correctly"
+assert url_decode("a+b") == "a b" "url_decode: '+' still decodes to space"
+
+print("test_http: all assertions passed")

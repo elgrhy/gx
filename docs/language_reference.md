@@ -521,12 +521,17 @@ fn verify_webhook(body, signature_header, secret) {
   return secure_compare(expected, signature_header)
 }
 
-if verify_webhook(request.body, request.headers["X-Signature"], env("WEBHOOK_SECRET")) {
+if verify_webhook(request.body, request.headers["x-signature"], env("WEBHOOK_SECRET")) {
   say "webhook verified"
 } else {
   say "rejected: bad signature"
 }
 ```
+
+`request.headers` keys are always lowercased (HTTP header names are
+case-insensitive per RFC 7230, but GX object keys aren't) — use
+`request.headers["x-signature"]`, not `request.headers["X-Signature"]`. See
+[HTTP Server](#http-server) for the full `request` object shape.
 
 #### Slack webhook verification
 
@@ -687,18 +692,172 @@ by_dept = group_by(rows, "dept")
 // { "eng": [{...},{...}], "hr": [{...}] }
 ```
 
-### HTTP
+### HTTP Client
 
 | Function | Description |
 |---|---|
-| `http_get(url)` | GET request |
-| `http_post(url, body)` | POST request |
-| `http_put(url, body)` | PUT request |
-| `http_delete(url)` | DELETE request |
-| `http_stream(url, body)` | Streaming HTTP |
-| `http_upload(url, file)` | Upload file |
+| `http_get(url, headers?)` | GET request |
+| `http_post(url, body, headers?)` | POST request (JSON body) |
+| `http_put(url, body, headers?)` | PUT request (JSON body) |
+| `http_delete(url, headers?)` | DELETE request |
+| `http_request({url, method, body?, headers?})` | Unified form — any method |
+| `http_stream({url, method?, body?})` | Line-buffered streaming response |
+| `http_upload({url, fields?, files?})` | `multipart/form-data` upload |
 
-Response fields: `.body`, `.status`, `.headers`, `.ok`, `.data` (auto-parsed JSON)
+**Result object** (every function above): `ok`, `status`, `body`, `body_bytes`,
+`truncated`, `data` (auto-parsed JSON, only set when the body wasn't
+truncated), and on failure `error`/`error_kind`.
+
+```gx
+r = http_get("https://api.example.com/users", { "Authorization": "Bearer " + token })
+if r.ok {
+  say "got {len(r.data)} users"
+} else {
+  say "request failed: {r.error_kind} — {r.error}"
+}
+```
+
+`error_kind` is one of `http_status` (non-2xx response — `status`/`body`
+are still populated), `timeout`, `dns_error`, `connection_failed`,
+`too_many_redirects`, `blocked` (SSRF protection — see below),
+`io_error`, or `transport_error` — check this instead of matching on the
+free-text `error` string, which can vary by platform and dependency
+version.
+
+**Timeouts.** Every request has a 10s connect / 30s read default. Override
+per call with a reserved `timeout` key (seconds) inside the `headers`/opts
+object — it's popped out before the remaining entries are sent as real
+headers:
+
+```gx
+r = http_get(url, { timeout: 5 })                         // GET
+r = http_post(url, body, { timeout: 5 })                  // POST
+r = http_request({ url: url, method: "PATCH", timeout: 5 }) // unified form
+```
+
+**Response size.** Bodies are capped at 32 MiB retained in memory; a larger
+response still completes (`ok` reflects the real HTTP status) but sets
+`truncated: true` and `body_bytes` to the real total, so truncation is
+never silent. `data` (auto-parsed JSON) is only populated when the body
+wasn't truncated, since a cut-off JSON document can't parse anyway.
+
+**SSRF protection.** Requests to private/loopback/link-local addresses are
+blocked by default — this is not just a check on the URL string. Every
+connection ureq actually makes (including each redirect hop) is validated
+against the *real resolved IP address* through a custom resolver, which is
+what closes the classic SSRF bypasses a URL-string check alone misses:
+- A URL naming an allowed external host that later redirects to an
+  internal address (`169.254.169.254`, `localhost`, ...).
+- A hostname that simply *resolves* to a private address.
+- An IP address written in a non-dotted-decimal form
+  (`http://2130706433/` is `127.0.0.1`).
+
+`--allow-internal-http` allows internal/private addresses; `gx.json`'s
+`capabilities.external_network: false` can restrict outbound requests to
+public addresses too. See [Capability Runtime](#capability-runtime).
+
+### HTTP Server
+
+```gx
+serve on port 8080 {
+  route GET "/health" {
+    respond json { ok: true }
+  }
+
+  route GET "/users/:id" {
+    respond json { id: request.params.id }
+  }
+
+  route POST "/webhook" {
+    sig = request.headers["x-signature"]
+    if !secure_compare(hmac_sha256(env("WEBHOOK_SECRET"), request.body), sig) {
+      respond text 401 "invalid signature"
+    } else {
+      respond json { received: true }
+    }
+  }
+}
+```
+
+**The `request` object**, available in every route body:
+
+| Field | Description |
+|---|---|
+| `request.method` | `"GET"`, `"POST"`, ... |
+| `request.path` | Request path, no query string |
+| `request.body` | Raw request body as a string |
+| `request.json` | Auto-parsed body, only set when it's valid JSON |
+| `request.query` | Raw query string (e.g. `"a=1&b=2"`) |
+| `request.query_params` | Parsed query string as an object (percent-decoded) |
+| `request.params` | Named path segments (`:id` → `request.params.id`) |
+| `request.headers` | All request headers, **keys always lowercased** |
+| `request.remote_addr` | Client's `"ip:port"`, or `null` if unavailable |
+
+**Routes and path parameters.** `route METHOD "path" { ... }` — `METHOD` is
+`GET`/`POST`/`PUT`/`DELETE`/`ANY` (matches any method). A path segment
+starting with `:` captures into `request.params`: `"/users/:id/posts/:post_id"`
+matches `/users/42/posts/7` with `request.params == {id: "42", post_id: "7"}`.
+Routes are checked in declaration order; the first match wins.
+
+**Responses.** `respond json { ... }`, `respond html "..."`, `respond text
+"..."` (default format), each optionally taking a status code:
+`respond json 201 { id: new_id }`. A route that finishes without calling
+`respond` returns `200 OK` with an empty body.
+
+**Errors are never leaked to the client.** If a route throws (a GX error,
+not an explicit `respond`), the server returns a generic `500 Internal
+Server Error` to the caller and logs the full error — including the
+route's file/line — to stderr. The client never sees internal details
+(file paths, capability-denial reasons, stack-adjacent context) that a
+raw error message could otherwise expose.
+
+**Concurrency.** The server runs a fixed pool of 8 worker threads (each
+with its own private `Interpreter` sharing the program's definitions and
+capabilities — inheriting the same way `spawn agent`/`parallel {}` do),
+calling `recv()` on the shared listener. A slow route (waiting on an AI
+provider, an outbound HTTP call, a subprocess) no longer blocks every
+other route, including unrelated webhooks — this was a single-threaded,
+one-request-at-a-time loop before this milestone.
+
+**Request size.** Bodies are capped at 32 MiB; a larger request is
+rejected with `413 Payload Too Large` before the route ever runs, whether
+or not the client's `Content-Length` was honest about the size.
+
+#### Server-Sent Events (streaming responses)
+
+`respond stream { ... }` keeps the connection open and lets the route send
+one frame at a time with `sse_send(event?, data)`, instead of producing a
+single buffered response:
+
+```gx
+route GET "/progress" {
+  respond stream {
+    i = 0
+    while i < 100 {
+      sse_send("progress", { percent: i })
+      sleep(0.1)
+      i += 100 / 10
+    }
+    sse_send("done", { percent: 100 })
+  }
+}
+```
+
+`sse_send(data)` sends an unnamed event; `sse_send(event, data)` sets the
+SSE `event:` field. `data` is JSON-encoded unless it's already a string.
+`sse_send` blocks if the client is reading slowly (a bounded channel
+provides real backpressure rather than buffering an unbounded amount of
+unsent data in memory) and returns an error if the client has
+disconnected — check for that if a long-running stream should stop
+producing data once nobody's listening.
+
+`sse_send` is only valid inside a `respond stream { ... }` block; calling
+it from a normal route (or outside `serve` entirely) is an error.
+
+WebSocket upgrade isn't implemented, but the underlying server library
+(`tiny_http`) supports connection takeover, so the worker-pool
+architecture here doesn't preclude adding it later — it's a scoped future
+extension, not a redesign.
 
 ### File I/O
 

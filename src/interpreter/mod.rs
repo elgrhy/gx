@@ -58,6 +58,12 @@ use util::{
     value_to_json,
 };
 
+/// Ceiling on how long `sse_send` will retry against a full buffer before
+/// giving up on a client that isn't reading fast enough — see its call site
+/// for why a plain blocking `send` isn't safe here.
+#[cfg(not(target_arch = "wasm32"))]
+const SSE_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 // ── Control flow signals ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -117,6 +123,27 @@ pub struct Interpreter {
     js_bridge: Option<Bridge>,
     ts_bridge: Option<Bridge>,
     py_bridge: Option<Bridge>,
+    /// Shared, capability-aware `ureq` agent, built lazily on first HTTP
+    /// call and reused for every subsequent one so connections actually
+    /// get pooled (previously a fresh agent — and fresh TLS setup — was
+    /// built on every single call, defeating connection reuse entirely).
+    /// Safe to cache: capabilities never change after construction (see
+    /// `crate::capability`), so the resolver baked into this agent stays
+    /// correct for the interpreter's whole lifetime.
+    #[cfg(not(target_arch = "wasm32"))]
+    http_agent: Option<ureq::Agent>,
+    /// The in-flight HTTP server request, handed off by `run_serve` right
+    /// before running a matched route's body so `respond stream { ... }`
+    /// can take ownership of it mid-execution (to open a streaming
+    /// response) instead of only at the end, the way every other route
+    /// return path works. `None` outside of a server route.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_request: Option<tiny_http::Request>,
+    /// Set for the duration of a `respond stream { ... }` block — the
+    /// channel `sse_send` writes frames into. Mirrors `output_capture`'s
+    /// existing "optional interpreter-level redirect slot" pattern.
+    #[cfg(not(target_arch = "wasm32"))]
+    sse_tx: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
     pub base_path: Option<String>,
     pub assert_count: usize,
     pub assert_failures: Vec<String>,
@@ -192,6 +219,12 @@ impl Interpreter {
             js_bridge: None,
             ts_bridge: None,
             py_bridge: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            http_agent: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_request: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            sse_tx: None,
             base_path: None,
             assert_count: 0,
             assert_failures: Vec::new(),
@@ -249,6 +282,19 @@ impl Interpreter {
                 };
                 Signal::Error(format!("{}{}", e, hint))
             })
+    }
+
+    /// The shared, capability-aware HTTP agent, built lazily on first use
+    /// and cached for the rest of this interpreter's lifetime. `Agent`
+    /// clones are cheap (`Arc`-backed, share the same connection pool), so
+    /// returning an owned clone here is fine and avoids holding a borrow
+    /// of `self`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn http_agent(&mut self) -> ureq::Agent {
+        if self.http_agent.is_none() {
+            self.http_agent = Some(builtins_http::http_agent(&self.capabilities));
+        }
+        self.http_agent.clone().expect("just set")
     }
 
     /// Route output to a capture buffer instead of stdout.
@@ -1090,6 +1136,74 @@ impl Interpreter {
                     _ => "text/plain; charset=utf-8".to_string(),
                 };
                 Err(Signal::Respond(content_type, body, *status))
+            }
+
+            Stmt::RespondStream { body, .. } => {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = body;
+                    Err(Signal::Error(
+                        "respond stream is not available in the playground".into(),
+                    ))
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let request = self.pending_request.take().ok_or_else(|| {
+                        Signal::Error(
+                            "respond stream: only valid inside an HTTP server route".into(),
+                        )
+                    })?;
+                    // Bounded so a script producing frames faster than the
+                    // client can read them applies real backpressure
+                    // (sse_send blocks) instead of buffering unboundedly in
+                    // memory.
+                    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
+                    let reader = bridge_impl::ChannelReader::new(rx);
+                    let headers = vec![
+                        tiny_http::Header::from_bytes(
+                            b"Content-Type".as_ref(),
+                            b"text/event-stream; charset=utf-8",
+                        )
+                        .expect("static header is always valid"),
+                        tiny_http::Header::from_bytes(b"Cache-Control".as_ref(), b"no-cache")
+                            .expect("static header is always valid"),
+                        tiny_http::Header::from_bytes(
+                            b"X-Content-Type-Options".as_ref(),
+                            b"nosniff",
+                        )
+                        .expect("static header is always valid"),
+                    ];
+                    // data_length: None -> tiny_http uses chunked transfer
+                    // encoding, since the total size isn't known upfront.
+                    let response =
+                        tiny_http::Response::new(200u16.into(), headers, reader, None, None);
+                    let responder = std::thread::spawn(move || {
+                        let _ = request.respond(response);
+                    });
+
+                    self.sse_tx = Some(tx);
+                    // catch_unwind, not a plain call, specifically so a
+                    // panic inside the block can't skip past `sse_tx =
+                    // None` below — without this, a panic here would leave
+                    // sse_tx pointing at a channel nothing will ever close,
+                    // and the responder thread parked forever on
+                    // rx.recv(): a real (if narrow) per-panic resource
+                    // leak on any worker that survives the panic (see the
+                    // catch_unwind around handle_one_request, which is
+                    // what lets a worker survive to process another
+                    // request at all). Cleanup happens either way, then
+                    // the panic resumes so that outer catch_unwind still
+                    // observes and logs it.
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.run_stmts(body, env)
+                    }));
+                    self.sse_tx = None; // drop the sender -> ChannelReader sees EOF
+                    let _ = responder.join();
+                    match outcome {
+                        Ok(result) => result.map(|_| Value::Null),
+                        Err(payload) => std::panic::resume_unwind(payload),
+                    }
+                }
             }
 
             Stmt::Serve { port, routes, .. } => {
@@ -3303,7 +3417,15 @@ impl Interpreter {
                 if let Some(url) = args.first().and_then(|v| v.as_str()) {
                     check_url_safe(url, &self.capabilities)?;
                 }
-                http_builtin(name, &args)
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let agent = self.http_agent();
+                    http_builtin(name, &args, &agent)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    http_builtin(name, &args)
+                }
             }
 
             // http_request { url, method, body, headers } — unified form
@@ -3377,7 +3499,15 @@ impl Interpreter {
                         }
                     }
                 }
-                http_builtin(method_name, &builtin_args)
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let agent = self.http_agent();
+                    http_builtin(method_name, &builtin_args, &agent)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    http_builtin(method_name, &builtin_args)
+                }
             }
 
             // ── #17 HTTP streaming ────────────────────────────────────────────
@@ -3396,7 +3526,15 @@ impl Interpreter {
                         check_url_safe(&url, &self.capabilities)?;
                     }
                 }
-                http_stream_builtin(&args)
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let agent = self.http_agent();
+                    http_stream_builtin(&args, &agent)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    http_stream_builtin(&args)
+                }
             }
 
             // ── #8 HTTP multipart upload ──────────────────────────────────────
@@ -3407,7 +3545,93 @@ impl Interpreter {
                         check_url_safe(url, &self.capabilities)?;
                     }
                 }
-                http_upload_builtin(&args)
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let agent = self.http_agent();
+                    http_upload_builtin(&args, &agent, &self.capabilities)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    http_upload_builtin(&args)
+                }
+            }
+
+            // sse_send(data) or sse_send(event, data) — write one
+            // Server-Sent-Events frame to the connection currently open via
+            // `respond stream { ... }`. Only meaningful inside that block;
+            // self.sse_tx is None everywhere else, including inside a
+            // normal (non-stream) route.
+            #[cfg(not(target_arch = "wasm32"))]
+            "sse_send" => {
+                let tx = self.sse_tx.clone().ok_or_else(|| {
+                    Signal::Error("sse_send: only valid inside a respond stream block".into())
+                })?;
+                let (event, data_val) = if args.len() >= 2 {
+                    (
+                        args.first().and_then(|v| v.as_str().map(String::from)),
+                        args.get(1).cloned().unwrap_or(Value::Null),
+                    )
+                } else {
+                    (None, args.first().cloned().unwrap_or(Value::Null))
+                };
+                let data_str = match &data_val {
+                    Value::Str(s) => s.clone(),
+                    other => value_to_json(other),
+                };
+                let mut frame = String::new();
+                if let Some(ev) = event {
+                    // Newlines aren't valid inside a single SSE field line;
+                    // an event name containing one would corrupt the
+                    // frame, so it's rejected rather than silently mangled.
+                    if ev.contains('\n') {
+                        return Err(Signal::Error(
+                            "sse_send: event name must not contain newlines".into(),
+                        ));
+                    }
+                    frame.push_str("event: ");
+                    frame.push_str(&ev);
+                    frame.push('\n');
+                }
+                if data_str.is_empty() {
+                    frame.push_str("data: \n");
+                } else {
+                    for line in data_str.lines() {
+                        frame.push_str("data: ");
+                        frame.push_str(line);
+                        frame.push('\n');
+                    }
+                }
+                frame.push('\n');
+                // A plain blocking `send` on this bounded channel would
+                // hang the whole worker thread forever if the client
+                // simply stops reading (a dead connection that never
+                // closes, or just a very slow one) — the channel fills,
+                // send() blocks, and that worker can never process another
+                // request again. Retrying try_send with a bounded overall
+                // deadline keeps real backpressure (a client that's merely
+                // bursty gets a real chance to catch up) while guaranteeing
+                // this can never block longer than SSE_SEND_TIMEOUT.
+                let deadline = std::time::Instant::now() + SSE_SEND_TIMEOUT;
+                let mut payload = frame.into_bytes();
+                loop {
+                    match tx.try_send(payload) {
+                        Ok(()) => break,
+                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                            return Err(Signal::Error("sse_send: client disconnected".into()));
+                        }
+                        Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                            if std::time::Instant::now() >= deadline {
+                                return Err(Signal::Error(
+                                    "sse_send: client is not reading fast enough (timed out)"
+                                        .into(),
+                                ));
+                            }
+                            payload = returned;
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                }
+                Ok(Value::Null)
             }
 
             // send_email { to, subject, body, smtp_host?, smtp_port?, from?, username?, password? }
@@ -3914,22 +4138,7 @@ impl Interpreter {
                     .first()
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_default();
-                let decoded = s.replace('+', " ");
-                // Simple percent-decode
-                let mut result = String::new();
-                let mut chars = decoded.chars().peekable();
-                while let Some(c) = chars.next() {
-                    if c == '%' {
-                        let h1 = chars.next().unwrap_or('0');
-                        let h2 = chars.next().unwrap_or('0');
-                        if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h1, h2), 16) {
-                            result.push(byte as char);
-                        }
-                    } else {
-                        result.push(c);
-                    }
-                }
-                Ok(Value::Str(result))
+                Ok(Value::Str(util::url_decode(&s)))
             }
             "html_escape" => {
                 let s = args
@@ -4775,6 +4984,7 @@ fn stmt_line(stmt: &Stmt) -> usize {
         | Stmt::RepeatTimes { line, .. }
         | Stmt::Parallel { line, .. }
         | Stmt::Respond { line, .. }
+        | Stmt::RespondStream { line, .. }
         | Stmt::Await { line, .. }
         | Stmt::DbTransaction { line, .. } => *line,
     }

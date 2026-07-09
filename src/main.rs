@@ -525,7 +525,12 @@ fn print_help() {
     println!("  Array:   push, pop, sort, reverse, slice, join, unique, sum, min, max");
     println!("  Object:  keys, values, entries, merge, has");
     println!("  JSON:    json_parse, json_stringify");
-    println!("  HTTP:    http_get, http_post, http_put, http_delete");
+    println!("  HTTP:    http_get, http_post, http_put, http_delete, http_request,");
+    println!("           http_stream, http_upload (opts: {{ timeout: seconds }})");
+    println!("  Server:  serve on port N {{ route METHOD \"/path/:param\" {{ ... }} }},");
+    println!(
+        "           respond json|html|text [status], respond stream {{ sse_send(event, data) }}"
+    );
     println!("  File:    read_file, write_file, append_file, file_exists, list_dir");
     println!("  Env:     env(\"NAME\"), env(\"NAME\", \"default\")");
     println!("  Util:    base64_encode, base64_decode, html_escape, url_encode");

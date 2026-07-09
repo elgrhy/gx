@@ -1465,6 +1465,15 @@ impl Parser {
     fn parse_respond(&mut self) -> Result<Stmt, String> {
         let line = self.line();
         self.expect(&TokenKind::Respond)?;
+        // respond stream { ... } — SSE / chunked streaming response, distinct
+        // from `respond html|json|text <value>`, which unwinds with exactly
+        // one buffered (content-type, body, status) tuple.
+        if matches!(self.peek_kind(), TokenKind::Ident(s) if s == "stream") {
+            self.advance(); // consume `stream`
+            self.expect(&TokenKind::LBrace)?;
+            let body = self.parse_stmts()?;
+            return Ok(Stmt::RespondStream { body, line });
+        }
         let format = match self.peek_kind() {
             TokenKind::Ident(s) if matches!(s.as_str(), "html" | "json" | "text") => {
                 let f = s.clone();
