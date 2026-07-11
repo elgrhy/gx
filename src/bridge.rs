@@ -763,15 +763,32 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::write(&script_path, "#!/bin/sh\nread line\nsleep 9999\n").unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&script_path, perms).unwrap();
         }
-        let bridge =
-            Bridge::new_binary(script_path.to_str().unwrap()).expect("failed to start test bridge");
+        // A brand-new executable file can transiently fail to `exec` with
+        // ETXTBSY ("Text file busy") — POSIX allows the kernel to keep a
+        // file briefly busy immediately after the writer that created it
+        // closes it (observed on CI runners, plausibly a security scanner
+        // or the filesystem itself momentarily holding it open); ETXTBSY
+        // is specifically meant to be retried after a short wait, not
+        // treated as a real spawn failure. A handful of short retries is
+        // the standard, correct handling for this one well-defined
+        // transient error — not a workaround for a bug in this test.
+        let mut attempt = 0;
+        let bridge = loop {
+            match Bridge::new_binary(script_path.to_str().unwrap()) {
+                Ok(b) => break b,
+                Err(e) if e.contains("os error 26") && attempt < 10 => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => panic!("failed to start test bridge: {}", e),
+            }
+        };
         (bridge, script_path)
     }
 

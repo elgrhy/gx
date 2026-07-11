@@ -1011,13 +1011,20 @@ serve on port 18607 {
             stuck_connections.push(stream);
         }
         // Give every worker a moment to actually pick up its connection
-        // and start filling its buffer before checking recovery.
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // and start filling its buffer before checking recovery. 1s, not
+        // 500ms: on a loaded CI runner (observed flaky at 500ms under
+        // full-suite/parallel-job contention), scheduling all
+        // SERVER_WORKER_THREADS worker threads onto CPUs promptly enough
+        // to even *start* their 5s countdown within the original window
+        // isn't guaranteed — this widens the margin, it doesn't change
+        // what's being verified.
+        std::thread::sleep(std::time::Duration::from_millis(1000));
         // SSE_SEND_TIMEOUT is 5s; poll for recovery with a generous
         // overall bound well past that rather than one fixed sleep, so
         // the test isn't unnecessarily slow on a machine where it
-        // recovers sooner.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // recovers sooner. 20s (not 10s) for the same CI-load reason as
+        // the wait above.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut healthy = false;
         while std::time::Instant::now() < deadline {
             if let Ok(resp) = ureq::get("http://127.0.0.1:18607/healthy")
