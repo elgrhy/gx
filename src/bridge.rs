@@ -652,7 +652,11 @@ mod tests {
             eprintln!("skipping js_bridge_call_completes_without_hanging: node not installed");
             return;
         }
-        with_timeout(std::time::Duration::from_secs(10), || {
+        // 30s, not 10s: a cold Node.js start on a loaded Windows CI runner
+        // is measurably slower than on a local dev machine or Linux/macOS
+        // CI — this is the test's own safety net against a genuine hang,
+        // not a production timeout, so it can afford to be generous.
+        with_timeout(std::time::Duration::from_secs(30), || {
             let mut bridge = Bridge::new_js().expect("failed to start JS bridge");
             let result = bridge
                 .call(
@@ -661,7 +665,9 @@ mod tests {
                     &[Value::Str("a".into()), Value::Str("b".into())],
                 )
                 .expect("bridge call failed");
-            assert_eq!(result, Value::Str("a/b".to_string()));
+            // Node's `path.join` uses the OS-native separator.
+            let expected = if cfg!(windows) { "a\\b" } else { "a/b" };
+            assert_eq!(result, Value::Str(expected.to_string()));
         });
     }
 
@@ -676,7 +682,9 @@ mod tests {
             );
             return;
         }
-        with_timeout(std::time::Duration::from_secs(10), || {
+        // See js_bridge_call_completes_without_hanging's comment on why
+        // this is 30s, not 10s.
+        with_timeout(std::time::Duration::from_secs(30), || {
             let mut bridge = Bridge::new_typescript().expect("failed to start TS bridge");
             let result = bridge
                 .call("path", "basename", &[Value::Str("/a/b/c.txt".into())])
@@ -716,7 +724,9 @@ mod tests {
             );
             return;
         }
-        with_timeout(std::time::Duration::from_secs(10), || {
+        // See js_bridge_call_completes_without_hanging's comment on why
+        // this is 30s, not 10s.
+        with_timeout(std::time::Duration::from_secs(30), || {
             let mut bridge = Bridge::new_python().expect("failed to start Python bridge");
             let result = bridge
                 .call(
@@ -725,7 +735,9 @@ mod tests {
                     &[Value::Str("a".into()), Value::Str("b".into())],
                 )
                 .expect("bridge call failed");
-            assert_eq!(result, Value::Str("a/b".to_string()));
+            // Python's os.path.join uses the OS-native separator.
+            let expected = if cfg!(windows) { "a\\b" } else { "a/b" };
+            assert_eq!(result, Value::Str(expected.to_string()));
         });
     }
 
@@ -733,6 +745,17 @@ mod tests {
     /// never responds — simulates a hung bridge subprocess (an infinite
     /// loop or a blocked syscall inside the required module) without
     /// depending on `node`/`python` being installed.
+    ///
+    /// Unix-only: it works by spawning a `#!/bin/sh` script directly, which
+    /// Windows has no shebang support for at all (`Command::new` on a
+    /// `.sh` file fails immediately with "%1 is not a valid Win32
+    /// application" rather than hanging) — there is no single-file,
+    /// dependency-free equivalent on Windows. The behavior under test
+    /// (`Bridge::call_with_timeout`'s deadline logic) is plain,
+    /// platform-independent `std::sync`/`std::thread`/`std::time` code, so
+    /// this doesn't leave it unverified on Windows, just unverified via
+    /// *this specific* subprocess-based test double there.
+    #[cfg(unix)]
     fn spawn_hanging_binary_bridge() -> (Bridge, std::path::PathBuf) {
         let script_path = std::env::temp_dir().join(format!(
             "gx_bridge_hang_test_{}_{}.sh",
@@ -753,6 +776,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn call_with_timeout_returns_a_clear_error_instead_of_hanging_forever() {
         // Regression test: `Bridge::call` used to call `BufRead::read_line`
         // directly with no deadline at all — a hung subprocess permanently
@@ -777,6 +801,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_timed_out_bridge_reports_itself_broken_and_further_calls_dont_hang_either() {
         // The wire protocol has no request IDs (see `call`'s doc comment),
         // so a bridge whose in-flight request never got a response can't

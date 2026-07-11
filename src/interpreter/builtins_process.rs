@@ -1194,6 +1194,28 @@ mod tests {
         ("echo", vec!["hello".into(), "world".into()])
     }
 
+    /// (command, args) for a process that runs for approximately `secs`
+    /// seconds — used to exercise timeout/kill/cleanup paths. `sleep N` on
+    /// Unix; **not** `cmd /C timeout /T N` on Windows, despite that being
+    /// the obvious equivalent — `timeout.exe` refuses to run at all under
+    /// redirected/non-interactive stdin ("Input redirection is not
+    /// supported"), which is exactly `Command`'s default here and in every
+    /// CI runner, so it exited immediately instead of actually waiting and
+    /// every timeout/kill assertion downstream saw a process that had
+    /// already finished. `ping -n <secs+1> 127.0.0.1` is the standard
+    /// console-free substitute (each ping after the first waits ~1s, so
+    /// `secs+1` pings takes ~`secs` seconds) and needs no shell/redirection.
+    fn sleep_cmd_args(secs: u32) -> (&'static str, Vec<Value>) {
+        if cfg!(windows) {
+            (
+                "ping",
+                vec![s("-n"), s(&(secs + 1).to_string()), s("127.0.0.1")],
+            )
+        } else {
+            ("sleep", vec![s(&secs.to_string())])
+        }
+    }
+
     #[test]
     fn process_run_normal_execution() {
         let mut i = interp();
@@ -1374,11 +1396,7 @@ mod tests {
     #[test]
     fn process_run_timeout_also_carries_a_human_readable_error_message() {
         let mut i = interp();
-        let (sleep_cmd, sleep_args): (&str, Vec<Value>) = if cfg!(windows) {
-            ("cmd", vec![s("/C"), s("timeout"), s("/T"), s("5")])
-        } else {
-            ("sleep", vec![s("5")])
-        };
+        let (sleep_cmd, sleep_args) = sleep_cmd_args(5);
         let result = i
             .process_run(&[obj(&[
                 ("command", s(sleep_cmd)),
@@ -1646,11 +1664,7 @@ mod tests {
     #[test]
     fn process_run_timeout_kills_and_reports_timed_out() {
         let mut i = interp();
-        let (sleep_cmd, sleep_args): (&str, Vec<Value>) = if cfg!(windows) {
-            ("cmd", vec![s("/C"), s("timeout"), s("/T"), s("5")])
-        } else {
-            ("sleep", vec![s("5")])
-        };
+        let (sleep_cmd, sleep_args) = sleep_cmd_args(5);
         let start = std::time::Instant::now();
         let result = i
             .process_run(&[obj(&[
@@ -1677,11 +1691,7 @@ mod tests {
         // `result.timed_out` shouldn't get a different answer depending on
         // which of the two timeout mechanisms actually fired.
         let mut i = interp();
-        let (sleep_cmd, sleep_args): (&str, Vec<Value>) = if cfg!(windows) {
-            ("cmd", vec![s("/C"), s("timeout"), s("/T"), s("5")])
-        } else {
-            ("sleep", vec![s("5")])
-        };
+        let (sleep_cmd, sleep_args) = sleep_cmd_args(5);
         let handle = i
             .process_spawn(&[obj(&[
                 ("command", s(sleep_cmd)),
@@ -1706,11 +1716,7 @@ mod tests {
     #[test]
     fn process_spawn_wait_kill_exists_status_lifecycle() {
         let mut i = interp();
-        let (sleep_cmd, sleep_args): (&str, Vec<Value>) = if cfg!(windows) {
-            ("cmd", vec![s("/C"), s("timeout"), s("/T"), s("10")])
-        } else {
-            ("sleep", vec![s("10")])
-        };
+        let (sleep_cmd, sleep_args) = sleep_cmd_args(10);
         let handle = i
             .process_spawn(&[obj(&[
                 ("command", s(sleep_cmd)),
@@ -1938,11 +1944,7 @@ mod tests {
     #[test]
     fn cleanup_processes_kills_and_clears_table() {
         let mut i = interp();
-        let (sleep_cmd, sleep_args): (&str, Vec<Value>) = if cfg!(windows) {
-            ("cmd", vec![s("/C"), s("timeout"), s("/T"), s("10")])
-        } else {
-            ("sleep", vec![s("10")])
-        };
+        let (sleep_cmd, sleep_args) = sleep_cmd_args(10);
         let _handle = i
             .process_spawn(&[obj(&[
                 ("command", s(sleep_cmd)),
@@ -1967,11 +1969,7 @@ mod tests {
     #[test]
     fn wait_until_done_or_deadline_respects_an_already_past_deadline() {
         let mut i = interp();
-        let (sleep_cmd, sleep_args): (&str, Vec<Value>) = if cfg!(windows) {
-            ("cmd", vec![s("/C"), s("timeout"), s("/T"), s("5")])
-        } else {
-            ("sleep", vec![s("5")])
-        };
+        let (sleep_cmd, sleep_args) = sleep_cmd_args(5);
         let handle = i
             .process_spawn(&[obj(&[
                 ("command", s(sleep_cmd)),
