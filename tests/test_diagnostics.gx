@@ -1,0 +1,94 @@
+// Production Diagnostics & Observability Runtime: structured logging,
+// trace/span correlation IDs, and the `span(...) { ... }` block.
+//
+// `gx test` builds a plain `Interpreter::new()` with diagnostics left at
+// their default (tier 2 tracing disabled, no trace_id seeded) — see
+// toolchain::test in src/toolchain.rs. This file is written to hold under
+// that default, AND under a manual
+//   gx run tests/test_diagnostics.gx --trace --log-level debug
+// which seeds a trace_id and turns tracing on. It does this by branching on
+// whether tracing happens to be active rather than assuming either state.
+
+// ── Tier 1 (structured logging): always active, never throws ────────────────
+
+log_debug("diagnostics test starting")
+log_info("info message", { key: "value" })
+log_warn("warn message")
+log_error("error message", { code: 42 })
+assert true "log_debug/info/warn/error accept a message and optional data without throwing"
+
+// ── Tier 2 (trace/span correlation): behaves correctly whether on or off ────
+
+before = trace_id()
+
+if before == null {
+  // Default `gx test` state: tracing disabled, nothing seeded yet.
+  assert span_id() == null "span_id: no span active before entering any span() block"
+} else {
+  // Manual `--trace` run: main.rs already seeded a trace_id for the
+  // top-level script before this file ran.
+  assert before != "" "trace_id: a non-empty id was seeded by --trace"
+}
+
+// span() must always run its body and let its effects (variable writes)
+// escape the block, exactly like db_transaction — regardless of whether
+// tracing is actually recording anything.
+ran = false
+inner_trace = null
+inner_span = null
+span("diagnostics.test.outer") {
+  ran = true
+  inner_trace = trace_id()
+  inner_span = span_id()
+}
+assert ran == true "span(): body always executes, tracing on or off"
+
+if before == null {
+  // Tracing was off: span() must have been a pure no-op wrapper — no
+  // trace_id gets minted just by entering a span, and no span is tracked.
+  assert inner_trace == null "span() must not itself turn tracing on or mint a trace_id"
+  assert inner_span == null "span_id() stays null inside span() when tracing is disabled"
+} else {
+  // Tracing was on: entering the span must push a real, non-null span id,
+  // and it must be gone again once the block exits.
+  assert inner_span != null "span_id() is non-null while inside an active span() block"
+  assert inner_trace == before "span() must not change the ambient trace_id, only nest a span under it"
+  assert span_id() == null "span_id() returns to null after span() exits (properly popped, not leaked)"
+}
+
+// ── Nesting: an inner span must not corrupt the outer span's bookkeeping ────
+
+outer_id_inside = null
+inner_id_inside = null
+outer_id_after_inner = null
+span("diagnostics.test.nest.outer") {
+  outer_id_inside = span_id()
+  span("diagnostics.test.nest.inner") {
+    inner_id_inside = span_id()
+  }
+  outer_id_after_inner = span_id()
+}
+if before == null {
+  assert outer_id_inside == null "nesting (disabled): outer span_id still null"
+  assert inner_id_inside == null "nesting (disabled): inner span_id still null"
+} else {
+  assert outer_id_inside != null "nesting (enabled): outer span_id is set while outer is active"
+  assert inner_id_inside != null "nesting (enabled): inner span_id is set while inner is active"
+  assert inner_id_inside != outer_id_inside "nesting (enabled): inner and outer spans have distinct ids"
+  assert outer_id_after_inner == outer_id_inside "nesting (enabled): outer span_id is restored once the inner span ends"
+}
+
+// ── span() propagates a thrown error instead of swallowing it ───────────────
+
+threw = false
+try {
+  span("diagnostics.test.error") {
+    x = 1 / 0
+  }
+} catch e {
+  threw = true
+}
+assert threw == true "span(): an error inside the body still propagates to the caller"
+assert span_id() == null "span(): the span is properly ended (not leaked) even when its body throws"
+
+log_info("diagnostics test finished")

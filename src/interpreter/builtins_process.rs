@@ -157,6 +157,11 @@ pub(super) struct ProcessState {
     exit_code: Mutex<Option<i32>>,
     timed_out: AtomicBool,
     killed: AtomicBool,
+    /// Set when this process was killed because the Task Runtime task that
+    /// started it was cancelled — distinct from `timed_out` (this process's
+    /// own `timeout`) and `killed` (an explicit `process_kill`), so a
+    /// script can tell the three apart. See `spawn_cancellation_killer`.
+    cancelled: AtomicBool,
     started_at: Instant,
     started_at_unix_ms: i64,
     finished_at: Mutex<Option<Instant>>,
@@ -192,6 +197,23 @@ impl ProcessState {
         }
         self.timed_out.store(true, Ordering::SeqCst);
         self.child.lock().unwrap().kill().is_ok()
+    }
+
+    /// Like `kill()`, but marks the process as cancelled (via its owning
+    /// task) rather than explicitly killed or timed out. Called by
+    /// `spawn_cancellation_killer` — the Task Runtime integration point:
+    /// "Process Runtime terminates child processes when parent tasks are
+    /// cancelled."
+    fn kill_due_to_cancellation(&self) -> bool {
+        if self.is_done() {
+            return false;
+        }
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.child.lock().unwrap().kill().is_ok()
+    }
+
+    fn was_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
     }
 
     /// Join every background thread (reader/reaper/timeout/stdin-writer).
@@ -308,6 +330,30 @@ fn spawn_timeout_killer(
             std::thread::sleep(POLL_INTERVAL);
         }
         state.kill_due_to_timeout();
+    })
+}
+
+/// Watches `is_cancelled` (the owning Task Runtime task's effective
+/// cancellation state, if this process was started from inside a task) and
+/// kills the child the moment it flips — the same shape as
+/// `spawn_timeout_killer`, deliberately: cancellation is just another
+/// deadline, except its trigger is an external flag instead of a fixed
+/// `Instant`. A plain `Fn() -> bool` rather than depending on
+/// `builtins_task::TaskState` directly keeps this module decoupled from
+/// the Task Runtime's internals — it only needs to know "should I stop?".
+fn spawn_cancellation_killer(
+    state: Arc<ProcessState>,
+    is_cancelled: impl Fn() -> bool + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || loop {
+        if state.is_done() {
+            return;
+        }
+        if is_cancelled() {
+            state.kill_due_to_cancellation();
+            return;
+        }
+        std::thread::sleep(POLL_INTERVAL);
     })
 }
 
@@ -461,13 +507,24 @@ fn parse_spec(value: Option<&Value>, who: &str) -> Result<ProcessSpec, Signal> {
             let n = v.as_number().ok_or_else(|| {
                 Signal::Error(format!("{}: 'timeout' must be a number (seconds)", who))
             })?;
-            if n <= 0.0 {
+            // `n.is_nan() || n <= 0.0` (rather than just `n <= 0.0`) also
+            // rejects NaN, since every comparison with NaN is false either
+            // way — `n <= 0.0` alone let NaN fall through to the unguarded
+            // `Duration::from_secs_f64` below, which panicked on it.
+            // `clamp_duration_secs` below additionally guards a *finite*
+            // value so large it still exceeds `Duration::MAX` (e.g.
+            // `1e300`, reachable from an ordinary GX numeric literal) —
+            // `n.is_finite()` alone doesn't catch that case.
+            if n.is_nan() || n <= 0.0 {
                 return Err(Signal::Error(format!(
                     "{}: 'timeout' must be a positive number of seconds",
                     who
                 )));
             }
-            Some(Duration::from_secs_f64(n))
+            Some(crate::clamp_duration_secs(
+                n,
+                Duration::from_secs(315_360_000),
+            ))
         }
     };
     Ok(ProcessSpec {
@@ -482,10 +539,13 @@ fn parse_spec(value: Option<&Value>, who: &str) -> Result<ProcessSpec, Signal> {
 
 /// Spawn the OS process and wire up its background threads. Does not touch
 /// the interpreter's handle table — callers decide whether to register it
-/// (`process_spawn`) or consume it directly (`process_run`).
+/// (`process_spawn`) or consume it directly (`process_run`). `is_cancelled`
+/// is `Some` when this process is being started from inside a Task Runtime
+/// task — see `spawn_cancellation_killer`.
 fn start(
     spec: &ProcessSpec,
     cwd_resolved: Option<std::path::PathBuf>,
+    is_cancelled: Option<Box<dyn Fn() -> bool + Send + 'static>>,
 ) -> Result<Arc<ProcessState>, (SpawnErrorKind, String)> {
     let mut cmd = Command::new(&spec.command);
     cmd.args(&spec.args);
@@ -530,6 +590,7 @@ fn start(
         exit_code: Mutex::new(None),
         timed_out: AtomicBool::new(false),
         killed: AtomicBool::new(false),
+        cancelled: AtomicBool::new(false),
         started_at: Instant::now(),
         started_at_unix_ms: now_unix_ms(),
         finished_at: Mutex::new(None),
@@ -550,6 +611,11 @@ fn start(
     threads.push(spawn_reaper(state.clone()));
     if let Some(timeout) = spec.timeout {
         threads.push(spawn_timeout_killer(state.clone(), timeout));
+    }
+    if let Some(is_cancelled) = is_cancelled {
+        threads.push(spawn_cancellation_killer(state.clone(), move || {
+            is_cancelled()
+        }));
     }
     *state.background_threads.lock().unwrap() = Some(threads);
 
@@ -612,7 +678,15 @@ fn unresponsive_result_object(state: &ProcessState) -> Value {
         "killed".into(),
         Value::Bool(state.killed.load(Ordering::SeqCst)),
     );
+    obj.insert(
+        "cancelled".into(),
+        Value::Bool(state.cancelled.load(Ordering::SeqCst)),
+    );
     obj.insert("error_kind".into(), Value::Str("unresponsive".to_string()));
+    obj.insert(
+        "error".into(),
+        Value::Str("process did not exit within the grace period after being killed".to_string()),
+    );
     insert_output_stats(&mut obj, state);
     Value::Object(obj)
 }
@@ -622,17 +696,20 @@ fn result_object(state: &ProcessState) -> Value {
     let exit_code = *state.exit_code.lock().unwrap();
     let timed_out = state.timed_out.load(Ordering::SeqCst);
     let killed = state.killed.load(Ordering::SeqCst);
+    let cancelled = state.cancelled.load(Ordering::SeqCst);
     let stdout = String::from_utf8_lossy(&state.stdout_buf.lock().unwrap()).into_owned();
     let stderr = String::from_utf8_lossy(&state.stderr_buf.lock().unwrap()).into_owned();
 
-    let error_kind = if timed_out {
-        Some("timeout")
+    let (error_kind, error_message) = if timed_out {
+        (Some("timeout"), Some("process timed out"))
+    } else if cancelled {
+        (Some("cancelled"), Some("process was cancelled"))
     } else if killed {
-        Some("killed")
+        (Some("killed"), Some("process was killed"))
     } else {
-        None
+        (None, None)
     };
-    let ok = !timed_out && !killed && exit_code == Some(0);
+    let ok = !timed_out && !killed && !cancelled && exit_code == Some(0);
 
     let mut obj = HashMap::new();
     obj.insert("ok".into(), Value::Bool(ok));
@@ -646,9 +723,16 @@ fn result_object(state: &ProcessState) -> Value {
     );
     obj.insert("timed_out".into(), Value::Bool(timed_out));
     obj.insert("killed".into(), Value::Bool(killed));
+    obj.insert("cancelled".into(), Value::Bool(cancelled));
     obj.insert(
         "error_kind".into(),
         error_kind
+            .map(|s| Value::Str(s.to_string()))
+            .unwrap_or(Value::Null),
+    );
+    obj.insert(
+        "error".into(),
+        error_message
             .map(|s| Value::Str(s.to_string()))
             .unwrap_or(Value::Null),
     );
@@ -669,6 +753,7 @@ fn spawn_error_object(kind: &SpawnErrorKind, message: &str) -> Value {
     obj.insert("exit_code".into(), Value::Null);
     obj.insert("timed_out".into(), Value::Bool(false));
     obj.insert("killed".into(), Value::Bool(false));
+    obj.insert("cancelled".into(), Value::Bool(false));
     obj.insert("error_kind".into(), Value::Str(error_kind.to_string()));
     obj.insert("error".into(), Value::Str(message.to_string()));
     // No process ever started, so there's nothing to have truncated —
@@ -686,8 +771,7 @@ fn spawn_error_object(kind: &SpawnErrorKind, message: &str) -> Value {
 
 impl super::Interpreter {
     fn check_process_capability(&self, command: &str) -> Result<(), Signal> {
-        self.capabilities
-            .authorize(crate::capability::Resource::Process, Some(command))
+        self.authorize_capability(crate::capability::Resource::Process, Some(command))
             .map_err(|e| {
                 let hint = match &e {
                     crate::capability::Denial::NotInAllowlist { .. } => {
@@ -710,14 +794,49 @@ impl super::Interpreter {
         }
     }
 
+    /// `process_run`/`process_wait` are each a single blocking statement —
+    /// the automatic per-statement cancellation check in `run_stmt` can't
+    /// fire *during* one. Without this, a task cancelled while blocked here
+    /// would still have its child process killed (via
+    /// `spawn_cancellation_killer`), but the call would return a perfectly
+    /// normal `Ok(result)` once the process exits — so the *task* would
+    /// never actually register as cancelled, only the process it happened
+    /// to be running. This is what makes cancellation propagate through the
+    /// blocking call itself: if the process was killed specifically because
+    /// its owning task was cancelled (not its own `timeout`, not an
+    /// explicit `process_kill`), surface that as `Signal::Cancelled` here,
+    /// exactly as if `run_stmt`'s own checkpoint had caught it.
+    fn cancelled_signal_or(&self, state: &ProcessState, result: Value) -> Result<Value, Signal> {
+        if state.was_cancelled() {
+            if let Some(task) = &self.current_task {
+                return Err(Signal::Cancelled(task.cancel_reason()));
+            }
+        }
+        Ok(result)
+    }
+
     pub(super) fn process_run(&mut self, args: &[Value]) -> Result<Value, Signal> {
         let spec = parse_spec(args.first(), "process_run")?;
         self.check_process_capability(&spec.command)?;
         let cwd = self.resolve_process_cwd(&spec.cwd)?;
+        let span = self.diagnostics.start_span("process.run");
+        let command_attr = spec.command.clone();
 
-        let state = match start(&spec, cwd) {
+        let state = match start(&spec, cwd, self.cancellation_check()) {
             Ok(s) => s,
-            Err((kind, msg)) => return Ok(spawn_error_object(&kind, &msg)),
+            Err((kind, msg)) => {
+                let kind_str = match kind {
+                    SpawnErrorKind::NotFound => "not_found",
+                    SpawnErrorKind::PermissionDenied => "permission_denied",
+                    SpawnErrorKind::Other => "spawn_failed",
+                };
+                self.diagnostics.end_span(
+                    span,
+                    crate::diagnostics::Outcome::Error(kind_str),
+                    &[("command", serde_json::Value::String(command_attr))],
+                );
+                return Ok(spawn_error_object(&kind, &msg));
+            }
         };
 
         // No timeout: wait for natural completion with no artificial bound —
@@ -740,20 +859,51 @@ impl super::Interpreter {
             // (which could block forever) unless done is actually true.
             let grace_deadline = Instant::now() + UNRESPONSIVE_GRACE_PERIOD;
             if !wait_until_done_or_deadline(&state, Some(grace_deadline)) {
+                self.diagnostics.end_span(
+                    span,
+                    crate::diagnostics::Outcome::Error("unresponsive"),
+                    &[("command", serde_json::Value::String(command_attr))],
+                );
                 return Ok(unresponsive_result_object(&state));
             }
         }
-        Ok(result_object(&state))
+        let result = result_object(&state);
+        let ok =
+            matches!(&result, Value::Object(m) if matches!(m.get("ok"), Some(Value::Bool(true))));
+        self.diagnostics.end_span(
+            span,
+            if state.was_cancelled() {
+                crate::diagnostics::Outcome::Cancelled
+            } else if ok {
+                crate::diagnostics::Outcome::Ok
+            } else {
+                crate::diagnostics::Outcome::Error("non-zero exit")
+            },
+            &[("command", serde_json::Value::String(command_attr))],
+        );
+        self.cancelled_signal_or(&state, result)
     }
 
     pub(super) fn process_spawn(&mut self, args: &[Value]) -> Result<Value, Signal> {
         let spec = parse_spec(args.first(), "process_spawn")?;
         self.check_process_capability(&spec.command)?;
         let cwd = self.resolve_process_cwd(&spec.cwd)?;
+        let span = self.diagnostics.start_span("process.spawn");
+        let command_attr = spec.command.clone();
 
-        let state = match start(&spec, cwd) {
+        let state = match start(&spec, cwd, self.cancellation_check()) {
             Ok(s) => s,
             Err((kind, msg)) => {
+                let kind_str = match kind {
+                    SpawnErrorKind::NotFound => "not_found",
+                    SpawnErrorKind::PermissionDenied => "permission_denied",
+                    SpawnErrorKind::Other => "spawn_failed",
+                };
+                self.diagnostics.end_span(
+                    span,
+                    crate::diagnostics::Outcome::Error(kind_str),
+                    &[("command", serde_json::Value::String(command_attr))],
+                );
                 // process_spawn still needs to hand back *something* the
                 // caller can inspect uniformly with process_status, so a
                 // failed spawn is reported as an immediately-failed handle
@@ -766,6 +916,14 @@ impl super::Interpreter {
             }
         };
         let handle = uuid::Uuid::new_v4().to_string();
+        self.diagnostics.end_span(
+            span,
+            crate::diagnostics::Outcome::Ok,
+            &[
+                ("command", serde_json::Value::String(command_attr)),
+                ("handle", serde_json::Value::String(handle.clone())),
+            ],
+        );
         self.processes.insert(handle.clone(), state);
         Ok(Value::Str(handle))
     }
@@ -786,9 +944,24 @@ impl super::Interpreter {
         let handle = require_handle_arg(args, "process_wait")?;
         let timeout = match args.get(1) {
             None | Some(Value::Null) => None,
-            Some(v) => Some(Duration::from_secs_f64(v.as_number().ok_or_else(|| {
-                Signal::Error("process_wait: timeout must be a number (seconds)".into())
-            })?)),
+            Some(v) => {
+                let n = v.as_number().ok_or_else(|| {
+                    Signal::Error("process_wait: timeout must be a number (seconds)".into())
+                })?;
+                // Unlike the spec-object `timeout` field above, this one had
+                // no validation at all — `n` (including a negative value,
+                // NaN, or Infinity) went straight into
+                // `Duration::from_secs_f64`, which panics on all three.
+                if n.is_nan() || n < 0.0 {
+                    return Err(Signal::Error(
+                        "process_wait: timeout must be a non-negative number of seconds".into(),
+                    ));
+                }
+                Some(crate::clamp_duration_secs(
+                    n,
+                    Duration::from_secs(315_360_000),
+                ))
+            }
         };
         let Some(state) = self.processes.get(handle).cloned() else {
             return Ok(Value::Null);
@@ -830,7 +1003,7 @@ impl super::Interpreter {
 
         let result = result_object(&state);
         self.processes.remove(handle);
-        Ok(result)
+        self.cancelled_signal_or(&state, result)
     }
 
     pub(super) fn process_kill(&mut self, args: &[Value]) -> Result<Value, Signal> {
@@ -1171,6 +1344,123 @@ mod tests {
         assert_eq!(
             field(&result, "error_kind"),
             &Value::Str("not_found".to_string())
+        );
+    }
+
+    #[test]
+    fn process_run_not_found_also_carries_a_human_readable_error_message() {
+        // Regression test: `result_object`/`unresponsive_result_object` used
+        // to set `error_kind` without ever setting `error`, unlike every
+        // other `{ ok: false, error, error_kind, ... }` producer (http_*,
+        // context_ask) — so `unwrap()` on a failed process result degraded
+        // to the generic "operation failed (<kind>)" fallback instead of a
+        // real message. `spawn_error_object` (this path) already set
+        // `error`; asserting it here pins the shape so timeout/killed/
+        // cancelled/unresponsive (fixed alongside this) don't regress back
+        // to missing it.
+        let mut i = interp();
+        let result = i
+            .process_run(&[obj(&[(
+                "command",
+                s("gx-definitely-does-not-exist-xyz123"),
+            )])])
+            .unwrap();
+        assert_eq!(field(&result, "ok"), &Value::Bool(false));
+        assert!(field(&result, "error")
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn process_run_timeout_also_carries_a_human_readable_error_message() {
+        let mut i = interp();
+        let (sleep_cmd, sleep_args): (&str, Vec<Value>) = if cfg!(windows) {
+            ("cmd", vec![s("/C"), s("timeout"), s("/T"), s("5")])
+        } else {
+            ("sleep", vec![s("5")])
+        };
+        let result = i
+            .process_run(&[obj(&[
+                ("command", s(sleep_cmd)),
+                ("args", Value::Array(sleep_args)),
+                ("timeout", Value::Number(1.0)),
+            ])])
+            .unwrap();
+        assert_eq!(field(&result, "ok"), &Value::Bool(false));
+        assert_eq!(
+            field(&result, "error_kind"),
+            &Value::Str("timeout".to_string())
+        );
+        assert!(field(&result, "error")
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn process_run_with_diagnostics_enabled_leaves_no_span_leaked_on_spawn_failure() {
+        // process_run's span is started before `start()` and must be ended
+        // on every exit path, including the "command not found" one, which
+        // returns a result object rather than propagating an Err — a span
+        // leak here would corrupt correlation for every later diagnostic
+        // call on this same (potentially long-lived) Interpreter.
+        let mut i = interp();
+        i.diagnostics.set_enabled(true);
+        i.diagnostics.ensure_trace_id();
+        let result = i
+            .process_run(&[obj(&[(
+                "command",
+                s("gx-definitely-does-not-exist-xyz123"),
+            )])])
+            .unwrap();
+        assert_eq!(field(&result, "ok"), &Value::Bool(false));
+        assert!(
+            i.diagnostics.current_span_id().is_none(),
+            "no span should remain open after a failed spawn"
+        );
+    }
+
+    #[test]
+    fn process_run_with_diagnostics_enabled_leaves_no_span_leaked_on_success() {
+        let mut i = interp();
+        i.diagnostics.set_enabled(true);
+        i.diagnostics.ensure_trace_id();
+        let (cmd, args) = echo_cmd();
+        let result = i
+            .process_run(&[obj(&[
+                ("command", s(cmd)),
+                (
+                    "args",
+                    Value::Array(args.into_iter().map(Value::Str).collect()),
+                ),
+            ])])
+            .unwrap();
+        assert_eq!(field(&result, "ok"), &Value::Bool(true));
+        assert!(
+            i.diagnostics.current_span_id().is_none(),
+            "no span should remain open after a successful process_run"
+        );
+    }
+
+    #[test]
+    fn process_spawn_with_diagnostics_enabled_leaves_no_span_leaked() {
+        let mut i = interp();
+        i.diagnostics.set_enabled(true);
+        i.diagnostics.ensure_trace_id();
+        let (cmd, args) = echo_cmd();
+        let handle = i
+            .process_spawn(&[obj(&[
+                ("command", s(cmd)),
+                (
+                    "args",
+                    Value::Array(args.into_iter().map(Value::Str).collect()),
+                ),
+            ])])
+            .unwrap();
+        assert!(handle.as_str().is_some());
+        assert!(
+            i.diagnostics.current_span_id().is_none(),
+            "process_spawn's launch span must end once the process is registered, \
+             not stay open for the process's whole lifetime"
         );
     }
 

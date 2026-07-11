@@ -144,6 +144,54 @@ fn csv_quote(s: &str) -> String {
     }
 }
 
+// ── JSON Lines (NDJSON) ─────────────────────────────────────────────────────
+//
+// Distinct from `json_parse`/`json_stringify` (which expect the whole text
+// to be exactly one JSON value): JSON Lines is one independent JSON value
+// per line — the standard shape for log streams, data-pipeline exports, and
+// anything meant to be appended to or processed line-by-line without
+// re-parsing the whole file. Genuinely different from wrapping an array in
+// `json_parse`/`json_stringify` (a single 10 GB array must be fully parsed
+// or serialized before any of it is usable; JSON Lines lets a caller — or a
+// future streaming consumer — work one record at a time).
+
+/// jsonl_parse(text) → array<value>
+pub fn jsonl_parse_impl(args: &[Value]) -> Result<Value, Signal> {
+    let text = args
+        .first()
+        .and_then(|v| v.as_str().map(String::from))
+        .ok_or_else(|| Signal::Error("jsonl_parse(text)".into()))?;
+
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let json: serde_json::Value = serde_json::from_str(line)
+            .map_err(|e| Signal::Error(format!("jsonl_parse: line {}: {}", i + 1, e)))?;
+        out.push(super::json_to_gx_value(&json));
+    }
+    Ok(Value::Array(out))
+}
+
+/// jsonl_stringify(array) → string — one compact JSON value per line.
+pub fn jsonl_stringify_impl(args: &[Value]) -> Result<Value, Signal> {
+    let items = match args.first().cloned().unwrap_or(Value::Null) {
+        Value::Array(a) => a,
+        _ => return Err(Signal::Error("jsonl_stringify: expected an array".into())),
+    };
+    let mut out = String::new();
+    for item in &items {
+        let json = super::gx_value_to_json(item);
+        let line = serde_json::to_string(&json)
+            .map_err(|e| Signal::Error(format!("jsonl_stringify: {}", e)))?;
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok(Value::Str(out))
+}
+
 // ── YAML ──────────────────────────────────────────────────────────────────────
 
 /// yaml_parse(text) → value
@@ -298,5 +346,61 @@ fn gx_to_toml(v: &Value) -> Option<toml::Value> {
         Value::Closure(params, _, _) => {
             Some(toml::Value::String(format!("<fn({})>", params.join(", "))))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jsonl_parse_reads_one_value_per_line() {
+        let result =
+            jsonl_parse_impl(&[Value::Str("{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n".to_string())])
+                .unwrap();
+        let Value::Array(items) = result else {
+            panic!("expected an array");
+        };
+        assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn jsonl_parse_skips_blank_lines() {
+        let result =
+            jsonl_parse_impl(&[Value::Str("{\"a\":1}\n\n\n{\"b\":2}\n".to_string())]).unwrap();
+        let Value::Array(items) = result else {
+            panic!("expected an array");
+        };
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn jsonl_parse_reports_the_failing_line_number() {
+        let err = jsonl_parse_impl(&[Value::Str("{\"a\":1}\nnot json\n{\"b\":2}\n".to_string())])
+            .unwrap_err();
+        let Signal::Error(msg) = err else {
+            panic!("expected Signal::Error");
+        };
+        assert!(msg.contains("line 2"), "message was: {}", msg);
+    }
+
+    #[test]
+    fn jsonl_stringify_rejects_a_non_array() {
+        assert!(jsonl_stringify_impl(&[Value::Str("not an array".to_string())]).is_err());
+    }
+
+    #[test]
+    fn jsonl_round_trips_through_parse_and_stringify() {
+        let mut item = HashMap::new();
+        item.insert("x".to_string(), Value::Number(1.0));
+        let original = Value::Array(vec![Value::Object(item)]);
+
+        let stringified = jsonl_stringify_impl(std::slice::from_ref(&original)).unwrap();
+        let Value::Str(text) = &stringified else {
+            panic!("expected a string");
+        };
+        let parsed = jsonl_parse_impl(std::slice::from_ref(&stringified)).unwrap();
+        assert_eq!(parsed, original);
+        assert!(text.ends_with('\n'));
     }
 }

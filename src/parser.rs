@@ -30,6 +30,20 @@ impl Parser {
         self.tokens[self.pos].line
     }
 
+    fn col(&self) -> usize {
+        self.tokens[self.pos].col
+    }
+
+    /// Build a "Line N, col C: message" error at the current position — the
+    /// column-aware counterpart to a bare `format!("Line {}: ...", self.line())`.
+    /// `render::render_diagnostic` (see src/diagnostics_render.rs) parses this
+    /// exact shape back out to draw a source-snippet caret at the CLI/LSP
+    /// boundary, so the format is deliberately consistent everywhere it's used
+    /// rather than each call site inventing its own wording.
+    fn err_here(&self, message: impl std::fmt::Display) -> String {
+        format!("Line {}, col {}: {}", self.line(), self.col(), message)
+    }
+
     fn advance(&mut self) -> &Token {
         let t = &self.tokens[self.pos];
         if self.pos + 1 < self.tokens.len() {
@@ -50,12 +64,7 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(format!(
-                "Line {}: expected {:?}, got {:?}",
-                self.line(),
-                kind,
-                self.peek_kind()
-            ))
+            Err(self.err_here(format!("expected {:?}, got {:?}", kind, self.peek_kind())))
         }
     }
 
@@ -149,13 +158,7 @@ impl Parser {
             TokenKind::Required => "required".into(),
             TokenKind::Description => "description".into(),
             TokenKind::Persistent => "persistent".into(),
-            other => {
-                return Err(format!(
-                    "Line {}: expected identifier, got {:?}",
-                    self.line(),
-                    other
-                ))
-            }
+            other => return Err(self.err_here(format!("expected identifier, got {:?}", other))),
         };
         self.advance();
         Ok(name)
@@ -168,11 +171,7 @@ impl Parser {
                 self.advance();
                 Ok(s)
             }
-            other => Err(format!(
-                "Line {}: expected string, got {:?}",
-                self.line(),
-                other
-            )),
+            other => Err(self.err_here(format!("expected string, got {:?}", other))),
         }
     }
 
@@ -1079,8 +1078,21 @@ impl Parser {
                     line,
                 })
             }
-            // db_transaction("path") { body }
-            TokenKind::Ident(ref name) if name == "db_transaction" => {
+            // db_transaction("path") { body } — neither `db_transaction`
+            // nor `span` below is a reserved word, so the guard also
+            // requires the very next token to be `(` before committing to
+            // this branch. Without that lookahead, a script's own
+            // variable/function legitimately named `db_transaction`
+            // (however unlikely) or `span` (plausible in anything
+            // tracing-heavy) would hit `self.expect(&TokenKind::LParen)`
+            // and fail to parse the moment it was merely *referenced*
+            // (`db_transaction = ...`, `span(21)` calling an unrelated
+            // same-named function) rather than used as this block form.
+            TokenKind::Ident(ref name)
+                if name == "db_transaction"
+                    && self.tokens.get(self.pos + 1).map(|t| &t.kind)
+                        == Some(&TokenKind::LParen) =>
+            {
                 self.advance(); // consume `db_transaction`
                 self.expect(&TokenKind::LParen)?;
                 let path = self.parse_expr()?;
@@ -1089,6 +1101,21 @@ impl Parser {
                 self.expect(&TokenKind::LBrace)?;
                 let body = self.parse_stmts()?;
                 Ok(Stmt::DbTransaction { path, body, line })
+            }
+            // span("name") { body } — manual tracing instrumentation
+            TokenKind::Ident(ref name)
+                if name == "span"
+                    && self.tokens.get(self.pos + 1).map(|t| &t.kind)
+                        == Some(&TokenKind::LParen) =>
+            {
+                self.advance(); // consume `span`
+                self.expect(&TokenKind::LParen)?;
+                let name = self.parse_expr()?;
+                self.expect(&TokenKind::RParen)?;
+                self.skip_newlines();
+                self.expect(&TokenKind::LBrace)?;
+                let body = self.parse_stmts()?;
+                Ok(Stmt::Span { name, body, line })
             }
             _ => {
                 // Helpful error: detect reserved keywords used as variable names

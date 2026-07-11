@@ -58,6 +58,17 @@ pub fn json_to_value(v: &serde_json::Value) -> Value {
 use std::io::{BufRead, BufReader, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+
+/// Ceiling on how long `Bridge::call` waits for a response line before
+/// giving up — matches `builtins_http.rs`'s `MAX_CALL_TIMEOUT`, the same
+/// "generous but not unbounded" convention already established there for
+/// exactly this kind of external-process call. See `call`'s doc comment
+/// for why this can't be a per-call configurable option without a
+/// wire-protocol change.
+#[cfg(not(target_arch = "wasm32"))]
+const BRIDGE_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 // ── Native JS/Python bridge implementation ────────────────────────────────────
 
@@ -181,7 +192,11 @@ pub struct Bridge {
     pub kind: BridgeKind,
     _child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// `None` only while a `call()`'s companion reader thread is still
+    /// blocked in `read_line` past `BRIDGE_CALL_TIMEOUT` (or after that
+    /// thread panicked) — see `call`'s doc comment. Every other time,
+    /// `Some`.
+    stdout: Option<BufReader<ChildStdout>>,
     /// Present only for the TypeScript bridge (see `new_typescript`) — a
     /// temp file holding the shim source, cleaned up on `Drop`.
     shim_path: Option<std::path::PathBuf>,
@@ -222,7 +237,7 @@ impl Bridge {
             kind,
             _child: child,
             stdin,
-            stdout,
+            stdout: Some(stdout),
             shim_path,
         })
     }
@@ -356,7 +371,55 @@ impl Bridge {
         Self::finish(child, BridgeKind::Binary(path.to_string()), None, "binary")
     }
 
+    /// Whether this bridge is permanently unusable after a timed-out (or
+    /// otherwise abandoned) call — see `call`'s doc comment. Callers that
+    /// cache a `Bridge` across calls (every namespace in
+    /// `interpreter::bridge_impl` does, to amortize the child process's
+    /// startup cost) must check this after an `Err` and, if `true`, drop
+    /// the cached instance rather than reuse it — the next call for that
+    /// namespace then transparently spawns a fresh one.
+    pub fn is_broken(&self) -> bool {
+        self.stdout.is_none()
+    }
+
+    /// Send one request and block for its response line, bounded by
+    /// `BRIDGE_CALL_TIMEOUT` rather than the plain, unbounded
+    /// `BufRead::read_line` this used to call directly — a hung bridge
+    /// subprocess (an infinite loop or a blocked syscall inside the
+    /// required module) used to permanently tie up whichever task or HTTP
+    /// worker thread called it, with no way to recover short of killing
+    /// the whole `gx` process.
+    ///
+    /// The wire protocol (see the module doc comment) is a strict
+    /// single-outstanding-request line stream with no request IDs, so a
+    /// response that arrives *after* we've already given up waiting for it
+    /// can't be safely matched to a later, unrelated call — reusing the
+    /// stream past a timeout would silently hand some future `call()` the
+    /// wrong response. Implemented by handing `self.stdout` off to a
+    /// one-shot companion thread (a blocking channel receive, not a
+    /// polling loop — no risk of missing a fast response or busy-waiting)
+    /// that reads exactly one line and sends the reader back alongside the
+    /// result: on success it comes back for reuse; on timeout it doesn't,
+    /// `self.stdout` stays `None`, and `is_broken()` reports the bridge
+    /// as dead from then on. The old, still-blocked companion thread is
+    /// harmless to leave running: once `Bridge::drop`'s bounded reap kills
+    /// the child, that thread's `read_line` unblocks with an EOF/error and
+    /// exits on its own.
     pub fn call(&mut self, module: &str, method: &str, args: &[Value]) -> Result<Value, String> {
+        self.call_with_timeout(module, method, args, BRIDGE_CALL_TIMEOUT)
+    }
+
+    /// `call`'s actual implementation, with the deadline as a parameter so
+    /// the timeout-and-eviction behavior itself is unit-testable in
+    /// milliseconds rather than needing to wait out the real
+    /// `BRIDGE_CALL_TIMEOUT` (5 minutes) in a test.
+    fn call_with_timeout(
+        &mut self,
+        module: &str,
+        method: &str,
+        args: &[Value],
+        timeout: Duration,
+    ) -> Result<Value, String> {
         let json_args: Vec<serde_json::Value> = args.iter().map(value_to_json).collect();
         let req = serde_json::json!({
             "type": "call",
@@ -368,10 +431,38 @@ impl Bridge {
         let msg = serde_json::to_string(&req).map_err(|e| e.to_string())?;
         writeln!(self.stdin, "{}", msg).map_err(|e| format!("Bridge write failed: {}", e))?;
 
-        let mut response_line = String::new();
-        self.stdout
-            .read_line(&mut response_line)
-            .map_err(|e| format!("Bridge read failed: {}", e))?;
+        let Some(mut reader) = self.stdout.take() else {
+            return Err(format!(
+                "{} bridge: a previous call timed out and left this connection unusable — \
+                 the next call will start a fresh {} process",
+                self.kind_name(),
+                self.kind_name()
+            ));
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut response_line = String::new();
+            let read_result = reader.read_line(&mut response_line);
+            // The receiver may already be gone (we timed out and returned)
+            // — `send` failing just means nobody's listening anymore,
+            // nothing to handle.
+            let _ = tx.send((read_result.map(|_| response_line), reader));
+        });
+
+        let (read_result, reader) = rx.recv_timeout(timeout).map_err(|_| {
+            format!(
+                "{} bridge: call to {}.{} timed out after {:?}",
+                self.kind_name(),
+                module,
+                method,
+                timeout
+            )
+        })?;
+        // Got a response (or a read error) before the deadline — the
+        // reader is still good, give it back for the next call.
+        self.stdout = Some(reader);
+        let response_line = read_result.map_err(|e| format!("Bridge read failed: {}", e))?;
 
         if response_line.is_empty() {
             return Err("Bridge process ended unexpectedly".into());
@@ -400,10 +491,36 @@ impl Bridge {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for Bridge {
+    /// Reaps `_child` — without this, `Child`'s own (no-op) `Drop` leaves an
+    /// exited-but-unwaited process as a zombie process-table entry (Unix)
+    /// until this whole `gx` process exits, and if the child never reads
+    /// the exit message below (busy, or the write failed because its
+    /// stdin already broke), it's not even a zombie but a still-running
+    /// orphaned Node/Python/binary process nothing else in GX will ever
+    /// kill. Bounded exactly like `cleanup_processes`'s grace period: a
+    /// child that ignores the exit message gets killed outright; one
+    /// that's truly stuck (D-state) is abandoned rather than blocking this
+    /// Drop — and therefore whatever dropped the owning `Interpreter` —
+    /// forever.
     fn drop(&mut self) {
         let _ = writeln!(self.stdin, r#"{{"type":"exit"}}"#);
         if let Some(path) = &self.shim_path {
             let _ = std::fs::remove_file(path);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            match self._child.try_wait() {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+        if self._child.kill().is_ok() {
+            let _ = self._child.wait();
         }
     }
 }
@@ -609,6 +726,77 @@ mod tests {
                 )
                 .expect("bridge call failed");
             assert_eq!(result, Value::Str("a/b".to_string()));
+        });
+    }
+
+    /// A binary bridge whose subprocess reads one request line and then
+    /// never responds — simulates a hung bridge subprocess (an infinite
+    /// loop or a blocked syscall inside the required module) without
+    /// depending on `node`/`python` being installed.
+    fn spawn_hanging_binary_bridge() -> (Bridge, std::path::PathBuf) {
+        let script_path = std::env::temp_dir().join(format!(
+            "gx_bridge_hang_test_{}_{}.sh",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&script_path, "#!/bin/sh\nread line\nsleep 9999\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+        let bridge =
+            Bridge::new_binary(script_path.to_str().unwrap()).expect("failed to start test bridge");
+        (bridge, script_path)
+    }
+
+    #[test]
+    fn call_with_timeout_returns_a_clear_error_instead_of_hanging_forever() {
+        // Regression test: `Bridge::call` used to call `BufRead::read_line`
+        // directly with no deadline at all — a hung subprocess permanently
+        // blocked whichever task/HTTP worker thread called it. The outer
+        // `with_timeout` is the test's own safety net (so a regression
+        // shows up as a normal assertion failure, not a genuinely hung
+        // `cargo test` run); the actual behavior under test is that
+        // `call_with_timeout` itself returns promptly once its own
+        // (much shorter) deadline elapses.
+        with_timeout(std::time::Duration::from_secs(5), || {
+            let (mut bridge, script_path) = spawn_hanging_binary_bridge();
+            let err = bridge
+                .call_with_timeout("m", "f", &[], std::time::Duration::from_millis(200))
+                .unwrap_err();
+            assert!(
+                err.contains("timed out"),
+                "expected a timeout error, got: {}",
+                err
+            );
+            let _ = std::fs::remove_file(&script_path);
+        });
+    }
+
+    #[test]
+    fn a_timed_out_bridge_reports_itself_broken_and_further_calls_dont_hang_either() {
+        // The wire protocol has no request IDs (see `call`'s doc comment),
+        // so a bridge whose in-flight request never got a response can't
+        // be safely reused — `is_broken()` must report that, and a further
+        // `call()` on it must fail fast rather than trying to read from
+        // the same (still potentially-about-to-respond-late) stream.
+        with_timeout(std::time::Duration::from_secs(5), || {
+            let (mut bridge, script_path) = spawn_hanging_binary_bridge();
+            let _ = bridge.call_with_timeout("m", "f", &[], std::time::Duration::from_millis(200));
+            assert!(
+                bridge.is_broken(),
+                "bridge should report itself broken after a timed-out call"
+            );
+            let err = bridge.call("m", "f", &[]).unwrap_err();
+            assert!(
+                err.contains("unusable"),
+                "expected the 'unusable after a timeout' error, got: {}",
+                err
+            );
+            let _ = std::fs::remove_file(&script_path);
         });
     }
 }

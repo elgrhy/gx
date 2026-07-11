@@ -185,6 +185,16 @@ pub(super) fn parse_gx_source(source: &str, path: &str) -> Result<crate::ast::Pr
     }
 }
 
+/// Whether an `import "..."` path refers to a package (resolved via
+/// gx.lock + the local package cache) rather than a plain `.gx` file. A
+/// bare name — no path separator, no `.gx` suffix, and no leading `.` (so
+/// `./x.gx` and `../x.gx` are never mistaken for package names) — is
+/// treated as a package name, mirroring how e.g. `import "./x.gx"` vs.
+/// `import "some-package"` are distinguished in other module systems.
+pub(super) fn is_package_import(path: &str) -> bool {
+    !path.contains('/') && !path.contains('\\') && !path.ends_with(".gx") && !path.starts_with('.')
+}
+
 /// Classify an error message string into a typed error kind name.
 pub(super) fn infer_error_kind(msg: &str) -> &'static str {
     let lower = msg.to_lowercase();

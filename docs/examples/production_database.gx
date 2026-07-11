@@ -1,0 +1,72 @@
+// Production Database Runtime demo — see
+// docs/language_reference.md#database-sqlite
+//
+// Run: gx run docs/examples/production_database.gx --no-sandbox
+
+db_path = "production_database_demo.db"
+
+log("--- migrations: idempotent schema setup, safe to run on every startup ---")
+migration_result = db_migrate(db_path, [
+  "CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL DEFAULT 0)",
+  "CREATE TABLE purchases(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL)",
+  "CREATE INDEX idx_purchases_account ON purchases(account_id)"
+])
+say "migrated {migration_result.from_version} -> {migration_result.to_version} ({migration_result.applied} applied)"
+
+// Running it again is a no-op — safe to call unconditionally at startup.
+migration_result2 = db_migrate(db_path, [
+  "CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL DEFAULT 0)",
+  "CREATE TABLE purchases(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL)",
+  "CREATE INDEX idx_purchases_account ON purchases(account_id)"
+])
+say "re-running migrations: {migration_result2.applied} applied (expected 0)"
+
+log("--- always use parameter binding for values, never string-build SQL ---")
+db_exec(db_path, "DELETE FROM purchases", [])
+db_exec(db_path, "DELETE FROM accounts", [])
+db_exec(db_path, "INSERT INTO accounts(name, balance) VALUES (?, ?)", ["ada", 1000])
+account = db_query(db_path, "SELECT id FROM accounts WHERE name = ?", ["ada"])[0]
+
+log("--- nested transactions: a reusable helper that does its own transaction ---")
+function record_purchase(path, account_id, amount) {
+  db_transaction(path) {
+    db_exec(db, "UPDATE accounts SET balance = balance - ? WHERE id = ?", [amount, account_id])
+    db_exec(db, "INSERT INTO purchases(account_id, amount) VALUES (?, ?)", [account_id, amount])
+  }
+}
+
+// record_purchase's own transaction becomes a SAVEPOINT here, nested inside
+// this outer one — if the audit step below failed, only record_purchase's
+// work would roll back, not this whole flow.
+db_transaction(db_path) {
+  record_purchase(db_path, account.id, 150)
+  record_purchase(db_path, account.id, 75)
+}
+
+balance = db_query(db_path, "SELECT balance FROM accounts WHERE id = ?", [account.id])[0].balance
+purchase_count = len(db_query(db_path, "SELECT id FROM purchases WHERE account_id = ?", [account.id]))
+say "balance after two nested purchases: {balance} ({purchase_count} purchase rows)"
+
+log("--- a failed transaction rolls back completely ---")
+try {
+  db_transaction(db_path) {
+    db_exec(db, "UPDATE accounts SET balance = balance - ? WHERE id = ?", [50, account.id])
+    x = 1 / 0  // simulate a failure partway through
+  }
+} catch e {
+  say "transaction failed as expected: {e.message}"
+}
+balance_after_failure = db_query(db_path, "SELECT balance FROM accounts WHERE id = ?", [account.id])[0].balance
+say "balance unchanged after rollback: {balance_after_failure}"
+
+log("--- maintenance: integrity check, vacuum, online backup ---")
+check = db_integrity_check(db_path)
+say "integrity: ok={check.ok}"
+
+db_vacuum(db_path)
+say "vacuum complete"
+
+backup_result = db_backup(db_path, "production_database_demo_backup.db")
+say "backup written to {backup_result.path} (ok={backup_result.ok})"
+
+log("--- production database demo complete ---")

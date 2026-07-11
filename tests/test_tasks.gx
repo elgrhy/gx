@@ -1,0 +1,204 @@
+// Production Task Runtime: task_spawn, task_wait, task_wait_all,
+// task_wait_any, task_cancel, task_status, task_id, is_cancelled.
+//
+// `gx test` grants the `process` capability (see toolchain::test) — the
+// process-runtime-integration section below relies on that, same as
+// tests/test_capabilities.gx and tests/test_process.gx already do.
+
+// ── Basic spawn/wait ──────────────────────────────────────────────────────────
+
+h = task_spawn(fn() { return 1 + 1 })
+r = task_wait(h)
+assert r.ok == true "task_spawn/task_wait: a normal completion reports ok"
+assert r.value == 2 "task_spawn/task_wait: the closure's return value comes back"
+assert r.cancelled == false "a normal completion is not a cancellation"
+assert r.timed_out == false "a normal completion did not time out"
+
+// ── Unknown handles degrade gracefully, never throw ──────────────────────────
+
+assert task_wait("not-a-real-handle") == null "task_wait: unknown handle -> null"
+assert task_status("not-a-real-handle") == null "task_status: unknown handle -> null"
+assert task_cancel("not-a-real-handle") == false "task_cancel: unknown handle -> false"
+
+// ── task_status reflects the real lifecycle ──────────────────────────────────
+
+h2 = task_spawn(fn() { sleep(0.2) return "done" })
+s1 = task_status(h2)
+assert s1.status == "running" "task_status: reports running before completion"
+assert s1.done == false "task_status: done is false while running"
+
+// task_wait reaps a finished task's entry (same convention as
+// process_wait/process_status) — task_status/task_cancel on that handle
+// return null/false afterward, exactly like an unknown handle would.
+r2 = task_wait(h2)
+assert r2.ok == true "task_wait itself still reports the real completion"
+assert r2.value == "done" "task_wait itself still returns the real value"
+assert task_status(h2) == null "task_status after task_wait: the handle was reaped, same as process_status after process_wait"
+assert task_cancel(h2) == false "task_cancel: a reaped (or already-finished) handle -> false, not an error"
+
+// ── Cancellation: cooperative, via the automatic per-statement checkpoint ────
+
+h3 = task_spawn(fn() {
+  i = 0
+  while i < 100000000 {
+    i = i + 1
+  }
+  return "unreachable"
+})
+sleep(0.1)
+assert task_cancel(h3) == true "task_cancel: finds and flags a running task"
+r3 = task_wait(h3, 5000)
+assert r3.ok == false "a cancelled task did not complete successfully"
+assert r3.cancelled == true "task_wait reports the cancellation"
+assert r3.timed_out == false "this is a real cancellation, not task_wait's own timeout"
+
+// ── Deadlines (opts.timeout) cancel automatically, no explicit task_cancel ──
+
+h4 = task_spawn(fn() {
+  i = 0
+  while i < 100000000 {
+    i = i + 1
+  }
+  return "unreachable"
+}, { timeout: 150 })
+r4 = task_wait(h4, 5000)
+assert r4.cancelled == true "a task's own deadline cancels it without task_cancel"
+
+// ── task_wait's own timeout also cancels (subprocess.run(timeout=) style) ───
+
+h5 = task_spawn(fn() {
+  i = 0
+  while i < 100000000 {
+    i = i + 1
+  }
+  return "unreachable"
+})
+r5 = task_wait(h5, 100)
+assert r5.timed_out == true "task_wait's own timeout is reported distinctly"
+r5b = task_wait(h5, 5000)
+assert r5b.cancelled == true "task_wait's own timeout must actually cancel the task, not just give up waiting on it"
+
+// ── task_wait_all / task_wait_any ─────────────────────────────────────────────
+
+a1 = task_spawn(fn() { return 10 })
+a2 = task_spawn(fn() { return 20 })
+a3 = task_spawn(fn() { return 30 })
+all_results = task_wait_all([a1, a2, a3])
+assert len(all_results) == 3 "task_wait_all: one result per handle"
+assert all_results[0].value == 10 "task_wait_all: preserves input order"
+assert all_results[1].value == 20 "task_wait_all: preserves input order"
+assert all_results[2].value == 30 "task_wait_all: preserves input order"
+
+slow = task_spawn(fn() { sleep(1) return "slow" })
+fast = task_spawn(fn() { return "fast" })
+winner = task_wait_any([slow, fast])
+assert winner.value == "fast" "task_wait_any: the faster task wins the race"
+assert winner.index == 1 "task_wait_any: index identifies which handle won"
+task_cancel(slow)
+
+// ── task-local context: task_id() / is_cancelled() ───────────────────────────
+
+assert task_id() == null "task_id() outside any task is null"
+assert is_cancelled() == false "is_cancelled() outside any task is false"
+
+h6 = task_spawn(fn() {
+  return { has_id: task_id() != null, cancelled: is_cancelled() }
+})
+r6 = task_wait(h6)
+assert r6.value.has_id == true "task_id() inside a task returns a non-null handle"
+assert r6.value.cancelled == false "is_cancelled() inside a never-cancelled task is false"
+
+// ── Structured concurrency: cancelling a parent cancels its child ───────────
+
+parent = task_spawn(fn() {
+  child = task_spawn(fn() {
+    i = 0
+    while i < 100000000 {
+      i = i + 1
+    }
+    return "unreachable"
+  })
+  return task_wait(child)
+})
+sleep(0.1)
+task_cancel(parent)
+parent_result = task_wait(parent, 5000)
+assert parent_result.ok == true "the parent's own body (which just waits on its child) completes normally"
+assert parent_result.value.cancelled == true "the child is cancelled too — structured concurrency, not just the parent"
+
+// ── Bounded parallel execution (pool / max_concurrent) ───────────────────────
+
+start_ms = now_ms()
+pool_handles = []
+i = 0
+while i < 6 {
+  pool_handles = pool_handles + [task_spawn(fn() {
+    sleep(0.15)
+    return true
+  }, { pool: "test-pool", max_concurrent: 2 })]
+  i = i + 1
+}
+pool_results = task_wait_all(pool_handles, 10000)
+all_ok = true
+j = 0
+while j < len(pool_results) {
+  if pool_results[j].ok != true { all_ok = false }
+  j = j + 1
+}
+elapsed_ms = now_ms() - start_ms
+assert all_ok == true "every pooled task still completes successfully"
+// 6 tasks x 150ms, max_concurrent 2 -> 3 sequential batches -> meaningfully
+// longer than the ~150ms an unbounded run would take.
+assert elapsed_ms >= 400 "max_concurrent must actually serialize execution, not just eventually finish"
+
+// ── Process Runtime integration: cancelling a task kills its child process ──
+
+proc_task = task_spawn(fn() {
+  return process_run({ command: "sleep", args: ["30"] })
+})
+sleep(0.2)
+cancel_start_ms = now_ms()
+task_cancel(proc_task)
+proc_result = task_wait(proc_task, 5000)
+kill_elapsed_ms = now_ms() - cancel_start_ms
+assert proc_result.cancelled == true "the task itself is reported cancelled"
+assert kill_elapsed_ms < 4000 "the child 'sleep 30' process must be killed promptly, not left to run its full duration"
+
+// ── Database Runtime integration: each task gets its own isolated connection ─
+
+db_path = "tests/tmp/test_tasks.db"
+db_exec(db_path, "CREATE TABLE IF NOT EXISTS counters(id INTEGER PRIMARY KEY, n INTEGER)")
+db_exec(db_path, "DELETE FROM counters")
+db_exec(db_path, "INSERT INTO counters(id, n) VALUES (1, 0)")
+
+db_handles = []
+k = 0
+while k < 5 {
+  db_handles = db_handles + [task_spawn(fn() {
+    db_transaction("tests/tmp/test_tasks.db") {
+      row = db_query(db, "SELECT n FROM counters WHERE id = 1")[0]
+      db_exec(db, "UPDATE counters SET n = ? WHERE id = 1", [row.n + 1])
+    }
+    return true
+  })]
+  k = k + 1
+}
+db_task_results = task_wait_all(db_handles, 10000)
+db_all_ok = true
+m = 0
+while m < len(db_task_results) {
+  if db_task_results[m].ok != true { db_all_ok = false }
+  m = m + 1
+}
+final_n = db_query(db_path, "SELECT n FROM counters WHERE id = 1")[0].n
+assert db_all_ok == true "every db_transaction inside a task completes successfully"
+assert final_n == 5 "each task's own db_transaction commits in isolation — no lost updates, no cross-task interference"
+
+// ── Diagnostics: a task's span is created and torn down correctly ───────────
+// (Behavioral check only, tracing itself is opt-in via --trace at the CLI —
+// see docs/language_reference.md#diagnostics--observability for the JSONL
+// output this produces when run with --trace.)
+
+diag_h = task_spawn(fn() { return "ok" }, { label: "diagnostics-check" })
+diag_r = task_wait(diag_h)
+assert diag_r.ok == true "a labeled task still completes normally"

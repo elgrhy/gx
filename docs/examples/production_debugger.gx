@@ -1,0 +1,34 @@
+// Production Debugger Runtime demo — see
+// docs/language_reference.md#debugger-runtime
+//
+// This script is interactive: it pauses at breakpoint() and waits for a
+// command on stdin. Try it a few ways:
+//
+//   gx run docs/examples/production_debugger.gx
+//     (drops into the debugger at the embedded breakpoint() call)
+//
+//   gx debug docs/examples/production_debugger.gx --break 28
+//     (also pauses at line 28, via an external line number — no source
+//     change needed, useful when you don't want to edit the script)
+//
+// At the "(gx-debug)" prompt, try: locals, print total, watch total,
+// step, continue, help.
+
+log("--- computing an order total ---")
+
+items = [
+  { name: "widget", price: 9.99, qty: 3 },
+  { name: "gadget", price: 24.50, qty: 1 },
+]
+
+total = 0
+i = 0
+while i < len(items) {
+  item = items[i]
+  line_total = item.price * item.qty
+  breakpoint()
+  total = total + line_total
+  i = i + 1
+}
+
+say "order total: {total}"

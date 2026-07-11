@@ -1,0 +1,7 @@
+// Imported from both left.gx and right.gx (a "diamond") — must be parsed
+// once and merged twice without triggering a false-positive collision
+// warning. See test_module_diamond_import.gx.
+
+function shared_value() {
+  return 1
+}

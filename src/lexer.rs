@@ -215,12 +215,13 @@ impl Lexer {
 
     fn read_string(&mut self) -> Result<String, String> {
         let line = self.line;
+        let col = self.col;
         // consume opening quote
         self.advance();
         let mut s = String::new();
         loop {
             match self.advance() {
-                None => return Err(format!("Unterminated string at line {}", line)),
+                None => return Err(format!("Line {}, col {}: unterminated string", line, col)),
                 Some('"') => break,
                 Some('\\') => match self.advance() {
                     Some('n') => s.push('\n'),
@@ -231,7 +232,7 @@ impl Lexer {
                         s.push('\\');
                         s.push(c);
                     }
-                    None => return Err(format!("Unterminated escape at line {}", line)),
+                    None => return Err(format!("Line {}, col {}: unterminated escape", line, col)),
                 },
                 Some(c) => s.push(c),
             }
@@ -550,7 +551,7 @@ impl Lexer {
                         tokens.push(Token::new(TokenKind::Pipe, line, col));
                     } else {
                         return Err(format!(
-                            "Unexpected '|' at line {}, col {} (did you mean '|>'?)",
+                            "Line {}, col {}: unexpected '|' (did you mean '|>'?)",
                             line, col
                         ));
                     }
@@ -562,15 +563,15 @@ impl Lexer {
                         tokens.push(Token::new(TokenKind::QuestionQuestion, line, col));
                     } else {
                         return Err(format!(
-                            "Unexpected '?' at line {}, col {} (did you mean '??'?)",
+                            "Line {}, col {}: unexpected '?' (did you mean '??'?)",
                             line, col
                         ));
                     }
                 }
                 Some(c) => {
                     return Err(format!(
-                        "Unexpected character '{}' at line {}, col {}",
-                        c, line, col
+                        "Line {}, col {}: unexpected character '{}'",
+                        line, col, c
                     ));
                 }
             }

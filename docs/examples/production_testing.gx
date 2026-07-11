@@ -1,0 +1,40 @@
+// Production Testing Framework demo — see
+// docs/language_reference.md#testing-framework
+//
+// Run: gx test docs/examples/production_testing.gx
+
+before_each(fn() {
+  // memory.* is the channel before_each/test/after_each share (see
+  // language_reference.md) — a plain captured variable would not be
+  // visible across these separate closure calls.
+  memory.order = { items: [], total: 0 }
+})
+
+after_each(fn() {
+  log("teardown: order had {len(memory.order.items)} item(s)")
+})
+
+test("adding an item updates the total", fn() {
+  memory.order.items = memory.order.items + [{ price: 9.99 }]
+  memory.order.total = memory.order.total + 9.99
+  assert memory.order.total == 9.99 "total should reflect the added item"
+})
+
+test("seeded random is reproducible", fn() {
+  set_random_seed(1234)
+  a = random_int(1, 1000)
+  set_random_seed(1234)
+  b = random_int(1, 1000)
+  assert a == b "same seed must produce the same draw"
+})
+
+test("test_temp_dir gives an isolated, writable scratch directory", fn() {
+  dir = test_temp_dir()
+  write_file(dir + "/report.txt", "ok")
+  assert read_file(dir + "/report.txt") == "ok" "round-trip through test_temp_dir"
+})
+
+test("assert_golden compares against a saved snapshot", fn() {
+  summary = { status: "ok", count: 3 }
+  assert_golden(summary, "docs/examples/testing_golden/summary.json")
+})

@@ -1,0 +1,51 @@
+// Production Configuration Runtime demo — see
+// docs/language_reference.md#configuration-runtime
+//
+// Run: gx run docs/examples/production_config.gx
+// Try: APP_PORT=9090 gx run docs/examples/production_config.gx
+
+log("--- layered config: defaults < file < env < overrides ---")
+
+config = config_load({
+  defaults: {
+    port: 3000,
+    host: "localhost",
+    debug: false,
+  },
+  // Auto-detected by extension: .json/.yaml/.yml/.toml. A missing file
+  // is not an error — the defaults above still apply.
+  file: "production_config.json",
+  // APP_PORT/APP_HOST/APP_DEBUG, if set, override the matching key —
+  // coerced to match the default's type (a number/boolean default makes
+  // "9090"/"true" usable without a separate parse step).
+  env_prefix: "APP_",
+  overrides: {
+    // Highest precedence — e.g. a value computed elsewhere in the script.
+  },
+  schema: {
+    port: "number",
+    host: "string",
+    debug: "boolean",
+  },
+})
+
+say "listening on {config.host}:{config.port} (debug={config.debug})"
+
+log("\n--- secrets stay separate from config ---")
+// Non-secret settings come from config_load above. Secrets belong in
+// .env / load_env() + env() instead — never in defaults/file/overrides,
+// and never logged directly (pick()/omit() before printing a config
+// object, same as shaping any other API response).
+// load_env (unlike config_load's `file` option) throws if the path
+// doesn't exist — a script that treats .env as optional wraps it.
+try {
+  load_env(".env")
+} catch e {
+  say "no .env file here — that's fine, env() below still has a default"
+}
+api_key = env("API_KEY", "")
+if api_key != "" {
+  say "API_KEY is set ({len(api_key)} chars) — never printed directly"
+} else {
+  say "API_KEY not set (expected in this demo — no .env file here)"
+}

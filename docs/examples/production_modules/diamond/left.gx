@@ -1,0 +1,5 @@
+import "shared.gx"
+
+function left_value() {
+  return shared_value()
+}

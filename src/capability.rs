@@ -504,10 +504,11 @@ fn not_granted_hint(resource: Resource) -> &'static str {
     }
 }
 
-/// Resolve `..`/`.` without touching the filesystem (no symlink resolution)
-/// — duplicated from `interpreter::util` deliberately: this module must not
-/// depend on the interpreter, since the CLI and toolchain also need it.
-fn normalize_path_no_symlink(path: &Path) -> PathBuf {
+/// Resolve `..`/`.` without touching the filesystem (no symlink resolution).
+/// `pub(crate)` so other confinement checks (e.g. a package's declared
+/// `entry` file staying inside its own package directory) can reuse the
+/// same logic instead of re-deriving it.
+pub(crate) fn normalize_path_no_symlink(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out: Vec<Component> = Vec::new();
     for component in path.components() {

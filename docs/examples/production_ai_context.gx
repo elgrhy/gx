@@ -1,0 +1,71 @@
+// Production AI Context Runtime demo — see
+// docs/language_reference.md#ai-context-runtime
+//
+// Run: gx run docs/examples/production_ai_context.gx --trace
+// (with OPENAI_API_KEY set, the context_ask calls below will make real
+// API calls; without one, they demonstrate the error path — this example
+// is written to work either way, so it's safe to run as-is.)
+
+log("--- creating a managed conversation ---")
+ctx = context_create({
+  system: "You are a concise assistant.",
+  max_history_tokens: 4000,
+  trim_strategy: "drop_oldest_pair"
+})
+say "system prompt set: {context_stats(ctx).system_present}"
+
+log("--- adding messages builds conversation history ---")
+ctx = context_add_message(ctx, "user", "What's the capital of France?")
+s = context_stats(ctx)
+say "messages: {s.message_count}, estimated tokens: {s.estimated_tokens}"
+
+log("--- context_ask sends the whole conversation, returns an updated context ---")
+result = context_ask(ctx, "openai", { model: "gpt-4o-mini" })
+if result.ok {
+  say "assistant: {result.text}"
+  ctx = result.context
+} else {
+  say "call failed ({result.error_kind}): {result.error}"
+  // context is still safe to keep using — no phantom message was added.
+  ctx = result.context
+}
+
+log("--- tool output limits: a long tool result gets capped, not silently kept whole ---")
+ctx2 = context_create({ tool_output_max_chars: 40 })
+long_output = "line 1 of output\nline 2 of output\nline 3 of output\nline 4 of output"
+ctx2 = context_add_tool_result(ctx2, "call_1", "search_tool", long_output)
+tool_msg = ctx2.messages[0]
+say "tool output truncated: {tool_msg.truncated}, kept {len(tool_msg.content)} of {len(long_output)} chars"
+
+log("--- automatic trimming keeps a long-running conversation bounded ---")
+ctx3 = context_create({ max_history_tokens: 60, reserve_tokens: 10, trim_strategy: "drop_oldest_pair" })
+i = 0
+while i < 20 {
+  ctx3 = context_add_message(ctx3, "user", "message number " + to_string(i) + " with some padding text")
+  ctx3 = context_add_message(ctx3, "assistant", "acknowledged " + to_string(i))
+  i = i + 1
+}
+s3 = context_stats(ctx3)
+say "after 40 adds: kept {s3.message_count} messages ({s3.estimated_tokens} tokens), trimmed {s3.total_messages_trimmed}"
+
+log("--- cloning branches a conversation without affecting the original ---")
+branch = context_clone(ctx3)
+branch = context_add_message(branch, "user", "only in this branch")
+say "original still has {context_stats(ctx3).message_count} messages; branch has {context_stats(branch).message_count}"
+
+log("--- persistence: serialize + ordinary db_exec/db_query, no dedicated API ---")
+db_path = "production_ai_context_demo.db"
+db_exec(db_path, "CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, data TEXT)")
+db_exec(db_path, "INSERT OR REPLACE INTO conversations(id, data) VALUES (?, ?)", ["demo", context_serialize(ctx3)])
+row = db_query(db_path, "SELECT data FROM conversations WHERE id = ?", ["demo"])[0]
+reloaded = context_deserialize(row.data)
+say "reloaded from db: {len(reloaded.messages)} messages, same as before: {len(reloaded.messages) == context_stats(ctx3).message_count}"
+
+log("--- context propagates into tasks as plain data: isolation + inheritance for free ---")
+h = task_spawn(fn() {
+  // Inherits a full snapshot of ctx3 via ordinary closure capture.
+  local = context_add_message(ctx3, "user", "added only inside the task")
+  return len(local.messages)
+})
+task_message_count = task_wait(h).value
+say "inside the task: {task_message_count} messages; back in the caller: {context_stats(ctx3).message_count} (unaffected)"

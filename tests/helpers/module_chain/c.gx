@@ -1,0 +1,3 @@
+function from_c() {
+  return "c"
+}

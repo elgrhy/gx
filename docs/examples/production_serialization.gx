@@ -1,0 +1,42 @@
+// Production Serialization Runtime demo — see
+// docs/language_reference.md#serialization-runtime
+//
+// Run: gx run docs/examples/production_serialization.gx
+
+log("--- JSON Lines: one independent value per line ---")
+lines = jsonl_stringify([{ id: 1 }, { id: 2 }, { id: 3 }])
+say lines
+records = jsonl_parse(lines)
+say "parsed {len(records)} records, first id = {records[0].id}"
+
+log("\n--- versioned serialization: fail loudly on schema drift ---")
+saved = versioned_stringify({ name: "Ada", role: "admin" }, 2)
+restored = versioned_parse(saved, 2)
+say "restored: {restored.name} ({restored.role})"
+try {
+  versioned_parse(saved, 3)
+} catch e {
+  say "correctly rejected a version mismatch: {e.message}"
+}
+
+log("\n--- data_import/data_export: format-agnostic file I/O ---")
+user = { name: "Ada", age: 36, tags: ["admin", "founder"] }
+data_export("user.json", user)
+data_export("user.yaml", user)
+back_json = data_import("user.json")
+back_yaml = data_import("user.yaml")
+say "json round-trip: {back_json.name}"
+say "yaml round-trip: {back_yaml.name}"
+
+// Optional schema validation on export — fails before writing anything.
+try {
+  data_export("bad.json", { age: "not-a-number" }, { age: "number" })
+} catch e {
+  say "schema validation blocked a bad export: {e.message}"
+}
+
+log("\n--- already-deterministic: json/yaml/toml/csv/xml all sort object keys ---")
+// (No new API needed for this — it was already true before this
+// milestone. Demonstrated here since it's easy to verify.)
+obj = { zebra: 1, apple: 2, mango: 3 }
+say json_stringify(obj)

@@ -1,0 +1,44 @@
+// Memory & Performance fixes demo — see
+// docs/language_reference.md#assignment and #array-methods
+//
+// Run: gx run docs/examples/production_performance.gx
+
+log("--- push/pop: O(1) amortized, not O(n^2) ---")
+items = []
+i = 0
+while i < 50000 {
+  items.push(i)
+  i = i + 1
+}
+say "built a {len(items)}-item array"
+
+// pop() always mutates, even when its result is captured — the idiomatic
+// "drain a stack" pattern now terminates correctly.
+stack = [1, 2, 3]
+drained = []
+while len(stack) > 0 {
+  drained.push(stack.pop())
+}
+say "drained: {drained}"
+
+log("\n--- object/array indexed assignment: O(1), not a full clone per call ---")
+lookup = {}
+i = 0
+while i < 50000 {
+  lookup["key" + to_string(i)] = i
+  i = i + 1
+}
+say "built a {len(keys(lookup))}-key object"
+
+log("\n--- the common agent-memory accumulator pattern ---")
+memory = { log: [] }
+memory.log.push("first")
+memory.log.push("second")
+say "memory.log: {memory.log}"
+
+// The existing self-reassignment accumulator pattern still works exactly
+// as before (push stays functional when its result is captured).
+results = []
+results = results.push("a")
+results = results.push("b")
+say "results: {results}"

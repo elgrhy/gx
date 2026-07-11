@@ -1,0 +1,11 @@
+{
+  "name": "module_pkg_demo",
+  "version": "0.1.0",
+  "description": "Fixture package for test_module_package_import.gx",
+  "entry": "main.gx",
+  "dependencies": {
+    "js": [],
+    "py": [],
+    "gx": {}
+  }
+}

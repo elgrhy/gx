@@ -165,6 +165,49 @@ fn parse_expr_str(s: &str, line_no: usize) -> Result<Expr, String> {
         .map_err(|e| format!("Line {}: {}", line_no, e))
 }
 
+/// If `text` is unambiguously a `<name>(<one arg>):` block header, parse it
+/// with the real expression grammar and return that single argument.
+/// Returns `None` (not an error) whenever `text` could plausibly be
+/// something else instead — it doesn't start with `<name>(` at all, *or*
+/// it has no trailing `:` — so callers fall through to ordinary statement
+/// parsing rather than hijacking it. That fallback matters because neither
+/// `db_transaction` nor `span` is a reserved word: the brace parser only
+/// ever intercepts `db_transaction(...)`/`span(...)` when a `{` follows,
+/// so e.g. a user's own `function span(x) { ... }` called as a bare
+/// `span(5)` statement still resolves as a normal call there — this must
+/// match that, not error out just because the text happens to start the
+/// same way a block header would. A trailing `:` is a much stronger
+/// signal (bare statements essentially never end a line with one), so
+/// once that's present, a malformed header (wrong argument count, called
+/// through something other than a plain name) is treated as a genuine
+/// mistake worth a specific error rather than a silent fallback.
+fn parse_call_header(text: &str, name: &str, line_no: usize) -> Result<Option<Expr>, String> {
+    let trimmed = text.trim();
+    if !trimmed
+        .to_lowercase()
+        .starts_with(&format!("{}(", name.to_lowercase()))
+    {
+        return Ok(None);
+    }
+    let Some(header) = trimmed.strip_suffix(':') else {
+        return Ok(None);
+    };
+    let expr = parse_expr_str(header, line_no)?;
+    match expr {
+        Expr::Call { callee, mut args } if args.len() == 1 => match *callee {
+            Expr::Ident(n) if n.eq_ignore_ascii_case(name) => Ok(Some(args.remove(0))),
+            _ => Err(format!(
+                "Line {}: expected `{}(...)`, got a call to something else",
+                line_no, name
+            )),
+        },
+        _ => Err(format!(
+            "Line {}: `{}(...)` must be called with exactly one argument",
+            line_no, name
+        )),
+    }
+}
+
 /// Parse a one-liner statement (no sub-blocks). Returns the parsed Stmt.
 /// String literals become Say statements. Bare identifiers stay as Expr stmts
 /// (the interpreter handles zero-arg function auto-call at runtime).
@@ -401,15 +444,28 @@ fn parse_one_stmt(
         if catch_idx < lines.len() {
             let cl = lines[catch_idx].text.to_lowercase();
             if cl.starts_with("catch") {
-                let catch_var = cl
-                    .strip_prefix("catch")
-                    .map(str::trim)
-                    .unwrap_or("err")
-                    .to_string();
-                let catch_var = if catch_var.is_empty() {
-                    "err".to_string()
-                } else {
-                    catch_var
+                // Typed catch (`catch NetworkError e:`) vs plain `catch e:`
+                // is distinguished by whether the first identifier after
+                // `catch` starts with an uppercase letter — the same rule
+                // brace syntax's `parse_try_catch` uses. This must run on
+                // the *original*-case text: `cl` above is lowercased only
+                // to match the `catch` keyword itself case-insensitively;
+                // using it here as well would make every catch look
+                // untyped and silently produce a bogus catch-variable name
+                // (e.g. `"networkerror e"`) instead of ever matching the
+                // declared error kind.
+                let original = lines[catch_idx].text.trim();
+                let after_catch = original["catch".len()..].trim();
+                let after_catch = after_catch.strip_suffix(':').unwrap_or(after_catch).trim();
+                let mut tokens = after_catch.split_whitespace();
+                let first = tokens.next();
+                let second = tokens.next();
+                let (catch_kind, catch_var) = match (first, second) {
+                    (Some(f), Some(v)) if f.chars().next().is_some_and(|c| c.is_uppercase()) => {
+                        (Some(f.to_string()), v.to_string())
+                    }
+                    (Some(f), _) => (None, f.to_string()),
+                    (None, _) => (None, "err".to_string()),
                 };
                 let catch_block = sub_block(lines, catch_idx + 1, lines[catch_idx].indent);
                 let catch_body = parse_stmts(catch_block, auto_output)?;
@@ -417,7 +473,7 @@ fn parse_one_stmt(
                 return Ok((
                     Stmt::TryCatch {
                         try_body,
-                        catch_kind: None,
+                        catch_kind,
                         catch_var,
                         catch_body,
                         line: line.no,
@@ -432,6 +488,60 @@ fn parse_one_stmt(
                 catch_kind: None,
                 catch_var: "err".to_string(),
                 catch_body: Vec::new(),
+                line: line.no,
+            },
+            consumed,
+        ));
+    }
+
+    // ── db_transaction(path): / span("name"): ────────────────────────────────
+    // Brace syntax only ever accepted these two as `keyword(expr) { body }` —
+    // reachable there, but a first-class progressive-syntax script had no
+    // way to use either at all. `parse_call_header` parses the header with
+    // the real expression grammar (so `db_transaction(env("DB_PATH")):`
+    // works, not just a string literal), then confirms it's a one-argument
+    // call to the expected name before pulling out that argument.
+    if let Some(path) = parse_call_header(text, "db_transaction", line.no)? {
+        let body_block = sub_block(lines, start + 1, line.indent);
+        let body = parse_stmts(body_block, auto_output)?;
+        let consumed = 1 + body_block.len();
+        return Ok((
+            Stmt::DbTransaction {
+                path,
+                body,
+                line: line.no,
+            },
+            consumed,
+        ));
+    }
+    if let Some(name) = parse_call_header(text, "span", line.no)? {
+        let body_block = sub_block(lines, start + 1, line.indent);
+        let body = parse_stmts(body_block, auto_output)?;
+        let consumed = 1 + body_block.len();
+        return Ok((
+            Stmt::Span {
+                name,
+                body,
+                line: line.no,
+            },
+            consumed,
+        ));
+    }
+
+    // ── Parallel ─────────────────────────────────────────────────────────────
+    // Each statement inside the block is its own concurrent branch — same
+    // semantics as brace syntax's `parallel { stmt1 stmt2 ... }`, where the
+    // body is parsed one full statement at a time (so a branch can itself
+    // be a multi-line nested block, e.g. an `if:`) rather than one per raw
+    // source line.
+    if lower == "parallel:" || lower == "parallel" {
+        let body_block = sub_block(lines, start + 1, line.indent);
+        let stmts = parse_stmts(body_block, auto_output)?;
+        let branches: Vec<Vec<Stmt>> = stmts.into_iter().map(|s| vec![s]).collect();
+        let consumed = 1 + body_block.len();
+        return Ok((
+            Stmt::Parallel {
+                branches,
                 line: line.no,
             },
             consumed,
@@ -664,6 +774,9 @@ fn parse_agent(
     let mut communicate_stmts: Vec<Stmt> = Vec::new();
     let mut implicit_stmts: Vec<Stmt> = Vec::new();
     let mut has_brain_phases = false;
+    let mut goal: Option<String> = None;
+    let mut retry: Option<u32> = None;
+    let mut on_error: Option<String> = None;
 
     let mut i = 0;
     while i < body_slice.len() {
@@ -697,14 +810,39 @@ fn parse_agent(
                     communicate_stmts = parse_stmts(sub, true)?;
                 }
                 _ if block_lower.starts_with("on ") => {
-                    let event = block_lower[3..].trim().to_string();
-                    let trigger = match event.as_str() {
-                        "start" | "started" => WhenTrigger::Started,
-                        other if other.starts_with("message ") => {
-                            let msg_event = other[8..].trim().trim_matches('"').to_string();
-                            WhenTrigger::Message(msg_event)
-                        }
-                        other => WhenTrigger::Expr(Expr::Ident(other.to_string())),
+                    // Operates on `raw_event` (original case, sliced only
+                    // at pure-ASCII keyword boundaries measured on
+                    // `raw_lower`) rather than the lowercased text end to
+                    // end — matching how typed `catch` above must preserve
+                    // case for anything that becomes a real expression or
+                    // string. Lowercasing everything first (the previous
+                    // behavior) is why `on x changes:`/`on cron "...":`
+                    // used to silently fall through to the generic
+                    // `WhenTrigger::Expr` arm as a mangled fake
+                    // identifier (`"x changes"`, `"cron \"...\""") that
+                    // could never evaluate truthy — a trigger that
+                    // silently never fires, not a parse error.
+                    let raw_event = block_name_raw[3..].trim();
+                    let raw_lower = raw_event.to_lowercase();
+                    let trigger = if raw_lower == "start" || raw_lower == "started" {
+                        WhenTrigger::Started
+                    } else if raw_lower.starts_with("message ") {
+                        let raw_msg = raw_event["message ".len()..].trim();
+                        WhenTrigger::Message(raw_msg.trim_matches('"').to_string())
+                    } else if raw_lower.starts_with("cron ") {
+                        let raw_cron = raw_event["cron ".len()..].trim();
+                        WhenTrigger::Cron(raw_cron.trim_matches('"').to_string())
+                    } else if raw_lower.ends_with(" changes") {
+                        let expr_src = raw_event[..raw_event.len() - " changes".len()].trim();
+                        WhenTrigger::Changes(parse_expr_str(expr_src, bl.no)?)
+                    } else {
+                        // Any other expression (`on count > 5:`, not just
+                        // a bare identifier) — brace syntax's
+                        // `parse_when_block` accepts a full expression
+                        // here via `self.parse_expr()`; the previous
+                        // `Expr::Ident(other.to_string())` only ever
+                        // supported the bare-identifier case.
+                        WhenTrigger::Expr(parse_expr_str(raw_event, bl.no)?)
                     };
                     let body = parse_stmts(sub, false)?;
                     when_blocks.push(WhenBlock {
@@ -725,6 +863,15 @@ fn parse_agent(
                 }
             }
             i += 1 + sub_len;
+        } else if let Some(value) = strip_agent_field_prefix(&bl.text, "goal") {
+            goal = Some(value.trim_matches('"').to_string());
+            i += 1;
+        } else if let Some(value) = strip_agent_field_prefix(&bl.text, "retry") {
+            retry = value.parse::<u32>().ok();
+            i += 1;
+        } else if let Some(value) = strip_agent_field_prefix(&bl.text, "on_error") {
+            on_error = Some(value.to_string());
+            i += 1;
         } else if looks_like_memory_entry(&bl.text) {
             // `key = value` at agent level → memory entry
             if let Some((key, val_src)) = split_assign(&bl.text) {
@@ -779,7 +926,7 @@ fn parse_agent(
     Ok((
         HelperDef {
             name: name_raw,
-            goal: None,
+            goal,
             can_do: Vec::new(),
             memory,
             receive_block: Vec::new(),
@@ -787,9 +934,9 @@ fn parse_agent(
             recipes: Vec::new(),
             objectives: Vec::new(),
             when_blocks,
-            retry: None,
+            retry,
             timeout_ms: None,
-            on_error: None,
+            on_error,
             functions: Vec::new(),
             line: header.no,
         },
@@ -832,6 +979,31 @@ fn split_assign(text: &str) -> Option<(String, &str)> {
     Some((key, val))
 }
 
+/// If `text` is `"<field>: <value>"` (case-insensitive on `field`), return
+/// `value` with its original case preserved. Used for the agent-header
+/// fields (`goal:`, `retry:`, `on_error:`) that brace syntax parses as
+/// simple `Field: value` lines inside `helper "x" { ... }` — these don't
+/// end in `:` themselves (unlike `Plan:`/`On start:`/a named-behavior
+/// block header), so `is_block_header` correctly never claims them, and
+/// they don't contain `=`, so `looks_like_memory_entry` doesn't either;
+/// without this, they fell through to the generic statement parser and
+/// were a hard parse error (`goal: "..."` isn't valid expression syntax)
+/// — every one of these three fields is genuinely read by the interpreter
+/// (see `HelperDef.goal`/`.retry`/`.on_error`), so this was a real,
+/// loudly-failing progressive-syntax gap, not dead surface like
+/// `can_do`/`timeout` (parsed by the brace grammar too, but never read by
+/// the interpreter — deliberately not given a progressive-syntax path
+/// either, since "already supported by the runtime" doesn't hold for
+/// them).
+fn strip_agent_field_prefix<'a>(text: &'a str, field: &str) -> Option<&'a str> {
+    let colon = text.find(':')?;
+    if text[..colon].trim().eq_ignore_ascii_case(field) {
+        Some(text[colon + 1..].trim())
+    } else {
+        None
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -841,6 +1013,145 @@ mod tests {
     fn run_src(src: &str) -> Result<(), String> {
         let prog = parse(src)?;
         crate::interpreter::Interpreter::new().run_program(&prog)
+    }
+
+    #[test]
+    fn typed_catch_only_catches_a_matching_error_kind() {
+        // Regression test: progressive-syntax `catch <Kind> e:` used to be
+        // lowercased before extraction, so `catch_kind` was always parsed
+        // as `None` — every typed catch silently behaved like a catch-all,
+        // never actually filtering by kind. `assert false "boom"` always
+        // raises `AssertionError` (see the interpreter's hardcoded mapping
+        // for `Signal::AssertFail`), so a `catch NetworkError e:` around it
+        // must NOT match and must propagate the failure.
+        let err = run_src(
+            r#"
+Agent typed_catch_mismatch
+On start:
+  try:
+    assert false "boom"
+  catch NetworkError e:
+    say "wrongly caught"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("boom"),
+            "error should propagate uncaught: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typed_catch_catches_a_matching_error_kind() {
+        run_src(
+            r#"
+Agent typed_catch_match
+On start:
+  try:
+    assert false "boom"
+  catch AssertionError e:
+    say "correctly caught: {e.message}"
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn on_cron_parses_to_a_cron_trigger_not_a_dead_expr_identifier() {
+        // Regression test: `On cron "...":` used to be lowercased whole
+        // and fall through to the generic `WhenTrigger::Expr` arm as a
+        // fake identifier literally named `cron "* * * * *"` — a trigger
+        // that could never evaluate truthy, so the block silently never
+        // ran. No parse error, just permanently dead code.
+        let prog = parse("Agent cron_test\nOn cron \"*/5 * * * *\":\n  say \"tick\"\n").unwrap();
+        let when = &prog.helpers[0].when_blocks[0];
+        match &when.trigger {
+            WhenTrigger::Cron(expr) => assert_eq!(expr, "*/5 * * * *"),
+            other => panic!("expected WhenTrigger::Cron, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn on_changes_parses_to_a_changes_trigger_not_a_dead_expr_identifier() {
+        // Same regression class as the cron test above: `On x changes:`
+        // used to become a fake identifier named `"x changes"`.
+        let prog = parse("Agent changes_test\nOn count changes:\n  say \"changed\"\n").unwrap();
+        let when = &prog.helpers[0].when_blocks[0];
+        match &when.trigger {
+            WhenTrigger::Changes(Expr::Ident(name)) => assert_eq!(name, "count"),
+            other => panic!(
+                "expected WhenTrigger::Changes(Ident(\"count\")), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn on_message_and_on_start_still_parse_correctly_after_the_case_preserving_fix() {
+        // The cron/changes fix reworked this whole branch to stop
+        // lowercasing everything up front — make sure the two triggers
+        // that already worked weren't broken by that change.
+        let prog = parse("Agent msg_test\nOn message \"ping\":\n  say \"pong\"\n").unwrap();
+        match &prog.helpers[0].when_blocks[0].trigger {
+            WhenTrigger::Message(event) => assert_eq!(event, "ping"),
+            other => panic!("expected WhenTrigger::Message, got {:?}", other),
+        }
+
+        let prog2 = parse("Agent start_test\nOn start:\n  say \"go\"\n").unwrap();
+        assert!(matches!(
+            prog2.helpers[0].when_blocks[0].trigger,
+            WhenTrigger::Started
+        ));
+    }
+
+    #[test]
+    fn on_a_general_boolean_expression_parses_as_a_real_expression_not_just_an_identifier() {
+        // Brace syntax's `when <expr> { }` accepts any expression, not
+        // just a bare identifier (`when memory.count > 5 { }` is valid) —
+        // the previous progressive-syntax fallback only ever produced
+        // `Expr::Ident(the_whole_line)`, which would have made
+        // `count > 5` parse as a single (invalid) identifier named
+        // `"count > 5"` instead of a real comparison expression.
+        let prog = parse("Agent expr_test\nOn count > 5:\n  say \"big\"\n").unwrap();
+        match &prog.helpers[0].when_blocks[0].trigger {
+            WhenTrigger::Expr(Expr::BinOp { op, .. }) => {
+                assert_eq!(*op, BinOp::Gt);
+            }
+            other => panic!("expected WhenTrigger::Expr(BinOp Gt), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn goal_field_is_parsed_and_stored_in_memory_at_runtime() {
+        // `goal:` was previously unparseable in progressive syntax at all
+        // (a hard parse error — `goal: "..."` matches neither a block
+        // header nor a `key = value` memory entry) despite being genuinely
+        // read by the interpreter (`helper.goal` → `memory.goal`, see
+        // `call_agent` in mod.rs). Checked behaviorally, not just at the
+        // AST level, since the whole point is that it reaches `memory`.
+        let prog = crate::indent_parser::parse(
+            "Agent goal_test\ngoal: \"be helpful\"\nOn start:\n  assert memory.goal == \"be helpful\" \"goal must reach memory\"\n",
+        )
+        .unwrap();
+        assert_eq!(prog.helpers[0].goal.as_deref(), Some("be helpful"));
+        let mut interp = crate::interpreter::Interpreter::new();
+        interp.run_program(&prog).unwrap();
+    }
+
+    #[test]
+    fn retry_and_on_error_fields_are_parsed_and_reach_the_helper_def() {
+        // Same gap as `goal:` above — `retry: N` and `on_error: policy`
+        // are genuinely consumed by `call_agent`'s brain-cycle retry loop
+        // (mod.rs), so this was a real (loudly failing) parity gap, not
+        // dead surface like `can_do`/`timeout` (parsed by brace syntax
+        // too, but never read anywhere — deliberately left unsupported).
+        let prog = crate::indent_parser::parse(
+            "Agent retry_test\nretry: 2\non_error: continue\nPlan:\n  x = 1\nExecute:\n  y = 2\nRemember:\n  memory.y = y\nCommunicate:\n  y\n",
+        )
+        .unwrap();
+        assert_eq!(prog.helpers[0].retry, Some(2));
+        assert_eq!(prog.helpers[0].on_error.as_deref(), Some("continue"));
     }
 
     #[test]
@@ -933,6 +1244,161 @@ greeting = "hi"
 On start:
   say "Agent started"
   say greeting
+"#,
+        )
+        .unwrap();
+    }
+
+    // ── db_transaction / span / parallel in progressive syntax ──────────────
+    // Regression tests: these three blocks previously existed only in the
+    // brace parser — a first-class progressive-syntax script had no way to
+    // use transactions, diagnostics spans, or concurrent branches at all.
+
+    #[test]
+    fn span_block_parses_and_runs_in_progressive_syntax() {
+        run_src(
+            r#"
+Agent demo
+
+On start:
+  span("checkout"):
+    memory.ran = true
+  say "ran={memory.ran}"
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn db_transaction_block_parses_in_progressive_syntax() {
+        let dir = std::env::temp_dir().join(format!(
+            "gx_indent_db_transaction_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir
+            .join("t.db")
+            .to_string_lossy()
+            .into_owned()
+            .replace('\\', "\\\\");
+        run_src(&format!(
+            r#"
+Agent demo
+
+On start:
+  db_transaction("{db}"):
+    db_exec("{db}", "CREATE TABLE t (id INTEGER)")
+    db_exec("{db}", "INSERT INTO t (id) VALUES (1)")
+  rows = db_query("{db}", "SELECT * FROM t")
+  assert len(rows) == 1 "the transaction's writes must be visible after it commits"
+"#,
+        ))
+        .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn db_transaction_block_rolls_back_on_error_in_progressive_syntax() {
+        let dir = std::env::temp_dir().join(format!(
+            "gx_indent_db_transaction_rollback_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir
+            .join("t.db")
+            .to_string_lossy()
+            .into_owned()
+            .replace('\\', "\\\\");
+        let err = run_src(&format!(
+            r#"
+Agent demo
+
+On start:
+  db_transaction("{db}"):
+    db_exec("{db}", "CREATE TABLE t (id INTEGER)")
+    db_exec("{db}", "INSERT INTO t (id) VALUES (1)")
+    db_exec("{db}", "this is not valid sql")
+"#,
+        ))
+        .unwrap_err();
+        assert!(!err.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parallel_block_parses_and_runs_all_branches_in_progressive_syntax() {
+        run_src(
+            r#"
+Agent demo
+
+On start:
+  parallel:
+    memory.a = 1
+    memory.b = 2
+    memory.c = 3
+  assert memory.a == 1
+  assert memory.b == 2
+  assert memory.c == 3
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn parse_call_header_returns_none_for_a_non_matching_line() {
+        assert!(parse_call_header("if x > 0:", "db_transaction", 1)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn parse_call_header_rejects_more_than_one_argument() {
+        let err = parse_call_header("db_transaction(a, b):", "db_transaction", 1).unwrap_err();
+        assert!(err.contains("exactly one argument"));
+    }
+
+    #[test]
+    fn parse_call_header_falls_through_when_theres_no_trailing_colon() {
+        // Regression test: neither `db_transaction` nor `span` is a
+        // reserved word (the brace parser only intercepts them when a `{`
+        // follows) — a bare `db_transaction("x")` statement with no
+        // trailing `:` must fall through to ordinary call-statement
+        // parsing (e.g. a user's own same-named function), not be
+        // rejected just because the text happens to start the same way a
+        // block header would.
+        assert!(
+            parse_call_header("db_transaction(\"x\")", "db_transaction", 1)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_variable_named_span_can_be_assigned_and_read_without_being_hijacked() {
+        // Regression test for a real bug this fix also closes in the
+        // brace parser (src/parser.rs), not just here: neither
+        // `db_transaction` nor `span` is reserved, but the brace parser
+        // used to treat *any* identifier token named "span" as the start
+        // of a `span(...) { ... }` block unconditionally — so a plain
+        // `span = 5` assignment failed with "expected LParen, got Eq"
+        // before ever reaching the block-vs-plain-identifier question at
+        // all. A 1-token lookahead (is the very next token `(`?) fixes
+        // this specific, more common case (bare reference/assignment).
+        //
+        // A narrower case remains open on both parsers: calling a
+        // same-named function/closure with parens but *no* trailing
+        // `{ ... }` (e.g. `span(21)` alone, no block) still gets
+        // mis-parsed, since distinguishing that from `span("x"):` (this
+        // block form) requires arbitrary lookahead/backtracking past the
+        // argument expression to see whether a block follows — out of
+        // scope for this fix; call it something else if you need to.
+        run_src(
+            r#"
+Agent demo
+
+On start:
+  span = 5
+  memory.doubled = span * 2
 "#,
         )
         .unwrap();

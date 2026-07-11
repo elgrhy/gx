@@ -312,6 +312,16 @@ pub enum Stmt {
         body: Vec<Stmt>,
         line: usize,
     },
+    /// span("name") { ... } — manual tracing instrumentation. Starts a
+    /// child span (nested under whatever span is currently active),
+    /// runs body, and ends it with an ok/error outcome depending on how
+    /// body finished. A no-op (still runs body normally) when tracing
+    /// isn't enabled (`--trace`) — see `crate::diagnostics`.
+    Span {
+        name: Expr,
+        body: Vec<Stmt>,
+        line: usize,
+    },
     /// await { a: expr, b: expr } — run all branches concurrently, collect results as object
     Await {
         bindings: Vec<(String, Expr)>,

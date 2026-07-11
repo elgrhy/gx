@@ -1,0 +1,23 @@
+// Production Module & Package Runtime demo — see
+// docs/language_reference.md#module--package-runtime
+//
+// Run: gx run docs/examples/production_modules/main.gx --trace
+//
+// Covers plain file imports (transitive + diamond). Package imports
+// (import "some-package", resolved via gx.lock + gx install) need a real
+// gx.json/gx.lock and a fetched dependency to demonstrate end to end —
+// see tests/test_module_package_import.gx and its fixtures under
+// tests/helpers/module_pkg_demo/ for a complete, runnable example of that
+// half of the runtime.
+
+log("--- transitive imports: a.gx -> b.gx -> c.gx ---")
+import "lib/a.gx"
+say "from_a() = {from_a()}"
+
+log("--- diamond import: left.gx and right.gx both import shared.gx ---")
+import "diamond/left.gx"
+import "diamond/right.gx"
+say "left_value() + right_value() = {left_value() + right_value()}"
+
+log("--- both branches of the diamond reached the same shared.gx ---")
+say "shared.gx was parsed once, merged twice — not a collision"

@@ -1,0 +1,5 @@
+import "shared.gx"
+
+function right_value() {
+  return shared_value()
+}

@@ -1,0 +1,26 @@
+// Test: left.gx and right.gx both import shared.gx (a "diamond"). shared.gx
+// must be parsed exactly once (via the resolver's import cache) but merged
+// once per importer without falsely warning about — or failing on — a name
+// collision, since both branches legitimately reach the same shared_value().
+
+import "helpers/module_diamond/left.gx"
+import "helpers/module_diamond/right.gx"
+
+helper "test_module_diamond_import" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+      total = left_value() + right_value()
+      if total == 2 { memory.passed += 1 } else { log("FAIL: diamond import returned " + to_string(total)) memory.failed += 1 }
+
+      log("test_module_diamond_import: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}

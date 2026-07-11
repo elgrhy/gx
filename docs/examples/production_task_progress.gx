@@ -1,0 +1,38 @@
+// Task Progress Reporting demo — see
+// docs/language_reference.md#async--event-runtime
+//
+// Run: gx run docs/examples/production_task_progress.gx --allow-process
+
+log("--- reporting incremental progress from a background task ---")
+
+h = task_spawn(fn() {
+  total = 5
+  i = 0
+  while i < total {
+    // task_wait's own result is only available on completion — task_emit
+    // is how a still-running task reports "here's what I've done so far."
+    task_emit({ step: i + 1, total: total })
+    sleep(0.1)
+    i = i + 1
+  }
+  return "all steps complete"
+})
+
+// Poll while the task runs, draining new progress each time.
+while task_status(h).done == false {
+  updates = task_progress(h)
+  j = 0
+  while j < len(updates) {
+    u = updates[j]
+    say "progress: step {u.step}/{u.total}"
+    j = j + 1
+  }
+  sleep(0.05)
+}
+
+// task_wait's own result carries anything emitted between the last poll
+// and completion, so nothing emitted right at the end is ever lost.
+result = task_wait(h)
+final_updates = result.progress
+say "final undrained progress entries: {len(final_updates)}"
+say "task result: {result.value}"

@@ -75,27 +75,38 @@ impl Value {
     pub fn get_index(&self, idx: &Value) -> Value {
         match (self, idx) {
             (Value::Array(arr), Value::Number(n)) => {
+                // A negative index that still lands before the start of the
+                // array (e.g. `arr[-100]` on a 3-element array) must miss
+                // just like a positive out-of-bounds index does (`arr[100]`
+                // -> null) — previously `.max(0)` clamped it to index 0
+                // instead, so `arr[-100]` silently returned the *first*
+                // element rather than `null`.
                 let i = if *n < 0.0 {
-                    let len = arr.len() as i64;
-                    let neg = *n as i64;
-                    (len + neg).max(0) as usize
+                    arr.len() as i64 + *n as i64
                 } else {
-                    *n as usize
+                    *n as i64
                 };
-                arr.get(i).cloned().unwrap_or(Value::Null)
+                if i < 0 {
+                    Value::Null
+                } else {
+                    arr.get(i as usize).cloned().unwrap_or(Value::Null)
+                }
             }
             (Value::Str(s), Value::Number(n)) => {
                 let chars: Vec<char> = s.chars().collect();
                 let i = if *n < 0.0 {
-                    let len = chars.len() as i64;
-                    (len + *n as i64).max(0) as usize
+                    chars.len() as i64 + *n as i64
                 } else {
-                    *n as usize
+                    *n as i64
                 };
-                chars
-                    .get(i)
-                    .map(|c| Value::Str(c.to_string()))
-                    .unwrap_or(Value::Null)
+                if i < 0 {
+                    Value::Null
+                } else {
+                    chars
+                        .get(i as usize)
+                        .map(|c| Value::Str(c.to_string()))
+                        .unwrap_or(Value::Null)
+                }
             }
             (Value::Object(map), Value::Str(key)) => map.get(key).cloned().unwrap_or(Value::Null),
             _ => Value::Null,
@@ -192,6 +203,15 @@ impl PartialEq for Value {
             (Value::Number(a), Value::Number(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => a == b,
+            // `HashMap<String, Value>::eq` is already key/value-set
+            // equality (order-independent) — exactly what `{x:1,y:2} ==
+            // {y:2,x:1}` should mean in a language with no defined object
+            // key order. Missing before this fix: every `(Object, Object)`
+            // pair fell through to the catch-all `false` below, so no two
+            // structurally-identical objects — and, transitively, no two
+            // arrays or nested structures *containing* an object — were
+            // ever `==` to each other, no matter their contents.
+            (Value::Object(a), Value::Object(b)) => a == b,
             (Value::Closure(..), _) | (_, Value::Closure(..)) => false,
             _ => false,
         }
@@ -205,5 +225,99 @@ impl PartialOrd for Value {
             (Value::Str(a), Value::Str(b)) => a.partial_cmp(b),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn obj(pairs: &[(&str, Value)]) -> Value {
+        let mut m = HashMap::new();
+        for (k, v) in pairs {
+            m.insert(k.to_string(), v.clone());
+        }
+        Value::Object(m)
+    }
+
+    #[test]
+    fn out_of_bounds_negative_array_index_misses_like_positive_out_of_bounds_does() {
+        // Regression test: `arr[-100]` on a 3-element array used to clamp
+        // to index 0 (`.max(0)`) and silently return the *first* element,
+        // while `arr[100]` correctly returned `null` — an asymmetry a
+        // caller doing bounds-agnostic negative indexing (`arr[-i]`) could
+        // never safely detect.
+        let arr = Value::Array(vec![
+            Value::Number(1.0),
+            Value::Number(2.0),
+            Value::Number(3.0),
+        ]);
+        assert_eq!(arr.get_index(&Value::Number(-100.0)), Value::Null);
+        assert_eq!(arr.get_index(&Value::Number(100.0)), Value::Null);
+        assert_eq!(arr.get_index(&Value::Number(-4.0)), Value::Null);
+        assert_eq!(arr.get_index(&Value::Number(-3.0)), Value::Number(1.0));
+        assert_eq!(arr.get_index(&Value::Number(-1.0)), Value::Number(3.0));
+    }
+
+    #[test]
+    fn out_of_bounds_negative_string_index_misses_like_positive_out_of_bounds_does() {
+        let s = Value::Str("abc".to_string());
+        assert_eq!(s.get_index(&Value::Number(-100.0)), Value::Null);
+        assert_eq!(s.get_index(&Value::Number(100.0)), Value::Null);
+        assert_eq!(s.get_index(&Value::Number(-4.0)), Value::Null);
+        assert_eq!(
+            s.get_index(&Value::Number(-3.0)),
+            Value::Str("a".to_string())
+        );
+    }
+
+    #[test]
+    fn structurally_identical_objects_are_equal() {
+        // Regression test: PartialEq's match previously had no arm for
+        // (Object, Object) at all, falling through to the catch-all
+        // `false` — meaning `{x:1} == {x:1}` was always false in GX,
+        // no matter how identical the two objects were.
+        let a = obj(&[("x", Value::Number(1.0)), ("y", Value::Number(2.0))]);
+        let b = obj(&[("x", Value::Number(1.0)), ("y", Value::Number(2.0))]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn object_equality_is_independent_of_key_insertion_order() {
+        let a = obj(&[("x", Value::Number(1.0)), ("y", Value::Number(2.0))]);
+        let b = obj(&[("y", Value::Number(2.0)), ("x", Value::Number(1.0))]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn objects_with_different_values_are_not_equal() {
+        let a = obj(&[("x", Value::Number(1.0))]);
+        let b = obj(&[("x", Value::Number(2.0))]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn objects_with_different_keys_are_not_equal() {
+        let a = obj(&[("x", Value::Number(1.0))]);
+        let b = obj(&[("y", Value::Number(1.0))]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn nested_objects_inside_arrays_compare_correctly() {
+        // The bug was transitive: Vec<Value>::eq delegates to Value::eq
+        // for each element, so an array containing an object was also
+        // never equal to an identical array, even though the top-level
+        // (Array, Array) arm was always correct on its own.
+        let a = Value::Array(vec![obj(&[("x", Value::Number(1.0))])]);
+        let b = Value::Array(vec![obj(&[("x", Value::Number(1.0))])]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn closures_are_never_equal_even_to_themselves() {
+        let c = Value::Closure(vec![], vec![], HashMap::new());
+        assert_ne!(c, c.clone());
     }
 }

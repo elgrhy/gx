@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "packages": {
+    "module_pkg_demo": {
+      "version": "0.1.0",
+      "resolved": "path+helpers/module_pkg_demo",
+      "integrity": "sha256-unused-for-path-dependencies"
+    }
+  }
+}

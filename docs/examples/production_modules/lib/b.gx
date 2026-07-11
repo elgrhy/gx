@@ -1,0 +1,5 @@
+import "c.gx"
+
+function from_b() {
+  return "b+" + from_c()
+}

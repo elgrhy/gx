@@ -1,0 +1,26 @@
+// Test: import "module_pkg_demo" resolves a *package* import (a bare name,
+// no .gx suffix, no path separator) through tests/gx.lock + the fixture
+// package at helpers/module_pkg_demo — the same mechanism `gx install`
+// wires up for a real dependencies.gx entry, exercised here via a path
+// dependency so the test needs no network access and no package cache.
+
+import "module_pkg_demo"
+
+helper "test_module_package_import" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+      result = pkg_demo_value()
+      if result == "from-package" { memory.passed += 1 } else { log("FAIL: package import returned " + result) memory.failed += 1 }
+
+      log("test_module_package_import: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}

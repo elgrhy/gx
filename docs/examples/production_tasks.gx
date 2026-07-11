@@ -1,0 +1,87 @@
+// Production Task Runtime demo — see
+// docs/language_reference.md#task-runtime
+//
+// Run: gx run docs/examples/production_tasks.gx --allow-process --trace
+
+log("--- basic spawn/wait ---")
+h = task_spawn(fn() { return 21 * 2 })
+r = task_wait(h)
+say "result: ok={r.ok} value={r.value}"
+
+log("--- task_wait_all: run several tasks concurrently, collect all results ---")
+handles = []
+i = 0
+while i < 4 {
+  n = i
+  handles = handles + [task_spawn(fn() { return n * n })]
+  i = i + 1
+}
+results = task_wait_all(handles)
+j = 0
+while j < len(results) {
+  say "squares[{j}] = {results[j].value}"
+  j = j + 1
+}
+
+log("--- task_wait_any: race several branches, use whichever answers first ---")
+slow = task_spawn(fn() { sleep(1) return "slow branch" })
+fast = task_spawn(fn() { return "fast branch" })
+winner = task_wait_any([slow, fast])
+say "winner: {winner.value}"
+task_cancel(slow)
+
+log("--- deadlines: a task can be given its own timeout ---")
+h2 = task_spawn(fn() {
+  i = 0
+  while i < 100000000 {
+    i = i + 1
+  }
+  return "unreachable"
+}, { timeout: 200 })
+r2 = task_wait(h2, 5000)
+say "deadline task: cancelled={r2.cancelled}"
+
+log("--- cancellation kills any child process the task started ---")
+proc_task = task_spawn(fn() {
+  return process_run({ command: "sleep", args: ["30"] })
+})
+sleep(0.2)
+task_cancel(proc_task)
+r3 = task_wait(proc_task, 5000)
+say "process task: cancelled={r3.cancelled} (the 'sleep 30' process was killed, not left running)"
+
+log("--- structured concurrency: cancelling a parent cancels its child task too ---")
+parent = task_spawn(fn() {
+  child = task_spawn(fn() {
+    i = 0
+    while i < 100000000 {
+      i = i + 1
+    }
+    return "unreachable"
+  })
+  return task_wait(child)
+})
+sleep(0.1)
+task_cancel(parent)
+parent_result = task_wait(parent, 5000)
+say "structured: child was cancelled too = {parent_result.value.cancelled}"
+
+log("--- bounded parallel execution: cap concurrency with pool/max_concurrent ---")
+pool_handles = []
+k = 0
+while k < 6 {
+  pool_handles = pool_handles + [task_spawn(fn() {
+    sleep(0.1)
+    return true
+  }, { pool: "workers", max_concurrent: 2 })]
+  k = k + 1
+}
+pool_results = task_wait_all(pool_handles, 10000)
+say "bounded pool: all completed = {len(pool_results) == 6}"
+
+log("--- task-local context: task_id()/is_cancelled() from inside a task ---")
+h4 = task_spawn(fn() {
+  return { id: task_id(), cancelled: is_cancelled() }
+})
+r4 = task_wait(h4)
+say "inside task: has own id = {r4.value.id != null}, cancelled = {r4.value.cancelled}"

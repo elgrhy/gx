@@ -1,0 +1,64 @@
+// Production Diagnostics & Observability Runtime demo — see
+// docs/language_reference.md#diagnostics--observability
+//
+// Run: gx run docs/examples/production_diagnostics.gx --trace --log-level debug --allow-process
+// (drop --trace to see tier 1 logging only, with spans becoming no-ops)
+
+db_path = "production_diagnostics_demo.db"
+
+log("--- tier 1: structured logging, always active regardless of --trace ---")
+log_debug("startup", { pid: get_env("PID", "unknown") })
+log_info("processing a checkout", { order_id: 42 })
+log_warn("payment provider responded slowly", { latency_ms: 850 })
+
+log("--- tier 2: manual span() wraps a named unit of work ---")
+span("checkout") {
+  log_info("inside checkout span")
+
+  // Automatic spans: db.transaction/db.exec nest under "checkout" for free.
+  db_exec(db_path, "CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, status TEXT)", [])
+  db_transaction(db_path) {
+    db_exec(db, "INSERT OR REPLACE INTO orders(id, status) VALUES (?, ?)", [42, "paid"])
+  }
+
+  // Automatic spans: process.run nests under "checkout" too.
+  result = process_run({ command: "echo", args: ["order 42 confirmed"] })
+  say "process said: {result.stdout}"
+}
+
+log("--- correlation: trace_id() is stable across the whole run/request ---")
+tid = trace_id()
+tid_display = tid ?? "(none - pass --trace to see one)"
+say "trace_id: {tid_display}"
+
+log("--- span_id() reflects only the innermost currently-active span ---")
+outside_span_id = span_id() ?? "null"
+say "span_id() outside any span: {outside_span_id}"
+span("outer") {
+  outer_id = span_id()
+  span("inner") {
+    say "outer span id: {outer_id}, inner span id: {span_id()}"
+  }
+  say "back in outer, span_id() is outer again: {span_id() == outer_id}"
+}
+
+log("--- a capability denial is automatically audited, not just thrown ---")
+try {
+  shell("echo this should be denied")
+} catch e {
+  say "shell() denied as expected: {e.message}"
+}
+
+log("--- spawn agent inherits the parent's trace_id for correlation ---")
+helper "worker" {
+  brain {
+    plan { }
+    execute {
+      correlated = trace_id() == input.parent_trace_id
+    }
+    remember { }
+    communicate { correlated }
+  }
+}
+correlated = spawn agent "worker" with { parent_trace_id: tid } timeout 5000
+say "spawned agent shared the parent's trace_id: {correlated}"

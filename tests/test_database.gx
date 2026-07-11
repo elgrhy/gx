@@ -1,0 +1,137 @@
+// Production Database Runtime: connection pooling, nested transactions
+// (savepoints), migrations, integrity check, vacuum, and backup.
+// (run: gx run tests/test_database.gx --no-sandbox)
+//
+// Basic db_query/db_exec/db_transaction coverage already exists in
+// tests/test_production_features.gx — this file focuses specifically on
+// what this milestone added/fixed.
+
+db_path = "tests/tmp/test_database.db"
+db_exec(db_path, "DROP TABLE IF EXISTS items", [])
+db_exec(db_path, "CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT)", [])
+
+// ── Connection pooling: WAL mode persists across calls ────────────────────────
+// A fresh connection per call (the old behavior) would never retain a PRAGMA
+// set on a previous, already-closed connection — WAL only stays visible if
+// the same pooled connection is genuinely being reused.
+
+mode1 = db_query(db_path, "PRAGMA journal_mode", [])[0].journal_mode
+mode2 = db_query(db_path, "PRAGMA journal_mode", [])[0].journal_mode
+assert mode1 == "wal" "connection pool: WAL mode active on first call"
+assert mode2 == "wal" "connection pool: WAL mode still active on a later call (same pooled connection)"
+
+// ── Nested transactions (savepoints) ──────────────────────────────────────────
+
+db_exec(db_path, "DELETE FROM items", [])
+db_transaction(db_path) {
+  db_exec(db, "INSERT INTO items(name) VALUES (?)", ["outer"])
+  db_transaction(db) {
+    db_exec(db, "INSERT INTO items(name) VALUES (?)", ["inner"])
+  }
+}
+nested_rows = db_query(db_path, "SELECT name FROM items ORDER BY id", [])
+assert len(nested_rows) == 2 "nested db_transaction: both levels committed together"
+assert nested_rows[0].name == "outer" "nested db_transaction: outer row present"
+assert nested_rows[1].name == "inner" "nested db_transaction: inner row present"
+
+// A failure in the *inner* transaction only rolls back the inner savepoint —
+// the outer transaction is unaffected and keeps running.
+db_exec(db_path, "DELETE FROM items", [])
+db_transaction(db_path) {
+  db_exec(db, "INSERT INTO items(name) VALUES (?)", ["outer_before"])
+  try {
+    db_transaction(db) {
+      db_exec(db, "INSERT INTO items(name) VALUES (?)", ["inner_doomed"])
+      x = 1 / 0
+    }
+  } catch e {
+    assert true "inner transaction error caught without aborting the outer one"
+  }
+  db_exec(db, "INSERT INTO items(name) VALUES (?)", ["outer_after"])
+}
+partial_rows = db_query(db_path, "SELECT name FROM items ORDER BY id", [])
+assert len(partial_rows) == 2 "nested rollback: only the failed inner savepoint's row is missing"
+assert partial_rows[0].name == "outer_before" "nested rollback: first outer row present"
+assert partial_rows[1].name == "outer_after" "nested rollback: second outer row present (outer transaction survived)"
+
+// ── db_query/db_exec resolve by the requested path, even mid-transaction ─────
+// Regression test: this used to silently redirect to whatever transaction
+// happened to be active anywhere, ignoring the path actually passed in.
+
+other_db_path = "tests/tmp/test_database_other.db"
+db_exec(other_db_path, "DROP TABLE IF EXISTS notes", [])
+db_exec(other_db_path, "CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)", [])
+db_transaction(db_path) {
+  db_exec(other_db_path, "INSERT INTO notes(text) VALUES (?)", ["from-other-db"])
+}
+other_rows = db_query(other_db_path, "SELECT text FROM notes", [])
+assert len(other_rows) == 1 "cross-database call inside a transaction lands in the database actually named"
+assert other_rows[0].text == "from-other-db" "cross-database call value is correct"
+
+// ── Migrations ─────────────────────────────────────────────────────────────────
+
+migrate_db_path = "tests/tmp/test_database_migrations.db"
+db_exec(migrate_db_path, "DROP TABLE IF EXISTS users", [])
+db_exec(migrate_db_path, "DROP TABLE IF EXISTS posts", [])
+// Reset user_version so this test is repeatable across runs.
+db_exec(migrate_db_path, "PRAGMA user_version = 0", [])
+
+m1 = db_migrate(migrate_db_path, ["CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)"])
+assert m1.ok == true "db_migrate: first migration succeeds"
+assert m1.applied == 1 "db_migrate: exactly one migration applied"
+assert m1.to_version == 1 "db_migrate: version advances to 1"
+
+// Re-running the same single-migration list is a no-op (idempotent).
+m2 = db_migrate(migrate_db_path, ["CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)"])
+assert m2.applied == 0 "db_migrate: re-running the same migration list applies nothing"
+assert m2.from_version == 1 "db_migrate: from_version reflects the already-applied state"
+
+// Extending the list applies only the new migration.
+m3 = db_migrate(migrate_db_path, [
+  "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)",
+  "CREATE TABLE posts(id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT)"
+])
+assert m3.applied == 1 "db_migrate: only the newly added migration is applied"
+assert m3.to_version == 2 "db_migrate: version advances to 2"
+
+tables = db_query(migrate_db_path, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", [])
+table_names = map(tables, fn(t) { t.name })
+assert contains(table_names, "users") == true "db_migrate: users table exists"
+assert contains(table_names, "posts") == true "db_migrate: posts table exists"
+
+// ── Integrity check ───────────────────────────────────────────────────────────
+
+integrity = db_integrity_check(db_path)
+assert integrity.ok == true "db_integrity_check: healthy database reports ok"
+assert len(integrity.errors) == 0 "db_integrity_check: no errors on a healthy database"
+
+// ── Vacuum ─────────────────────────────────────────────────────────────────────
+
+vacuum_result = db_vacuum(db_path)
+assert vacuum_result.ok == true "db_vacuum: succeeds on a healthy database"
+
+// db_vacuum/db_migrate must refuse to run inside an active transaction on
+// the same database (VACUUM in particular is not valid mid-transaction in
+// SQLite itself).
+try {
+  db_transaction(db_path) {
+    db_vacuum(db_path)
+  }
+  assert false "db_vacuum inside an active transaction on the same db should have been rejected"
+} catch e {
+  assert true "db_vacuum correctly rejected while a transaction is active on the same database"
+}
+
+// ── Backup ─────────────────────────────────────────────────────────────────────
+
+backup_path = "tests/tmp/test_database_backup.db"
+db_exec(db_path, "DELETE FROM items", [])
+db_exec(db_path, "INSERT INTO items(name) VALUES (?)", ["backup-me"])
+backup_result = db_backup(db_path, backup_path)
+assert backup_result.ok == true "db_backup: reports success"
+
+backup_rows = db_query(backup_path, "SELECT name FROM items", [])
+assert len(backup_rows) == 1 "db_backup: backed-up database contains the same data"
+assert backup_rows[0].name == "backup-me" "db_backup: backed-up row value matches the source"
+
+print("test_database: all assertions passed")

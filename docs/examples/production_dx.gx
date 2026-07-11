@@ -1,0 +1,43 @@
+// Production Language Surface & Developer Experience demo — see
+// docs/language_reference.md#error-handling
+//
+// Run: gx run docs/examples/production_dx.gx
+
+log("--- has_capability(): ask before you try ---")
+if has_capability("external_network") {
+  say "external_network is granted"
+} else {
+  say "external_network is denied — falling back to a cached value"
+}
+say "process capability: {has_capability(\"process\")}"
+
+log("\n--- retry(): retries a thrown error AND a returned {ok:false} ---")
+memory.attempts = 0
+result = retry(fn() {
+  memory.attempts = memory.attempts + 1
+  if memory.attempts < 3 {
+    // http_get/process_run/task_wait/ask all fail this way — by
+    // *returning* {ok:false}, never by throwing. retry() understands
+    // this convention too, not just a thrown error.
+    return { ok: false, error: "not ready yet", error_kind: "timeout" }
+  }
+  return { ok: true, value: "success on attempt " + to_string(memory.attempts) }
+}, 5, { delay: 10 })
+say "retry result: ok={result.ok} value={result.value} (took {memory.attempts} attempts)"
+
+log("\n--- unwrap(): bridge the throw vs. {ok:false} conventions ---")
+try {
+  data = unwrap({ ok: false, error: "connection refused", error_kind: "timeout" })
+  say "unreachable: {data}"
+} catch e {
+  say "unwrap() raised a normal catchable error: {e.message} ({e.kind})"
+}
+
+// A result that's already ok:true (or any other value) passes through
+// unwrap() completely unchanged — it's a pure bridge, not a redesign of
+// what any individual builtin returns.
+same = unwrap({ ok: true, value: 42 })
+say "unwrap() on success: {same.value}"
+
+log("\n--- db_transaction / span / parallel now work in progressive syntax too ---")
+say "see docs/examples/production_modules/ and docs/language_reference.md#error-handling"

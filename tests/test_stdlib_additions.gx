@@ -1,0 +1,79 @@
+// Production Standard Library additions (run: gx run tests/test_stdlib_additions.gx)
+// Covers: collection functionals (map/filter/reduce/some/every/find_index),
+// random helpers, object shaping (pick/omit), path_extname, and XML.
+
+// ── Collections: map/filter as methods (were free-function-only before) ──────
+nums = [1, 2, 3, 4, 5]
+assert_eq(map(nums, fn(x) { return x * 2 }), [2, 4, 6, 8, 10], "map free function")
+assert_eq(nums.map(fn(x) { return x * 2 }), [2, 4, 6, 8, 10], "map method")
+assert_eq(filter(nums, fn(x) { return x % 2 == 0 }), [2, 4], "filter free function")
+assert_eq(nums.filter(fn(x) { return x % 2 == 0 }), [2, 4], "filter method")
+
+// ── reduce: requires an explicit initial value ────────────────────────────────
+assert_eq(reduce(nums, fn(acc, x) { return acc + x }, 0), 15, "reduce sums to 15")
+assert_eq(nums.reduce(fn(acc, x) { return acc + x }, 100), 115, "reduce method")
+assert_eq(reduce([], fn(acc, x) { return acc + x }, 42), 42, "reduce on empty array returns initial")
+
+// ── some / every ───────────────────────────────────────────────────────────────
+assert_true(some(nums, fn(x) { return x > 4 }), "some finds a match")
+assert_true(!some(nums, fn(x) { return x > 100 }), "some finds no match")
+assert_true(every(nums, fn(x) { return x > 0 }), "every: all positive")
+assert_true(!every(nums, fn(x) { return x > 3 }), "every: not all > 3")
+assert_true(every([], fn(x) { return false }), "every is vacuously true on empty array")
+
+// ── find_index: predicate-based, distinct from value-equality index_of/find ──
+assert_eq(find_index(nums, fn(x) { return x > 3 }), 3, "find_index locates first match")
+assert_eq(find_index(nums, fn(x) { return x > 100 }), -1, "find_index returns -1 when nothing matches")
+assert_eq(nums.index_of(3), 2, "array .index_of is value-equality, unrelated to find_index")
+
+// ── random_int / random_choice / shuffle ──────────────────────────────────────
+i = 0
+while i < 100 {
+  n = random_int(1, 6)
+  assert_true(n >= 1 and n <= 6, "random_int stays within inclusive bounds")
+  i = i + 1
+}
+choice = random_choice(nums)
+assert_true(contains(nums, choice), "random_choice returns a real member of the array")
+assert_eq(random_choice([]), null, "random_choice on empty array is null, not an error")
+
+shuffled = shuffle(nums)
+assert_eq(len(shuffled), len(nums), "shuffle preserves length")
+assert_eq(nums, [1, 2, 3, 4, 5], "shuffle does not mutate the original array")
+
+// ── pick / omit ────────────────────────────────────────────────────────────────
+user = { id: 1, name: "Ada", email: "ada@example.com", password_hash: "secret" }
+public = pick(user, ["id", "name"])
+assert_eq(public.id, 1, "pick keeps requested keys")
+assert_true(!has(public, "email"), "pick excludes everything else")
+
+safe = omit(user, ["password_hash"])
+assert_eq(safe.name, "Ada", "omit keeps everything except the named keys")
+assert_true(!has(safe, "password_hash"), "omit removes the named key")
+
+assert_eq(user.pick(["id"]).id, 1, "pick as a method")
+assert_eq(user.omit(["password_hash"]).id, 1, "omit as a method")
+
+// ── path_extname ───────────────────────────────────────────────────────────────
+assert_eq(extname("archive.tar.gz"), ".gz", "extname returns the last extension")
+assert_eq(extname("README"), "", "extname on a file with no extension")
+assert_eq(extname(".gitignore"), "", "a dotfile has no extension")
+
+// ── XML ──────────────────────────────────────────────────────────────────────
+doc = xml_parse("<book id=\"1\"><title>GX</title><author>Ada</author></book>")
+assert_eq(doc.tag, "book", "xml_parse: root tag")
+assert_eq(doc.attrs.id, "1", "xml_parse: attribute")
+assert_eq(len(doc.children), 2, "xml_parse: child count")
+assert_eq(doc.children[0].text, "GX", "xml_parse: child text")
+
+roundtrip = xml_parse(xml_stringify(doc))
+assert_eq(roundtrip.tag, "book", "xml round-trips through stringify")
+
+try {
+  xml_parse("<r>&xxe;</r>")
+  assert_true(false, "an unsupported entity must be rejected, not silently accepted")
+} catch e {
+  assert_true(contains(e.message, "unsupported entity"), "xxe-style entity is rejected with a clear error")
+}
+
+print("test_stdlib_additions: all assertions passed")

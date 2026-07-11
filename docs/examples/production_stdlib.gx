@@ -1,0 +1,76 @@
+// Production Standard Library demo — see
+// docs/language_reference.md#array-methods
+//
+// Run: gx run docs/examples/production_stdlib.gx
+
+log("--- collections: map/filter/reduce/some/every/find_index ---")
+orders = [
+  { id: 1, total: 42.50, status: "paid" },
+  { id: 2, total: 15.00, status: "pending" },
+  { id: 3, total: 99.99, status: "paid" },
+  { id: 4, total: 8.25,  status: "cancelled" },
+]
+
+// map/filter now work as methods too (map(arr, fn) still works exactly
+// as before — this is additive, not a replacement).
+paid_totals = orders.filter(fn(o) { return o.status == "paid" }).map(fn(o) { return o.total })
+say "paid totals: {paid_totals}"
+
+// reduce needs an explicit initial value — no ambiguous "what does an
+// empty array reduce to?" case to reason about.
+grand_total = orders.reduce(fn(acc, o) { return acc + o.total }, 0)
+say "grand total: {grand_total}"
+
+has_pending = orders.some(fn(o) { return o.status == "pending" })
+all_paid = orders.every(fn(o) { return o.status == "paid" })
+say "has_pending={has_pending} all_paid={all_paid}"
+
+// find_index is predicate-based — distinct from .index_of(v), which
+// looks for an exact value match, not a computed condition.
+first_cancelled = orders.find_index(fn(o) { return o.status == "cancelled" })
+say "first cancelled order is at index {first_cancelled}"
+
+log("\n--- random: random_int / random_choice / shuffle ---")
+dice_roll = random_int(1, 6)
+say "dice_roll (1-6 inclusive): {dice_roll}"
+lucky_order = random_choice(orders)
+say "lucky_order id: {lucky_order.id}"
+say "orders in random order: {shuffle(orders).map(fn(o) { return o.id })}"
+
+log("\n--- objects: pick/omit for shaping API responses ---")
+user = { id: 7, name: "Ada", email: "ada@example.com", password_hash: "do-not-leak-me" }
+public_profile = user.pick(["id", "name"])
+say "public_profile: {public_profile}"
+audit_log_entry = user.omit(["password_hash"])
+say "audit_log_entry: {audit_log_entry}"
+
+log("\n--- paths: extname ---")
+files = ["report.pdf", "archive.tar.gz", "README", ".gitignore"]
+i = 0
+while i < len(files) {
+  f = files[i]
+  say "{f} -> extname: '{extname(f)}'"
+  i = i + 1
+}
+
+log("\n--- xml: parse and stringify ---")
+config = xml_parse("<config><timeout unit=\"seconds\">30</timeout><retries>3</retries></config>")
+say "config tag: {config.tag}"
+say "first child: {config.children[0].tag} = {config.children[0].text} (unit={config.children[0].attrs.unit})"
+
+response = xml_stringify({
+  tag: "response",
+  attrs: { status: "ok" },
+  children: [
+    { tag: "id", text: "123" }
+  ]
+})
+say "serialized: {response}"
+
+// xml_parse never processes DTD/entity definitions — the standard
+// defense against XXE injection and "billion laughs" attacks.
+try {
+  xml_parse("<r>&custom_entity;</r>")
+} catch e {
+  say "rejected unsupported entity, as designed: {e.kind}"
+}

@@ -4,6 +4,11 @@
 # GX build output
 dist/
 
+# Scratch directories created by test_temp_dir() / hand-written test
+# fixtures (tests/tmp/, docs/examples/tmp/, etc.) — never build output
+# worth tracking.
+tmp/
+
 # OS files
 .DS_Store
 Thumbs.db

@@ -1,0 +1,9 @@
+// a.gx imports b.gx, which imports c.gx — a transitive chain. Resolving
+// c.gx here requires the runtime to follow b.gx's own imports, not just
+// a.gx's — the exact gap the Module & Package Runtime fixed.
+
+import "b.gx"
+
+function from_a() {
+  return "a+" + from_b()
+}

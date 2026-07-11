@@ -1,0 +1,9 @@
+// Middle link of a transitive import chain used by
+// test_module_transitive_import.gx: a.gx imports b.gx, which itself
+// imports c.gx.
+
+import "b.gx"
+
+function from_a() {
+  return "a+" + from_b()
+}

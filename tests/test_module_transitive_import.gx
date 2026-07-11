@@ -1,0 +1,27 @@
+// Test: import "a.gx" -> a.gx imports b.gx -> b.gx imports c.gx.
+// A regression test for the Module & Package Runtime's transitive import
+// resolver: the previous implementation only ever processed the
+// top-level program's own import list, so an imported file's own
+// `import`s were silently never loaded — from_a() would have failed to
+// resolve from_b()/from_c() at all.
+
+import "helpers/module_chain/a.gx"
+
+helper "test_module_transitive_import" {
+  remember {
+    passed = 0
+    failed = 0
+  }
+
+  brain {
+    plan { plan = { action: "run" } }
+    execute {
+      result = from_a()
+      if result == "a+b+c" { memory.passed += 1 } else { log("FAIL: transitive chain returned " + result) memory.failed += 1 }
+
+      log("test_module_transitive_import: " + to_string(memory.passed) + " passed, " + to_string(memory.failed) + " failed")
+    }
+    remember {}
+    communicate {}
+  }
+}

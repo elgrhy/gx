@@ -33,8 +33,7 @@ impl Interpreter {
             _ => None,
         };
         if let Some(resource) = resource {
-            self.capabilities
-                .authorize(resource, Some(module))
+            self.authorize_capability(resource, Some(module))
                 .map_err(|e| {
                     // Only the "not in the allowlist" case has a useful,
                     // specific next step (declare it in gx.json); an
@@ -67,7 +66,16 @@ impl Interpreter {
                     .js_bridge
                     .as_mut()
                     .ok_or_else(|| Signal::Error("JS bridge unavailable".into()))?;
-                bridge.call(module, method, args).map_err(Signal::Error)
+                let result = bridge.call(module, method, args);
+                // A timed-out call leaves the bridge's request/response
+                // stream unsafe to reuse (see `Bridge::call`'s doc
+                // comment) — drop the cached instance so the next call
+                // spawns a fresh process instead of silently handing a
+                // future call the wrong response.
+                if self.js_bridge.as_ref().is_some_and(Bridge::is_broken) {
+                    self.js_bridge = None;
+                }
+                result.map_err(Signal::Error)
             }
             "ts" => {
                 // TypeScript bridge — its own slot, independent of the plain
@@ -84,7 +92,11 @@ impl Interpreter {
                     .ts_bridge
                     .as_mut()
                     .ok_or_else(|| Signal::Error("TypeScript bridge unavailable".into()))?;
-                bridge.call(module, method, args).map_err(Signal::Error)
+                let result = bridge.call(module, method, args);
+                if self.ts_bridge.as_ref().is_some_and(Bridge::is_broken) {
+                    self.ts_bridge = None;
+                }
+                result.map_err(Signal::Error)
             }
             "py" => {
                 if self.py_bridge.is_none() {
@@ -97,7 +109,11 @@ impl Interpreter {
                     .py_bridge
                     .as_mut()
                     .ok_or_else(|| Signal::Error("Python bridge unavailable".into()))?;
-                bridge.call(module, method, args).map_err(Signal::Error)
+                let result = bridge.call(module, method, args);
+                if self.py_bridge.as_ref().is_some_and(Bridge::is_broken) {
+                    self.py_bridge = None;
+                }
+                result.map_err(Signal::Error)
             }
             // Generic binary / Go bridge — module is the path to the executable.
             // Syntax: use binary "./my_service" → bridge_call("binary", "./my_service", method, args)
@@ -116,7 +132,15 @@ impl Interpreter {
                     .binary_bridges
                     .get_mut(&bridge_key)
                     .ok_or_else(|| Signal::Error("Binary bridge unavailable".into()))?;
-                bridge.call(module, method, args).map_err(Signal::Error)
+                let result = bridge.call(module, method, args);
+                if self
+                    .binary_bridges
+                    .get(&bridge_key)
+                    .is_some_and(Bridge::is_broken)
+                {
+                    self.binary_bridges.remove(&bridge_key);
+                }
+                result.map_err(Signal::Error)
             }
             "rust" => Err(Signal::Error(format!(
                 "Native Rust interop for '{}' requires recompiling GX with the crate linked. \
@@ -137,8 +161,7 @@ impl Interpreter {
         routes: &[RouteDecl],
         env: &mut Env,
     ) -> IResult {
-        self.capabilities
-            .authorize(Resource::HttpServer, None)
+        self.authorize_capability(Resource::HttpServer, None)
             .map_err(|e| Signal::Error(e.to_string()))?;
         let port = self
             .eval_expr(port_expr, env)?
@@ -158,12 +181,17 @@ impl Interpreter {
         // threads calling recv() — and the library is built to support it.
         let server = std::sync::Arc::new(server);
         let routes: std::sync::Arc<Vec<RouteDecl>> = std::sync::Arc::new(routes.to_vec());
+        // Shared across every worker (see `active_sse_responders`'s own doc
+        // comment) so `respond stream`'s cap on concurrent responder
+        // threads is enforced server-wide, not reset per worker.
+        let active_sse_responders = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let mut workers = Vec::with_capacity(SERVER_WORKER_THREADS);
         for _ in 0..SERVER_WORKER_THREADS {
             let server = server.clone();
             let routes = routes.clone();
             let worker_env = env.clone();
+            let active_sse_responders = active_sse_responders.clone();
             // Each worker gets its own Interpreter, inheriting the
             // program's definitions and capabilities — the same
             // inheritance pattern `spawn agent`/`parallel {}` already use
@@ -182,38 +210,56 @@ impl Interpreter {
             worker.tools = self.tools.clone();
             worker.global_vars = self.global_vars.clone();
             worker.base_path = self.base_path.clone();
-            worker.trace_enabled = self.trace_enabled;
+            // Config (enabled/min_level) inherited; no trace_id yet — each
+            // request mints its own fresh one in handle_one_request, since
+            // a worker thread handles many requests over its lifetime and
+            // each is its own logical trace.
+            worker.diagnostics = self.diagnostics.for_child();
             worker.no_loop_limit = self.no_loop_limit;
+            worker.active_sse_responders = Some(active_sse_responders.clone());
 
-            workers.push(std::thread::spawn(move || {
-                let mut worker = worker;
-                loop {
-                    let request = match server.recv() {
-                        Ok(r) => r,
-                        Err(_) => break, // listener closed
-                    };
-                    // A panic inside a single request (an interpreter bug
-                    // hit by unusual input, say) must not take a worker
-                    // out of rotation permanently — without this, enough
-                    // requests hitting the same panic would eventually
-                    // kill every worker, leaving the server listening but
-                    // never able to answer anything. The one request that
-                    // panicked gets no response (its connection just
-                    // drops), but every other worker, and every
-                    // subsequent request on this one, keeps working.
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        handle_one_request(&mut worker, request, &routes, &worker_env);
-                    }));
-                    if let Err(payload) = result {
-                        let msg = payload
-                            .downcast_ref::<&str>()
-                            .map(|s| s.to_string())
-                            .or_else(|| payload.downcast_ref::<String>().cloned())
-                            .unwrap_or_else(|| "unknown panic".to_string());
-                        eprintln!("[gx server] worker recovered from a panic: {}", msg);
+            // A larger-than-default stack, same as every other thread that
+            // runs GX interpreter logic end-to-end (see `WORKER_THREAD_
+            // STACK_SIZE`'s own doc comment) — the `catch_unwind` below
+            // recovers a worker from an ordinary panic inside one request,
+            // but a real stack overflow is a process-level abort, not an
+            // unwindable panic, so `catch_unwind` cannot and does not catch
+            // it. Confirmed empirically before this fix: a route handler
+            // calling an accidentally-unbounded recursive function crashed
+            // the whole server process — not just failed the one request.
+            let worker_thread = std::thread::Builder::new()
+                .stack_size(super::WORKER_THREAD_STACK_SIZE)
+                .spawn(move || {
+                    let mut worker = worker;
+                    loop {
+                        let request = match server.recv() {
+                            Ok(r) => r,
+                            Err(_) => break, // listener closed
+                        };
+                        // A panic inside a single request (an interpreter bug
+                        // hit by unusual input, say) must not take a worker
+                        // out of rotation permanently — without this, enough
+                        // requests hitting the same panic would eventually
+                        // kill every worker, leaving the server listening but
+                        // never able to answer anything. The one request that
+                        // panicked gets no response (its connection just
+                        // drops), but every other worker, and every
+                        // subsequent request on this one, keeps working.
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            handle_one_request(&mut worker, request, &routes, &worker_env);
+                        }));
+                        if let Err(payload) = result {
+                            let msg = payload
+                                .downcast_ref::<&str>()
+                                .map(|s| s.to_string())
+                                .or_else(|| payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "unknown panic".to_string());
+                            eprintln!("[gx server] worker recovered from a panic: {}", msg);
+                        }
                     }
-                }
-            }));
+                })
+                .expect("failed to spawn an HTTP server worker thread");
+            workers.push(worker_thread);
         }
         for w in workers {
             let _ = w.join();
@@ -397,6 +443,37 @@ fn respond_plain(request: tiny_http::Request, status: u16, body: &str) {
     );
 }
 
+/// End the per-request root span started in `handle_one_request`, tagging
+/// it with the method/path/status — a small helper only because there are
+/// several exit points (rejected for size, 404, a normal response, a
+/// `respond stream` route) that each need to call this exactly once.
+#[cfg(not(target_arch = "wasm32"))]
+fn end_request_span(
+    interp: &mut Interpreter,
+    span: crate::diagnostics::SpanHandle,
+    method: &str,
+    path: &str,
+    status: u16,
+) {
+    let outcome = if status >= 500 {
+        crate::diagnostics::Outcome::Error("server error")
+    } else {
+        crate::diagnostics::Outcome::Ok
+    };
+    interp.diagnostics.end_span(
+        span,
+        outcome,
+        &[
+            ("method", serde_json::Value::String(method.to_string())),
+            ("path", serde_json::Value::String(path.to_string())),
+            (
+                "status",
+                serde_json::Value::Number(serde_json::Number::from(status)),
+            ),
+        ],
+    );
+}
+
 /// Handle exactly one HTTP request against `routes`, using a worker-local
 /// `interp`/`env` — see `Interpreter::run_serve` for why each worker gets
 /// its own. This is the per-request body previously inlined directly in
@@ -419,18 +496,30 @@ fn handle_one_request(
         (url.clone(), String::new())
     };
 
+    // Each incoming request is its own logical operation — a fresh trace
+    // ID, never inherited from whatever the previous request on this same
+    // worker thread happened to leave behind — with a root span covering
+    // the whole request, ended exactly once below regardless of which of
+    // the several ways this function can conclude (rejected for size, 404,
+    // a normal response, or a `respond stream` route that already handled
+    // its own response).
+    interp.diagnostics.reset_trace_id();
+    let span = interp.diagnostics.start_span("http.server.request");
+
     // Reject oversized bodies before even reading them when the client is
     // honest about Content-Length; a client that lies (or uses chunked
     // encoding to exceed it) is still caught by the cap inside
     // read_body_capped below.
     if let Some(len) = request.body_length() {
         if len > MAX_REQUEST_BODY_BYTES {
+            end_request_span(interp, span, &method, &path, 413);
             respond_plain(request, 413, "413 Payload Too Large");
             return;
         }
     }
     let (body_str, body_truncated) = read_body_capped(&mut request);
     if body_truncated {
+        end_request_span(interp, span, &method, &path, 413);
         respond_plain(request, 413, "413 Payload Too Large");
         return;
     }
@@ -500,7 +589,15 @@ fn handle_one_request(
             interp.pending_request = Some(request);
             let result = interp.run_stmts(&route.body.clone(), &mut route_env);
             match interp.pending_request.take() {
-                None => return,
+                None => {
+                    // A `respond stream { ... }` block already claimed the
+                    // request, sent its own response, and joined its
+                    // background writer — nothing left to do, but the root
+                    // span still needs to end (status 200: the stream ran
+                    // to completion rather than being rejected).
+                    end_request_span(interp, span, &method, &path, 200);
+                    return;
+                }
                 Some(reclaimed) => {
                     request = reclaimed;
                     match result {
@@ -519,7 +616,11 @@ fn handle_one_request(
                             // denial reasons naming internal config,
                             // stack-adjacent context) to whoever sent the
                             // request.
-                            eprintln!("[gx server] {} {} -> 500: {}", method, path, e);
+                            interp.diagnostics.log(
+                                crate::diagnostics::Level::Error,
+                                &format!("{} {} -> 500", method, path),
+                                Some(serde_json::json!({ "error": e.to_string() })),
+                            );
                             (
                                 "text/plain; charset=utf-8".to_string(),
                                 "500 Internal Server Error".to_string(),
@@ -541,6 +642,8 @@ fn handle_one_request(
             404,
         ),
     };
+
+    end_request_span(interp, span, &method, &path, status);
 
     send_response(request, &ct, body, status);
 }
@@ -670,6 +773,22 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
 
+    /// Same as `start_test_server`, but with tracing turned on — exercises
+    /// the real `reset_trace_id`/root-span/`end_request_span` path each
+    /// worker runs per request, the same way `main.rs`'s `--trace` flag
+    /// would in production.
+    fn start_test_server_with_diagnostics(source: &str) {
+        let tokens = crate::lexer::Lexer::new(source).tokenize().unwrap();
+        let program = crate::parser::Parser::new(tokens).parse().unwrap();
+        std::thread::spawn(move || {
+            let mut interp = Interpreter::new();
+            interp.diagnostics.set_enabled(true);
+            interp.diagnostics.ensure_trace_id();
+            let _ = interp.run_program(&program);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+
     #[test]
     fn server_exposes_headers_path_params_and_query_params() {
         start_test_server(
@@ -741,6 +860,48 @@ serve on port 18603 {
                 );
             }
             other => panic!("expected HTTP 500, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn server_with_tracing_enabled_still_serves_requests_correctly_across_concurrent_workers() {
+        // The root `"http.server.request"` span (reset_trace_id + start_span
+        // + end_request_span) runs on every request regardless of outcome —
+        // this proves that wiring doesn't change response correctness, and
+        // that concurrent requests across the worker pool each get their
+        // own trace/span without interfering with one another (a leaked or
+        // cross-request-shared span would show up as a hang or a wrong
+        // status/body here, not as a diagnostics-specific failure).
+        start_test_server_with_diagnostics(
+            r#"
+serve on port 18608 {
+  route GET "/ok" {
+    respond json { ok: true }
+  }
+  route GET "/boom" {
+    x = 1 / 0
+  }
+}
+"#,
+        );
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    if i % 2 == 0 {
+                        let resp = ureq::get("http://127.0.0.1:18608/ok").call().unwrap();
+                        assert_eq!(resp.status(), 200);
+                    } else {
+                        let err = ureq::get("http://127.0.0.1:18608/boom").call().unwrap_err();
+                        match err {
+                            ureq::Error::Status(code, _) => assert_eq!(code, 500),
+                            other => panic!("expected HTTP 500, got {:?}", other),
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
         }
     }
 
@@ -875,6 +1036,64 @@ serve on port 18607 {
             healthy,
             "every worker was saturated by never-reading clients — none recovered within the expected bound"
         );
+    }
+
+    #[test]
+    fn respond_stream_wires_the_shared_responder_cap_into_a_real_server_without_regressing() {
+        // `try_reserve_sse_responder_slot_never_exceeds_the_cap_under_
+        // concurrent_pressure` (mod.rs) already stress-tests the cap
+        // arithmetic itself deterministically. This is the complementary
+        // live-wiring check: real never-reading connections against a
+        // real server must still (a) all be accepted without error below
+        // the cap, (b) not wedge the server, and (c) let a fresh,
+        // normally-reading client through once the stuck ones are closed.
+        // Deliberately opens far fewer than `MAX_CONCURRENT_SSE_RESPONDERS`
+        // — reliably reaching the real cap over the network depends on the
+        // client's OS/TCP receive-window size actually being exceeded by
+        // the route's payload, which varies enough across platforms/CI to
+        // make a full-scale version of this specific assertion flaky; the
+        // cap-is-enforced-at-exactly-N property is what the deterministic
+        // test above already covers without that dependency.
+        start_test_server(
+            r#"
+serve on port 18702 {
+  route GET "/never-read" {
+    respond stream {
+      sse_send("chunk", { data: "x".repeat(2000000) })
+    }
+  }
+  route GET "/healthy" {
+    respond json { ok: true }
+  }
+}
+"#,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let mut stuck_connections = Vec::new();
+        for _ in 0..20 {
+            use std::io::Write;
+            let mut stream = std::net::TcpStream::connect("127.0.0.1:18702").expect("connect");
+            stream
+                .write_all(b"GET /never-read HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .expect("write request line");
+            stuck_connections.push(stream);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let healthy = ureq::get("http://127.0.0.1:18702/healthy")
+            .timeout(std::time::Duration::from_secs(2))
+            .call()
+            .expect("server must still answer an unrelated route while streams are open");
+        assert_eq!(healthy.status(), 200);
+
+        drop(stuck_connections);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let still_healthy = ureq::get("http://127.0.0.1:18702/healthy")
+            .timeout(std::time::Duration::from_secs(2))
+            .call()
+            .expect("server must remain healthy after the stuck connections close");
+        assert_eq!(still_healthy.status(), 200);
     }
 
     #[test]

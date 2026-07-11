@@ -1,0 +1,209 @@
+// Production AI Context Runtime: context_create, context_set_system,
+// context_add_message, context_add_tool_result, context_ask, context_trim,
+// context_summarize_and_trim, context_clone, context_reset,
+// context_serialize, context_deserialize, context_stats.
+//
+// `context_ask` itself needs a real provider API key to succeed, which
+// isn't available under `gx test` — the sections below that call it only
+// exercise its *error* path (no credentials configured), which is exactly
+// as real a behavior to test as the success path: it must fail cleanly,
+// classify the failure, and never corrupt the context it was given.
+
+// ── Defaults and basic shape ──────────────────────────────────────────────────
+
+ctx = context_create()
+s = context_stats(ctx)
+assert s.message_count == 0 "a fresh context starts with no messages"
+assert s.system_present == false "no system prompt given by default"
+assert s.max_history_tokens == 8000 "default max_history_tokens"
+assert s.ask_count == 0 "no asks yet"
+assert ctx.trim_strategy == "drop_oldest_pair" "default trim strategy"
+
+ctx2 = context_create({ system: "You are terse.", max_history_tokens: 4000, trim_strategy: "drop_oldest" })
+assert context_stats(ctx2).system_present == true "system prompt set at creation"
+assert ctx2.trim_strategy == "drop_oldest" "custom trim strategy honored"
+
+// ── context_set_system ────────────────────────────────────────────────────────
+
+ctx3 = context_create()
+ctx3 = context_set_system(ctx3, "Updated persona.")
+assert ctx3.system == "Updated persona." "context_set_system updates the system prompt"
+
+// ── context_add_message: roles, validation, ordering ─────────────────────────
+
+ctx4 = context_create()
+ctx4 = context_add_message(ctx4, "user", "What's the weather?")
+ctx4 = context_add_message(ctx4, "assistant", "Let me check.")
+assert len(ctx4.messages) == 2 "messages accumulate in order"
+assert ctx4.messages[0].role == "user" "first message role preserved"
+assert ctx4.messages[1].content == "Let me check." "message content preserved"
+
+try {
+  context_add_message(ctx4, "system", "not allowed here")
+  assert false "role=system must be rejected by context_add_message"
+} catch e {
+  assert true "role=system correctly rejected — use context_set_system"
+}
+
+try {
+  context_add_message(ctx4, "tool", "result with no id")
+  assert false "role=tool without tool_call_id must be rejected"
+} catch e {
+  assert true "role=tool without tool_call_id correctly rejected"
+}
+
+// ── context_add_tool_result + tool output limits ─────────────────────────────
+
+ctx5 = context_create({ tool_output_max_chars: 15 })
+ctx5 = context_add_tool_result(ctx5, "call_42", "search", "this tool output is definitely longer than fifteen characters")
+tool_msg = ctx5.messages[0]
+assert tool_msg.role == "tool" "context_add_tool_result appends a role=tool message"
+assert tool_msg.tool_call_id == "call_42" "tool_call_id is preserved"
+assert tool_msg.truncated == true "over-limit tool output is marked truncated"
+assert len(tool_msg.content) == 15 "tool output is capped at tool_output_max_chars"
+
+// ── Automatic trimming: token budget and message-count hard cap ─────────────
+
+ctx6 = context_create({ max_history_tokens: 80, reserve_tokens: 10, trim_strategy: "drop_oldest_pair" })
+i = 0
+while i < 30 {
+  ctx6 = context_add_message(ctx6, "user", "padding message " + to_string(i) + " with extra words to add tokens")
+  ctx6 = context_add_message(ctx6, "assistant", "ack " + to_string(i))
+  i = i + 1
+}
+stats6 = context_stats(ctx6)
+assert stats6.estimated_tokens <= 80 "auto-trim keeps the context under its token budget"
+assert stats6.total_messages_trimmed > 0 "trimming actually occurred"
+assert stats6.total_messages_added == 60 "stats count every add, even later-trimmed ones"
+
+ctx7 = context_create({ max_history_tokens: 1000000, max_messages: 6, trim_strategy: "drop_oldest" })
+j = 0
+while j < 20 {
+  ctx7 = context_add_message(ctx7, "user", "x")
+  j = j + 1
+}
+assert context_stats(ctx7).message_count <= 6 "max_messages caps count independent of the (huge) token budget"
+
+ctx8 = context_create({ max_history_tokens: 1, reserve_tokens: 0, trim_strategy: "none" })
+ctx8 = context_add_message(ctx8, "user", "this alone exceeds the tiny budget")
+assert len(ctx8.messages) == 1 "trim_strategy 'none' never auto-trims"
+assert context_stats(ctx8).over_budget == true "but stats still honestly reports being over budget"
+
+// reserve_tokens must be smaller than max_history_tokens, or trimming would
+// discard every message the instant it's added — caught at creation time.
+try {
+  context_create({ max_history_tokens: 500, reserve_tokens: 1000 })
+  assert false "reserve_tokens >= max_history_tokens must be rejected"
+} catch e {
+  assert true "reserve_tokens >= max_history_tokens correctly rejected"
+}
+
+// ── Manual trim + summarize-and-trim ──────────────────────────────────────────
+
+// trim_strategy "none" means context_add_message never auto-trims, even
+// over budget — but context_trim can still be called explicitly (with an
+// overriding strategy) to trim on demand.
+ctx9 = context_create({ max_history_tokens: 1, reserve_tokens: 0, trim_strategy: "none" })
+ctx9 = context_add_message(ctx9, "user", "a")
+ctx9 = context_add_message(ctx9, "assistant", "b")
+assert len(ctx9.messages) == 2 "trim_strategy 'none' left both over-budget messages in place"
+trimmed9 = context_trim(ctx9, { strategy: "drop_oldest" })
+// Trims down to (not below) budget: after dropping the oldest message,
+// the one remaining ("b", 1 token) exactly fits the 1-token threshold, so
+// trimming correctly stops there rather than removing everything.
+assert len(trimmed9.messages) == 1 "context_trim, called explicitly with an overriding strategy, trims an over-budget context down to budget on demand"
+assert trimmed9.messages[0].content == "b" "drop_oldest removes from the front, keeping the most recent message"
+
+ctx10 = context_create()
+ctx10 = context_add_message(ctx10, "user", "msg1")
+ctx10 = context_add_message(ctx10, "assistant", "reply1")
+ctx10 = context_add_message(ctx10, "user", "msg2")
+ctx10 = context_add_message(ctx10, "assistant", "reply2")
+summarized = context_summarize_and_trim(ctx10, "Prior turns summarized.", { keep_last: 2 })
+assert len(summarized.messages) == 3 "1 summary + 2 kept messages"
+assert summarized.messages[0].name == "summary" "the summary message is tagged"
+assert summarized.messages[1].content == "msg2" "keep_last preserves the most recent turns verbatim"
+
+// ── Cloning: isolation, not just a copy ───────────────────────────────────────
+
+ctx11 = context_create({ system: "base" })
+ctx11 = context_add_message(ctx11, "user", "hi")
+branch = context_clone(ctx11)
+assert context_stats(branch).context_id != context_stats(ctx11).context_id "clone mints a new context id"
+branch = context_add_message(branch, "user", "only in the branch")
+assert len(branch.messages) == 2 "the branch's own further changes only affect the branch"
+assert len(ctx11.messages) == 1 "the original context is completely unaffected — context isolation"
+
+// ── Reset: clears history, preserves configuration ───────────────────────────
+
+r = context_reset(ctx11)
+assert len(r.messages) == 0 "reset clears the message history"
+assert r.system == "base" "reset (keep_system default true) preserves the system prompt"
+r2 = context_reset(ctx11, { keep_system: false })
+assert r2.system == null "keep_system: false clears the system prompt too"
+
+// ── Serialization: versioned round trip ───────────────────────────────────────
+
+ctx12 = context_create({ system: "persisted persona" })
+ctx12 = context_add_message(ctx12, "user", "remember me")
+saved = context_serialize(ctx12)
+restored = context_deserialize(saved)
+assert restored.system == "persisted persona" "deserialize restores the system prompt"
+assert len(restored.messages) == 1 "deserialize restores the message history"
+
+try {
+  context_deserialize("{\"__gx_context_version\": 999, \"messages\": []}")
+  assert false "an incompatible context version must be rejected"
+} catch e {
+  assert true "incompatible context version correctly rejected"
+}
+
+// Persistence is just ordinary db_exec/db_query on the serialized string —
+// no dedicated AI-context database API, by design (see language reference).
+db_path = "tests/tmp/test_ai_context.db"
+db_exec(db_path, "CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, data TEXT)")
+db_exec(db_path, "DELETE FROM conversations")
+db_exec(db_path, "INSERT INTO conversations(id, data) VALUES (?, ?)", ["conv1", saved])
+row = db_query(db_path, "SELECT data FROM conversations WHERE id = ?", ["conv1"])[0]
+reloaded = context_deserialize(row.data)
+assert len(reloaded.messages) == 1 "a context persisted via ordinary db_exec/db_query round-trips correctly"
+
+// ── context_ask: error path (no live credentials in this environment) ────────
+
+ctx13 = context_create({ system: "Be terse." })
+ctx13 = context_add_message(ctx13, "user", "hello")
+result = context_ask(ctx13, "openai", {})
+assert result.ok == false "no AI credentials configured in this environment -> failure expected"
+assert result.error_kind != null "every failure carries a structured error_kind"
+assert result.context != null "result.context is present even on failure"
+assert len(result.context.messages) == 1 "on failure, no assistant message is appended"
+
+// An unknown provider name is a clean ok:false result (same convention the
+// single-shot `ask` builtin already uses), not a crash or a thrown error.
+unknown_result = context_ask(ctx13, "not-a-real-provider", {})
+assert unknown_result.ok == false "an unsupported provider name must fail cleanly"
+assert unknown_result.context != null "result.context is present even for an unknown provider"
+
+// ── Task Runtime propagation: isolation + inheritance via value semantics ────
+// No dedicated "context_isolate"/"context_inherit" builtins exist — a
+// context is plain GX data, so passing it into a task_spawn closure already
+// hands the task an independent snapshot (inheritance), and mutating it
+// inside the task can never affect the caller's copy (isolation). This is
+// the same closure-capture the Task Runtime already provides for any value.
+
+base_ctx = context_create({ system: "shared persona" })
+base_ctx = context_add_message(base_ctx, "user", "seed message")
+
+h = task_spawn(fn() {
+  // The task receives its own snapshot (inheritance) via closure capture.
+  inherited_ok = len(base_ctx.messages) == 1 and base_ctx.system == "shared persona"
+  // Mutating it here must never be visible to the parent (isolation).
+  local_ctx = context_add_message(base_ctx, "user", "added only inside the task")
+  return { inherited_ok: inherited_ok, local_message_count: len(local_ctx.messages) }
+})
+task_result = task_wait(h)
+assert task_result.ok == true "the task itself completed successfully"
+assert task_result.value.inherited_ok == true "the task inherited a full snapshot of the context"
+assert task_result.value.local_message_count == 2 "the task's own mutation is visible inside the task"
+assert len(base_ctx.messages) == 1 "the parent's context is completely unaffected by the task's mutation — isolation"
+

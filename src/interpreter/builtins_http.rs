@@ -94,6 +94,7 @@ fn ip_is_internal(ip: std::net::IpAddr) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 struct SsrfSafeResolver {
     capabilities: crate::capability::Capabilities,
+    diagnostics: crate::diagnostics::Diagnostics,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,7 +109,19 @@ impl ureq::Resolver for SsrfSafeResolver {
             } else {
                 Resource::ExternalNetwork
             };
-            if self.capabilities.authorize(resource, None).is_err() {
+            if let Err(denial) = self.capabilities.authorize(resource, None) {
+                // Audited here, not just in check_url_safe's cheap
+                // pre-check: this is the path that actually catches a
+                // redirect or a DNS answer landing on an internal address
+                // — the pre-check only ever sees the original URL string.
+                self.diagnostics.audit(
+                    "capability_denied",
+                    serde_json::json!({
+                        "resource": resource.name(),
+                        "name": netloc,
+                        "reason": denial.to_string(),
+                    }),
+                );
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     format!(
@@ -129,12 +142,16 @@ impl ureq::Resolver for SsrfSafeResolver {
 /// outbound request, so there is no separate code path that could skip
 /// either the timeout defaults or the SSRF resolver.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn http_agent(capabilities: &crate::capability::Capabilities) -> ureq::Agent {
+pub(super) fn http_agent(
+    capabilities: &crate::capability::Capabilities,
+    diagnostics: &crate::diagnostics::Diagnostics,
+) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(DEFAULT_CONNECT_TIMEOUT)
         .timeout_read(DEFAULT_READ_TIMEOUT)
         .resolver(SsrfSafeResolver {
             capabilities: capabilities.clone(),
+            diagnostics: diagnostics.clone(),
         })
         .build()
 }
@@ -163,10 +180,14 @@ pub(super) fn http_builtin(name: &str, _args: &[Value]) -> Result<Value, Signal>
 fn extract_timeout(headers_val: &Value) -> Option<std::time::Duration> {
     if let Value::Object(m) = headers_val {
         let secs = m.get("timeout").and_then(|v| v.as_number())?;
-        if secs <= 0.0 {
+        if secs.is_nan() || secs <= 0.0 {
+            // Also catches NaN (every comparison with NaN is false) —
+            // `secs <= 0.0` let NaN fall through to the unguarded
+            // `Duration::from_secs_f64` below, which panics on it (and on
+            // `Infinity`, which is `> 0.0` and so wasn't caught either).
             return None;
         }
-        return Some(std::time::Duration::from_secs_f64(secs).min(MAX_CALL_TIMEOUT));
+        return Some(crate::clamp_duration_secs(secs, MAX_CALL_TIMEOUT));
     }
     None
 }
@@ -544,6 +565,17 @@ pub(super) fn http_upload_builtin(
     Ok(build_result(resp_result))
 }
 
+/// Strip the query string and fragment from a URL before it's recorded as
+/// span/log data — query strings routinely carry API keys, presigned-URL
+/// signatures, and OAuth tokens (e.g. `?api_key=...`), and diagnostics
+/// output is meant to be safe to ship to a log aggregator or paste into a
+/// bug report. Scheme/host/path are kept since they're what's actually
+/// useful for correlating requests in a trace.
+pub(super) fn diagnostic_url(url: &str) -> String {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    url[..end].to_string()
+}
+
 /// Extract the bare host (no scheme, no port, no brackets around IPv6) from
 /// a URL — pure string classification, no capability decision.
 #[cfg(not(target_arch = "wasm32"))]
@@ -553,6 +585,11 @@ fn extract_host(url: &str) -> String {
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
     let host_port = rest.split('/').next().unwrap_or(rest);
+    // Strip `user:pass@` userinfo, if present, so it isn't mistaken for the
+    // host itself (this pre-check is best-effort and not the authoritative
+    // SSRF decision — see `SsrfSafeResolver` — but it should still classify
+    // and audit-log the real target, not the credentials).
+    let host_port = host_port.rsplit('@').next().unwrap_or(host_port);
     if host_port.starts_with('[') {
         host_port
             .split(']')
@@ -589,6 +626,7 @@ fn is_internal_host(host: &str) -> bool {
 pub(super) fn check_url_safe(
     url: &str,
     capabilities: &crate::capability::Capabilities,
+    diagnostics: &crate::diagnostics::Diagnostics,
 ) -> Result<(), Signal> {
     use crate::capability::Resource;
     if url.starts_with("file://") {
@@ -603,7 +641,15 @@ pub(super) fn check_url_safe(
     } else {
         Resource::ExternalNetwork
     };
-    capabilities.authorize(resource, None).map_err(|_| {
+    capabilities.authorize(resource, None).map_err(|denial| {
+        diagnostics.audit(
+            "capability_denied",
+            serde_json::json!({
+                "resource": resource.name(),
+                "name": host,
+                "reason": denial.to_string(),
+            }),
+        );
         if internal {
             Signal::Error(format!(
                 "SSRF protection: requests to '{}' are blocked. \
@@ -629,6 +675,30 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         IpAddr::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn diagnostic_url_strips_query_string_and_fragment_so_secrets_never_reach_a_span() {
+        // Query strings routinely carry API keys/tokens/presigned-URL
+        // signatures — diagnostic_url is what keeps them out of the JSONL
+        // a span writes to stderr under --trace.
+        assert_eq!(
+            diagnostic_url("https://api.example.com/v1/users?api_key=SECRET123"),
+            "https://api.example.com/v1/users"
+        );
+        assert_eq!(
+            diagnostic_url("https://example.com/page#section"),
+            "https://example.com/page"
+        );
+        assert_eq!(
+            diagnostic_url("https://example.com/page?token=abc#frag"),
+            "https://example.com/page"
+        );
+        assert_eq!(
+            diagnostic_url("https://example.com/no-query"),
+            "https://example.com/no-query"
+        );
+        assert_eq!(diagnostic_url(""), "");
     }
 
     #[test]
@@ -691,15 +761,17 @@ mod tests {
     #[test]
     fn check_url_safe_blocks_file_urls() {
         let caps = Capabilities::new();
-        assert!(check_url_safe("file:///etc/passwd", &caps).is_err());
+        let diag = crate::diagnostics::Diagnostics::new();
+        assert!(check_url_safe("file:///etc/passwd", &caps, &diag).is_err());
     }
 
     #[test]
     fn check_url_safe_allows_external_denies_internal_by_default() {
         let caps = Capabilities::new();
-        assert!(check_url_safe("https://example.com", &caps).is_ok());
-        assert!(check_url_safe("http://127.0.0.1/", &caps).is_err());
-        assert!(check_url_safe("http://[fc00::1]/", &caps).is_err());
+        let diag = crate::diagnostics::Diagnostics::new();
+        assert!(check_url_safe("https://example.com", &caps, &diag).is_ok());
+        assert!(check_url_safe("http://127.0.0.1/", &caps, &diag).is_err());
+        assert!(check_url_safe("http://[fc00::1]/", &caps, &diag).is_err());
     }
 
     #[test]
@@ -759,7 +831,10 @@ mod tests {
 
     #[test]
     fn classify_ureq_error_labels_genuine_dns_failure_as_dns_error() {
-        let agent = http_agent(&Capabilities::new());
+        let agent = http_agent(
+            &Capabilities::new(),
+            &crate::diagnostics::Diagnostics::new(),
+        );
         let err = agent
             .get("http://this-host-does-not-exist.invalid.test/")
             .call()
@@ -808,7 +883,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         let caps = Capabilities::new(); // internal_network denied by default
-        let agent = http_agent(&caps);
+        let agent = http_agent(&caps, &crate::diagnostics::Diagnostics::new());
         let url = format!("http://127.0.0.1:{}/", redirect_source_port);
         // The redirect *source* itself is a loopback address too, so with
         // internal_network denied by default even the first hop would be
@@ -833,7 +908,7 @@ mod tests {
 
         let mut caps = Capabilities::new();
         caps.internal_network = true;
-        let agent = http_agent(&caps);
+        let agent = http_agent(&caps, &crate::diagnostics::Diagnostics::new());
         let url = format!("http://127.0.0.1:{}/", redirect_source_port);
         let err = agent
             .get(&url)

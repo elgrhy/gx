@@ -1,0 +1,6 @@
+// Entry file of a fixture package, resolved by name (not by path) via
+// tests/gx.lock's "path" dependency entry. See test_module_package_import.gx.
+
+function pkg_demo_value() {
+  return "from-package"
+}
