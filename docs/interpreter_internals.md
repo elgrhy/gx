@@ -244,8 +244,9 @@ git push origin v0.6.0
 | v0.4.0 | Shipped | — |
 | v0.4.1 | Shipped | — |
 | v0.4.2 | Shipped | 2026-05-30 |
-| **v0.5.0** | **Shipped** | **2026-05-31** |
-| v0.6.0 | Planned | — |
+| v0.5.0 | Shipped | 2026-05-31 |
+| v0.5.1 | Shipped | 2026-06-06 |
+| **v0.6.0** | **Shipped** | **2026-07-11** |
 | v0.7.0 | Planned | — |
 | v0.8.0 | Planned | — |
 

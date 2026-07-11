@@ -57,7 +57,7 @@ ROADMAP_v0.5_to_v0.8.md  Phased development roadmap
 ## Running Tests
 
 ```bash
-# Rust unit tests (82+ tests covering lexer, parser, interpreter)
+# Rust unit tests (500+ tests covering lexer, parser, interpreter, and every runtime)
 cargo test
 
 # Lint (must pass — CI enforces -D warnings)
@@ -66,10 +66,13 @@ cargo clippy -- -D warnings
 # Format (must pass — CI enforces)
 cargo fmt --check
 
-# GX integration tests (16 test files, 106+ assertions)
+# GX integration tests (29 test files) — must be run via `gx test`, not `gx run`:
+# `gx test` grants the `process` capability and sandboxes relative file I/O to
+# the current working directory, which several test files' paths assume.
 gx test
 
-# Run individual test files
+# Run an individual test file directly (works for files that don't rely on
+# `gx test`'s capability grants or CWD-relative paths)
 cargo run -- run tests/test_basics.gx
 cargo run -- run tests/test_v05_stdlib.gx
 cargo run -- run tests/test_v05_dx.gx
@@ -77,6 +80,13 @@ cargo run -- run tests/test_v05_dx.gx
 # Quick inline test
 cargo run -- -e 'say sha256("abc")'
 ```
+
+**Known external dependency**: `tests/test_tools.gx` makes real outbound
+requests to `https://httpbin.org` to exercise `http_request`. If that
+third-party service is unavailable or rate-limits the request, this one test
+file fails independent of any GX code change — verify by curling
+`https://httpbin.org/get` directly before treating a failure here as a
+regression.
 
 ---
 

@@ -1,6 +1,6 @@
 # GX Roadmap — v0.5.0 through v0.8.0
 
-**v0.5.0 is shipped.** v0.6.0 is next. Sequenced in **phases**, each a shippable release.
+**v0.5.0, v0.5.1, and v0.6.0 are shipped.** v0.7.0 is next. Sequenced in **phases**, each a shippable release.
 Decisions locked with the owner:
 - **Phased delivery** (not one big release).
 - **No type system** — GX stays fully dynamic. Revisit later if adoption demands it.

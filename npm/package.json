@@ -1,7 +1,7 @@
 {
   "name": "gxlang",
-  "version": "0.5.1",
-  "description": "GX — brain-first programming language for building transparent, auditable AI assistants. Regex, Date/Time, CSV/YAML/TOML, TypeScript+Go bridges, AI tool use, streaming, persistent memory, vector store.",
+  "version": "0.6.0",
+  "description": "GX — brain-first programming language for AI assistants and production applications. Capability-sandboxed process/HTTP/database runtimes, task concurrency, testing framework, debugger, REPL, and a full stdlib.",
   "keywords": [
     "gx",
     "language",
@@ -14,7 +14,9 @@
     "anthropic",
     "ollama",
     "vector-store",
-    "regex"
+    "regex",
+    "runtime",
+    "capability-sandbox"
   ],
   "author": "Ahmed Elgarhy <ahmed@devjsx.com>",
   "license": "MIT",

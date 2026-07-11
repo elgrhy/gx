@@ -1,6 +1,6 @@
 # GX Language — Reference
 
-Complete reference for GX v0.5.0 syntax, built-in functions, and AI primitives.
+Complete reference for GX v0.6.0 syntax, built-in functions, and AI primitives.
 
 ---
 
@@ -89,6 +89,26 @@ agent "greeter" {
 ```
 
 GX auto-detects which syntax to use based on the first meaningful line.
+
+### Progressive syntax: known limitations
+
+Every statement and expression form is shared between the two front-ends (both
+compile to the same AST), and the agent-header fields `goal:`, `retry:`,
+`on_error:`, and the `on <expr> changes:` / `on cron "...":` trigger forms are
+all supported in progressive syntax. Three brace-syntax constructs currently
+have **no** progressive-syntax equivalent — using them requires classic brace
+syntax:
+
+- `receive { ... }` (channel definitions)
+- `recipe "name" { ... }`
+- `objective "name" { ... }`
+
+Attempting any of these in a progressive-syntax file is a parse error at the
+line in question, not a silent no-op — the rest of the file is unaffected if
+you switch just that one agent to brace syntax. (The brace-syntax `can_do:`/
+`capabilities:` field and `timeout:` on an agent header are parsed but never
+read by the interpreter in *either* syntax — they are reserved for future use,
+not a progressive-syntax gap.)
 
 ---
 
@@ -241,6 +261,12 @@ memory.count = 0
 memory.user.name = "Ahmed"
 ```
 
+`obj.field = val` / `obj[key] = val` / `arr[i] = val` on a plain local
+variable mutate in place — O(1) amortized for an array index, O(1) for an
+object field/key, not a clone of the whole container. Building up an
+object or array incrementally in a loop (`obj[key] = val` once per
+iteration) is an ordinary O(n) loop, not O(n²).
+
 ### Augmented Assignment
 
 ```gx
@@ -305,6 +331,16 @@ try {
   log("Other error: " + e)
 }
 ```
+
+Catches anything that *throws* — `Signal::Error`/`assert` inside `try_body`.
+The caught value `e` is `{ message, kind, code }`, where `kind` is one of
+`JsonParseError`/`NetworkError`/`PermissionError`/`NotFoundError`/
+`AssertionError`/`RuntimeError`, guessed from the error message's text.
+`catch <Kind> e { }` only matches that inferred kind; a bare `catch e { }`
+matches anything. Not every builtin throws on failure, though — see
+[Error Handling](#error-handling) for the other convention (`{ ok: false,
+... }`) several runtime subsystems use instead, and `unwrap()` for
+bridging the two.
 
 ### `log` / `say` / `output` / `write`
 
@@ -415,6 +451,33 @@ url_obj.scheme
 ---
 
 ## Built-in Functions
+
+A number of builtins accumulated more than one name across releases —
+all forms in a group call the exact same implementation, so pick whichever
+reads best; nothing here is deprecated. The first name in each group is
+the one used elsewhere in this reference.
+
+| Canonical | Also accepted |
+|---|---|
+| `now()` | `now_ms()` is a *different* function (milliseconds, not seconds) — `get_timestamp()`, `timestamp()` are the same as `now()` |
+| `to_upper(s)` | `upper(s)`, `uppercase(s)` |
+| `to_lower(s)` | `lower(s)`, `lowercase(s)` |
+| `trim_start(s)` | `ltrim(s)` |
+| `trim_end(s)` | `rtrim(s)` |
+| `json_stringify(v)` | `to_json(v)`, `json(v)` |
+| `json_parse(s)` | `parse_json(s)` |
+| `substring(s, a, b)` | `substr(s, a, b)` |
+| `regex_test`/`regex_find`/`regex_find_all`/`regex_replace`/`regex_split`/`regex_captures`/`regex_named_captures` | `re_test`/`re_find`/`re_find_all` (also `regex_findall`)/`re_replace`/`re_split`/`re_captures`/`re_named` |
+| `vector_store_new`/`_add`/`_search`/`_delete`/`_size` | `vs_new`/`_add`/`_search`/`_delete`/`_size` |
+| `assert_eq(a, b, msg?)` | `assert_equal(a, b, msg?)` |
+| `assert_true(cond, msg?)` | `assert_that(cond, msg?)` |
+| `xml_stringify(v)` | `xml_encode(v)` |
+| `.unique()` | `.distinct()` |
+| `.skip(n)` | `.drop(n)` |
+| `.flatten()` | `.flat()` |
+| `.contains(v)` | `.includes(v)` |
+| `.push(v)` | `.append(v)` |
+| `.remove(k)` | `.delete(k)` (object method) |
 
 ### Output
 
@@ -624,6 +687,7 @@ csrf_token = secure_random(16)
 |---|---|
 | `dirname(path)` | Parent directory of path |
 | `basename(path)` | Filename component of path |
+| `extname(path)` | Last extension, with the leading dot (`""` if there isn't one) |
 | `path_join(a, b, ...)` | Join path segments (cross-platform) |
 | `glob(pattern)` | Return array of paths matching shell glob pattern |
 
@@ -632,6 +696,9 @@ use std.fs   // optional
 
 dirname("/home/user/file.txt")    // "/home/user"
 basename("/home/user/file.txt")   // "file.txt"
+extname("archive.tar.gz")         // ".gz" — the last extension only
+extname("README")                 // ""
+extname(".gitignore")             // "" — a dotfile has no extension
 path_join("a", "b", "c.txt")     // "a/b/c.txt"
 glob("reports/*.csv")             // ["reports/jan.csv", ...]
 ```
@@ -667,12 +734,41 @@ u.fragment  // "top"
 | `to_number(v)` | Convert value to number |
 | `type_of(v)` | Return type name as string |
 | `is_null(v)` | True if value is null |
+| `index_of(str, substr)` / `find(str, substr)` | Index of the first occurrence of `substr` in `str`, or `-1` |
 
 ```gx
 truncate("hello world", 8)          // "hello w…"
 truncate("hello world", 8, "...")   // "hello..."
 truncate("hi", 20)                  // "hi" (no change)
 ```
+
+`index_of`/`find` are overloaded by type, not just by name: as **free
+functions** (above) they search for a *substring* in a *string*. As
+**array methods** (`.index_of(v)`/`.find(v)`, see [Array
+Methods](#array-methods)) they search for an exact *value* in an
+*array*. `arr.index_of(v)` and `index_of(str, sub)` are unrelated
+operations that happen to share a name — there's no `index_of(arr, v)`
+free-function form for the array case.
+
+**String methods** (no free-function form beyond the ones above — call
+these as `s.method(...)`):
+
+| Method | Description |
+|---|---|
+| `.trim()` / `.trim_start()` (`.ltrim()`) / `.trim_end()` (`.rtrim()`) | Strip whitespace |
+| `.to_upper()` (`.upper()`) / `.to_lower()` (`.lower()`) | Case conversion |
+| `.to_upper_first()` | Capitalize just the first character |
+| `.split(sep)` | Split into an array |
+| `.split_lines()` / `.lines()` | Split on newlines |
+| `.replace(from, to)` | Replace every occurrence |
+| `.replace_first(from, to)` | Replace only the first occurrence |
+| `.starts_with(prefix)` / `.ends_with(suffix)` | Prefix / suffix check |
+| `.contains(substr)` | Substring check |
+| `.repeat(n)` | Repeat the string `n` times |
+| `.pad_start(len, char?)` (`.pad_left(...)`) / `.pad_end(len, char?)` (`.pad_right(...)`) | Pad to `len` characters (space by default) |
+| `.char_at(i)` | The character at index `i` |
+| `.substring(a, b)` (`.substr(a, b)`) | Substring from `a` up to `b` |
+| `.length()` / `.len()` | Character count |
 
 ### Data Helpers (v0.5.0)
 
@@ -882,6 +978,7 @@ All file operations are sandboxed to the script's directory. Use `--no-sandbox` 
 | `get_env(key, default)` | Get env var with fallback |
 | `set_env(key, value)` | Set env var for current process |
 | `env(key)` | Alias for `get_env` |
+| `config_load(options)` | Layered config: defaults < file < env overrides < explicit overrides, with optional schema validation — see [Configuration Runtime](#configuration-runtime) |
 
 ### JSON / Serialization
 
@@ -895,6 +992,34 @@ All file operations are sandboxed to the script's directory. Use `--no-sandbox` 
 | `yaml_stringify(v)` | Serialize to YAML |
 | `toml_parse(str)` | Parse TOML string |
 | `toml_stringify(v)` | Serialize to TOML |
+| `xml_parse(str)` | Parse XML into `{ tag, attrs, children, text }` |
+| `xml_stringify(v)` (`xml_encode(v)`) | Serialize a `{ tag, attrs?, children?, text? }` element back to XML text |
+
+```gx
+doc = xml_parse("<book id=\"1\"><title>GX</title><author>Ada</author></book>")
+doc.tag              // "book"
+doc.attrs.id         // "1"
+doc.children[0].tag  // "title"
+doc.children[0].text // "GX"
+
+xml_stringify({ tag: "note", attrs: { priority: "high" }, text: "Ship it" })
+// <note priority="high">Ship it</note>
+```
+
+`xml_parse` is intentionally narrow, not a full XML implementation:
+mixed content (text interleaved with child elements, e.g. `<p>Hello
+<b>world</b>!</p>`) collapses into separate `text` and `children` fields
+rather than preserving their relative order — enough for config files and
+simple data/API documents, not a document markup format. More
+importantly, **no DTD or entity definitions are ever processed** — only
+the five predefined XML entities (`&amp;` `&lt;` `&gt;` `&quot;`
+`&apos;`) and numeric character references (`&#65;` / `&#x41;`) are
+recognized; anything else, including a custom entity a document tries to
+define via `<!DOCTYPE>`, is a parse error. This is deliberate, not a
+missing feature — it's the standard defense against XXE (XML External
+Entity) injection and "billion laughs" entity-expansion attacks, both of
+which are built entirely out of entity definitions this parser never
+resolves in the first place.
 
 ### Math
 
@@ -908,9 +1033,20 @@ All file operations are sandboxed to the script's directory. Use `--no-sandbox` 
 | `min(a, b, ...)` | Minimum of arguments or array |
 | `max(a, b, ...)` | Maximum of arguments or array |
 | `clamp(v, lo, hi)` | Clamp value to range |
-| `random()` | Random float 0.0–1.0 |
+| `random()` / `random(lo, hi)` | Random float; `[0.0, 1.0)` by default, `[lo, hi)` with bounds |
+| `random_int(min, max)` | Random **integer**, inclusive of both `min` and `max` |
+| `random_choice(arr)` | A random element of `arr`; `null` if `arr` is empty |
+| `shuffle(arr)` | A new array with `arr`'s elements in random order (does not mutate `arr`) |
+| `set_random_seed(n)` | Makes every `random`/`random_int`/`random_choice`/`shuffle` call deterministic for the rest of the run — see [Testing Framework](#testing-framework) |
 | `pi` | 3.14159... |
 | `e` | 2.71828... |
+
+`random_int`/`random(lo, hi)` are easy to mix up: `random(0, 10)` is a
+**float** in `[0, 10)` (10 excluded); `random_int(0, 10)` is an **integer**
+in `[0, 10]` (10 included). Reach for `random_int` whenever you want a
+whole number — `floor(random() * (max - min + 1)) + min` is the
+hand-rolled equivalent, and it's exactly the kind of expression that's
+easy to get off-by-one wrong (forgetting the `+ 1`, or not flooring).
 
 ### Regex
 
@@ -939,24 +1075,52 @@ All file operations are sandboxed to the script's directory. Use `--no-sandbox` 
 
 ### Array Methods
 
+**Functional — also work as free functions** (`arr.map(fn)` and
+`map(arr, fn)` call the exact same code; use whichever reads better at
+the call site):
+
+| Method | Free function | Description |
+|---|---|---|
+| `.map(fn)` | `map(arr, fn)` | New array of `fn(item)` for each item |
+| `.filter(fn)` | `filter(arr, fn)` | New array of items where `fn(item)` is truthy |
+| `.reduce(fn, initial)` | `reduce(arr, fn, initial)` | Folds left: `acc = fn(acc, item)` for each item, starting from `initial` (required — an empty array just returns `initial` unchanged) |
+| `.some(fn)` | `some(arr, fn)` | `true` if `fn(item)` is truthy for *any* item (`false` on an empty array) |
+| `.every(fn)` | `every(arr, fn)` | `true` if `fn(item)` is truthy for *every* item (vacuously `true` on an empty array) |
+| `.find_index(fn)` | `find_index(arr, fn)` | Index of the first item where `fn(item)` is truthy, or `-1` — **predicate**-based, distinct from `.index_of(v)`/`.find(v)` below, which look for an exact value match |
+
+`map`/`filter` also work on an object (iterating its keys as strings) and
+a string (iterating one character at a time) — not array-only, since the
+free-function forms already worked that way before methods existed for
+them.
+
+**Method-only** (no free-function form — call these as `arr.method(...)`,
+not `method(arr, ...)`):
+
 | Method | Description |
 |---|---|
-| `.push(v)` | Append element (returns new array) |
-| `.pop()` | Remove last element |
-| `.sort()` | Sort ascending |
-| `.reverse()` | Reverse order |
-| `.unique()` | Deduplicate |
-| `.flatten()` | Flatten one level |
+| `.push(v)` / `.append(v)` | Append element. As a bare statement (`arr.push(v)` **or** the common agent-memory shape `memory.field.push(v)`, one level of nesting), mutates the underlying array in place, in O(1) amortized time. As a captured expression (`x = arr.push(v)`), functional: returns a new array, the original unchanged — the idiomatic accumulator pattern `results = results.push(v)` relies on this. **Known limitation**: two or more levels of nesting as a bare statement (`a.b.c.push(v)`) isn't recognized by the in-place fast path and silently doesn't mutate anything (the computed new array is a bare statement's discarded expression value) — reassign explicitly instead: `tmp = a.b.c; tmp.push(v); a.b.c = tmp`. |
+| `.pop()` | Removes the last element **and mutates the array in every context**, including when the result is captured (`x = arr.pop()` shrinks `arr` and gives `x` the removed value) and one level of nesting (`x = memory.items.pop()`) — unlike `.push()` above, there's no useful "functional pop" reading where the array staying unchanged would make sense, so this isn't scoped to bare statements the way `.push()`'s in-place fast path is. |
+| `.shift()` | First element (does not remove it) |
+| `.unshift(v)` | Prepend element (returns new array) |
+| `.sort()` | Sort ascending. As a bare statement, mutates in place; as a captured expression, functional (same distinction as `.push()`). |
+| `.reverse()` | Reverse order. Same bare-statement-mutates / captured-expression-functional distinction as `.push()`/`.sort()`. |
+| `.unique()` / `.distinct()` | Deduplicate |
+| `.flatten()` / `.flat()` | Flatten one level |
+| `.concat(...)` | Append more arrays/values (spreading arrays, pushing anything else as-is) |
+| `.slice(start, end?)` | Sub-array from `start` up to (excluding) `end`; `end` defaults to the array's length |
 | `.sum()` | Sum of numeric elements |
 | `.min()` / `.max()` | Min / max value |
 | `.average()` | Mean value |
-| `.take(n)` | First n elements |
-| `.skip(n)` | Skip first n elements |
+| `.take(n)` | First `n` elements |
+| `.skip(n)` / `.drop(n)` | Skip the first `n` elements |
 | `.join(sep)` | Join to string |
-| `.filter_by(key, value)` | Filter objects by field |
-| `.map_field(key)` | Extract field from each object |
-| `.contains(v)` | Membership check |
+| `.filter_by(key, value)` | Filter an array of objects by a field's value |
+| `.map_field(key)` | Extract one field from each object |
+| `.contains(v)` / `.includes(v)` | Membership check (exact value equality) |
+| `.index_of(v)` | Index of the first element equal to `v`, or `-1` — value-*equality*, not predicate-based (see `.find_index(fn)` above for that) |
+| `.find(v)` | The first element equal to `v`, or `null` |
 | `.first()` / `.last()` | First / last element |
+| `.length()` / `.len()` / `.count()` | Number of elements |
 
 ### Object
 
@@ -965,9 +1129,40 @@ All file operations are sandboxed to the script's directory. Use `--no-sandbox` 
 | `keys(obj)` | Array of keys |
 | `values(obj)` | Array of values |
 | `entries(obj)` | Array of `[key, value]` pairs |
-| `merge(obj, ...)` | Merge objects (later wins) |
+| `merge(obj, ...)` | Shallow-merge objects left to right (later wins) |
 | `has(obj, key)` | Key existence check |
+| `pick(obj, keys)` | New object containing only the named keys that are actually present |
+| `omit(obj, keys)` | New object excluding the named keys |
 | `group_by(arr, key)` | Group array of objects by field |
+
+```gx
+user = { id: 1, name: "Ada", email: "ada@example.com", password_hash: "..." }
+
+public = pick(user, ["id", "name"])   // { id: 1, name: "Ada" }
+safe   = omit(user, ["password_hash"]) // everything except password_hash
+```
+
+`pick`/`omit` never error on a key that isn't present — a name in `keys`
+that doesn't exist on `obj` is silently skipped, the same "missing means
+absent, not an error" convention `has`/`keys`/`values` already use for a
+non-object input.
+
+Also available as **methods** on an object value — `obj.has_key(k)` /
+`obj.get(k, default?)` (returns `default`, or `null`, if the key is
+missing) / `obj.remove(k)` (alias `delete`) / `obj.pick(keys)` /
+`obj.omit(keys)` / `obj.is_empty()` / `obj.len()` (aliases `length`/
+`count`) / `obj.to_json()`.
+
+### Reliability & Introspection
+
+See [Error Handling](#error-handling) for `retry`/`unwrap` and
+[Capability Runtime](#capability-runtime) for `has_capability`.
+
+| Function | Description |
+|---|---|
+| `retry(fn, max?, opts?)` | Calls `fn()` until it succeeds — a *thrown* error or a returned `{ ok: false, ... }` both count as a failure worth retrying. `opts`: `delay` (ms, default 1000), `backoff` (`"exponential"`\|`"linear"`\|`"fixed"`, default `"exponential"`). Returns the final attempt's outcome unchanged once `max` (default 3) is exhausted. |
+| `unwrap(result)` | If `result` is `{ ok: false, error, error_kind, ... }`, throws (catchable via `try/catch`, same as `db_query`'s own failures). Anything else passes through unchanged. |
+| `has_capability(resource, name?)` | `true`/`false` — would this resource/name currently be authorized? Never throws, never has a side effect. |
 
 ### Vector Store
 
@@ -992,9 +1187,156 @@ if !r.ok {
 
 ### Database (SQLite)
 
+| Function | Description |
+|---|---|
+| `db_query(path, sql, params)` | Run a SELECT, returns an array of row objects |
+| `db_exec(path, sql, params)` | Run an INSERT/UPDATE/DELETE/DDL statement, returns rows affected |
+| `db_transaction(path) { ... }` | Run a block atomically — see below |
+| `db_migrate(path, [sql, ...])` | Apply pending schema migrations — see below |
+| `db_integrity_check(path)` | `{ok, errors}` — SQLite's own `PRAGMA integrity_check` |
+| `db_vacuum(path)` | Rebuild the file, reclaiming space from deleted rows |
+| `db_backup(path, dest_path)` | Online backup, safe against a concurrently-written source |
+
 ```gx
-rows   = db_query("SELECT * FROM users WHERE active = ?", [true])
-count  = db_exec("INSERT INTO events (name) VALUES (?)", ["login"])
+rows  = db_query("app.db", "SELECT * FROM users WHERE active = ?", [true])
+count = db_exec("app.db", "INSERT INTO events (name) VALUES (?)", ["login"])
+```
+
+**Always use `?` placeholders and a `params` array for values — never build
+SQL by concatenating or interpolating untrusted input.** This is the only
+thing standing between a script and SQL injection; GX doesn't and can't
+sanitize a string that's already been spliced into a SQL statement before
+`db_query`/`db_exec` ever sees it.
+
+```gx
+// Right — the driver escapes `name` correctly no matter what it contains:
+db_exec(db, "INSERT INTO users(name) VALUES (?)", [name])
+
+// Wrong — do not do this, regardless of any manual escaping applied first:
+db_exec(db, "INSERT INTO users(name) VALUES ('" + name + "')")
+```
+
+**Connections are pooled per path**, not opened fresh on every call — the
+first `db_query`/`db_exec`/`db_transaction` call for a given path opens the
+connection and configures it (`PRAGMA journal_mode=WAL`, `busy_timeout=5000ms`,
+`foreign_keys=ON`); every later call to that same path within the same `gx`
+process reuses it, with prepared statements cached automatically. WAL mode
+in particular is what lets multiple `serve` routes read and write the same
+database concurrently without "database is locked" errors — see
+[HTTP Server](#http-server)'s concurrency notes; the two features are
+designed to work together. One connection is kept open per distinct path
+for the life of the process — fine for the common case of a small, fixed
+set of database files; a script that generates many dynamically-named
+database paths at runtime will accumulate one pooled connection per
+distinct path with no eviction today. `:memory:` is a valid path and gets
+pooled the same way, which means (unlike raw SQLite, where every
+`:memory:` connection is normally independent) every `:memory:` call
+within one `gx` process shares the *same* in-memory database — a
+convenient way to get a scratch database for a script's lifetime without
+managing a handle yourself.
+
+#### Transactions and nested transactions
+
+```gx
+db_transaction(db_path) {
+  db_exec(db, "INSERT INTO accounts(name, balance) VALUES (?, ?)", [name, 0])
+  db_exec(db, "INSERT INTO audit_log(action) VALUES (?)", ["account_created"])
+}
+```
+
+The block commits if it finishes normally, and rolls back if it throws —
+`db` is a variable bound inside the block to the same path passed to
+`db_transaction`, for `db_exec(db, ...)`/`db_query(db, ...)` calls inside it.
+Any read-then-write sequence that needs to stay consistent under concurrent
+access (check a row exists, then update it; delete related rows across two
+tables) belongs in a transaction — without one, another connection can
+observe or modify the same rows in between your read and your write.
+
+Also available in progressive syntax, as a block header (same for
+`span("name"):`, below):
+
+```
+db_transaction(db_path):
+  db_exec(db_path, "INSERT INTO accounts(name, balance) VALUES (?, ?)", [name, 0])
+  db_exec(db_path, "INSERT INTO audit_log(action) VALUES (?)", ["account_created"])
+```
+
+`db_transaction` blocks **nest correctly** using real SQLite savepoints — a
+transaction started while another is already active *on the same path*
+becomes a savepoint instead of a fresh `BEGIN`, so a reusable "does its own
+transaction" helper works whether it's called standalone or from inside a
+larger transactional workflow:
+
+```gx
+function record_purchase(db_path, user_id, amount) {
+  db_transaction(db_path) {
+    db_exec(db, "UPDATE accounts SET balance = balance - ? WHERE id = ?", [amount, user_id])
+    db_exec(db, "INSERT INTO purchases(user_id, amount) VALUES (?, ?)", [user_id, amount])
+  }
+}
+
+// record_purchase's own transaction becomes a savepoint here — if the
+// audit insert below fails, only record_purchase's own work rolls back,
+// not the whole outer transaction:
+db_transaction(db_path) {
+  record_purchase(db_path, user_id, 42)
+  db_exec(db, "INSERT INTO audit_log(action) VALUES (?)", ["purchase_flow"])
+}
+```
+
+A `db_query`/`db_exec` call always operates on the database file it's
+actually given, regardless of what transaction (if any) is active
+elsewhere — calling `db_exec("other.db", ...)` from inside
+`db_transaction("main.db") { ... }` runs against `other.db` in its own
+auto-commit connection, not against `main.db`'s open transaction.
+
+#### Migrations
+
+```gx
+db_migrate(db_path, [
+  "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)",
+  "ALTER TABLE users ADD COLUMN email TEXT",
+  "CREATE INDEX idx_users_email ON users(email)"
+])
+```
+
+Version tracking uses SQLite's own `PRAGMA user_version` — no separate
+tracking table to create or get out of sync. `migrations[i]` runs when the
+database's current version is `<= i`; each migration commits in its own
+transaction, so a failure partway through leaves the database at the last
+successfully applied version, not partially migrated. Calling `db_migrate`
+again with the same list (or a prefix of it, e.g. after adding new entries
+to the end) only applies what's new — safe to call on every application
+startup.
+
+#### Maintenance
+
+```gx
+check = db_integrity_check(db_path)
+if !check.ok { log("corruption detected: " + json_stringify(check.errors)) }
+
+db_vacuum(db_path)                    // reclaim space from deleted rows
+db_backup(db_path, "backup.db")       // safe even while db_path is being written concurrently
+```
+
+`db_vacuum`/`db_migrate` refuse to run while a transaction is active on the
+same database (matching SQLite's own restriction on `VACUUM` mid-transaction).
+`db_backup` uses SQLite's online backup API, not a file copy — a plain
+`read_file`/`write_file` copy of a live database can capture a torn,
+inconsistent snapshot if something else is writing to it at the same
+moment; the backup API is specifically designed to be safe against that.
+
+#### Binary data
+
+GX has no native binary value type. A BLOB column reads back as a base64
+string automatically; to store binary data, base64-encode it into a TEXT
+column rather than trying to write a BLOB directly:
+
+```gx
+db_exec(db, "CREATE TABLE files(id INTEGER PRIMARY KEY, content_b64 TEXT)", [])
+db_exec(db, "INSERT INTO files(content_b64) VALUES (?)", [base64_encode(file_bytes)])
+// ... later:
+bytes = base64_decode(row.content_b64)
 ```
 
 ### Persistent Memory
@@ -1007,9 +1349,13 @@ load_memory()      // restore from SQLite
 ### Observability
 
 ```gx
-trace_log("event.name", { key: value })
-// Emits JSONL to stderr: {"ts":...,"agent":"...","event":"...","data":{...}}
+trace_log("event.name", { key: value })   // free-form named event, tagged with the current trace/span
+log_debug(msg, data?)  log_info(msg, data?)  log_warn(msg, data?)  log_error(msg, data?)
+span("name") { ... }   trace_id()   span_id()
 ```
+
+Full reference, automatic instrumentation, and production guidance:
+[Diagnostics & Observability](#diagnostics--observability).
 
 ### Retry
 
@@ -1392,6 +1738,11 @@ is_tty()            // true if stdin is a terminal
 
 ## AI Primitives
 
+These are single-shot: each call builds its own prompt with no memory of
+previous calls. For multi-turn conversations, token budgeting, automatic
+trimming, and tool-call round-trips, see
+[AI Context Runtime](#ai-context-runtime).
+
 ### `ask` — Call an AI Model
 
 ```gx
@@ -1439,6 +1790,8 @@ result = ask openai {
 | `result.provider` | String | `openai`, `anthropic`, or `ollama` |
 | `result.ok` | Bool | `true` if request succeeded |
 | `result.tool_calls` | Array | Tool calls requested by the model |
+| `result.error_kind` | String or null | On failure: `rate_limited`/`auth_error`/`invalid_request`/`server_error`/`timeout`/`network_error`/`http_error`/`unknown`. `null` on success. |
+| `result.retry_after_ms` | Number or null | The provider's `Retry-After` header, in milliseconds, when it sent one. |
 
 **Provider defaults:**
 - `openai` → `gpt-4o-mini`
@@ -1552,7 +1905,7 @@ runtime) integrate into the same model without inventing their own.
 | `internal_network` (HTTP to private/loopback addresses) | denied | `--allow-internal-http` only |
 | `external_network` (HTTP to public addresses) | **open** | restrict via `gx.json` |
 | `http_server` (`serve on port ...`) | **open** | restrict via `gx.json` |
-| `database` (`db_query`/`db_exec`/`db_transaction`) | **open** | restrict via `gx.json` |
+| `database` (`db_query`/`db_exec`/`db_transaction`/`db_migrate`/`db_vacuum`/`db_backup`/`db_integrity_check`) | **open** | restrict via `gx.json` |
 | `environment` (`env`/`get_env`/`set_env`) | **open** | restrict via `gx.json` (denylist) |
 | `ai` (`ask`/`embed`/`infer classifier`) | **open** | restrict via `gx.json` (allowlist) |
 | `js`/`ts`/`py`/`binary`/`go`/`rust_bin` (bridge modules/executables) | **open** | restrict via `gx.json` (allowlist) |
@@ -1648,6 +2001,22 @@ not start from a fresh, all-denied default. A multi-agent program that was
 granted `--allow-process` at the top level can use `process_run` from
 inside a spawned agent exactly as if it were called directly.
 
+`parallel` has two forms: `results = parallel { a: expr, b: expr }` (an
+*expression* — each key becomes a concurrent branch, the whole thing
+evaluates to `{ a: ..., b: ... }`) and a bare `parallel { stmt1 stmt2 }`
+(a *statement* — each statement is its own concurrent branch, none of
+them named). The named expression form already worked in progressive
+syntax (it's parsed the same way any other `{ ... }` expression on an
+assignment's right-hand side is — progressive syntax uses indentation for
+*statement* blocks, not for expressions). The bare statement form now
+does too, as a block header:
+
+```
+parallel:
+  memory.a = compute_a()
+  memory.b = compute_b()
+```
+
 ### `gx build`
 
 `--allow-shell`/`--allow-process`/`--allow-internal-http`/`--deny` are also
@@ -1683,6 +2052,1475 @@ restricted — both were previously ungated entirely.
 - `env_deny` names exact variables, not patterns — list the specific secrets
   a script shouldn't be able to read (cloud credentials, database passwords)
   rather than trying to guess a pattern that covers all of them.
+
+---
+
+## Diagnostics & Observability
+
+One runtime every subsystem — HTTP client/server, Database, Process,
+Capability, and future ones — reports through, instead of each inventing
+its own logging. Output is JSON Lines (JSONL) on stderr, deliberately
+backend-agnostic: pipe it into `jq`, ship it to a log aggregator, or read it
+raw during local development.
+
+```json
+{"ts_ms":1783588658960,"kind":"span","name":"db.exec","trace_id":"4fd0...","span_id":"1f8b...","parent_span_id":null,"duration_ms":3.1,"outcome":"ok","data":{"db":"orders.db"}}
+```
+
+### Two tiers
+
+**Tier 1 — structured logging, always on.** `log_debug`/`log_info`/
+`log_warn`/`log_error(message, data?)`, plus automatic `capability_denied`
+audit events emitted whenever `Capabilities` denies something. Filtered by
+`--log-level` (`debug`/`info`/`warn`/`error`, default `info`) or the
+`GX_LOG_LEVEL` environment variable if the flag isn't passed. Audit events
+are always emitted at `warn` regardless of the configured minimum, since a
+denied capability should stay visible in production by default.
+
+```gx
+log_debug("cache miss", { key: cache_key })
+log_info("order processed", { order_id: id, total: total })
+log_warn("retrying after transient failure", { attempt: n })
+log_error("payment failed", { order_id: id, reason: err })
+```
+
+**Tier 2 — spans and correlation IDs, opt-in via `--trace`.** A `trace_id`
+identifies one logical operation (one top-level script run, or one incoming
+HTTP request); nested `span_id`s time named sub-operations within it, with
+a `parent_span_id` linking them back together. With `--trace` off, spans
+degrade to a single boolean check and just run their body — no UUID
+generation, no allocation, no stack push. This is deliberate: a script
+that never opts in pays nothing for tracing beyond that one branch per span.
+
+```bash
+gx run app.gx --trace --log-level debug
+```
+
+### Manual instrumentation
+
+```gx
+span("checkout") {
+  log_info("processing order", { order_id: id })
+  result = charge_card(id)
+}
+
+id = trace_id()   // current trace id, or null if none is active
+s  = span_id()    // current (innermost) span id, or null if none is active
+```
+
+`span(name) { ... }` behaves like `db_transaction(path) { ... }`: its body
+shares the enclosing scope (variables it sets are visible after the block),
+and it propagates whatever the body does — a thrown error still propagates
+after the span is ended with an `error` outcome; a Rust panic inside the
+body still ends the span (also as `error`) before the panic continues to
+unwind, the same `catch_unwind`-based cleanup guarantee already used for
+`db_transaction` rollback and SSE stream cleanup. Spans nest correctly to
+any depth — `end_span` searches for its own id rather than assuming it's
+always the top of the stack, so a leaked/never-ended inner span (a bug
+elsewhere) can't corrupt an outer span's bookkeeping.
+
+Progressive syntax: `span("checkout"):` as a block header, same as
+`db_transaction(path):` above.
+
+### Automatic spans
+
+No extra code needed — these are wired into the runtime directly:
+
+| Subsystem | Span(s) |
+|---|---|
+| HTTP client | `http.client.http_get` / `http_post` / `http_put` / `http_delete` (also covers `fetch`/`http_request`) |
+| HTTP server | `http.server.request` — one root span per incoming request, on a fresh `trace_id` |
+| Database | `db.query`, `db.exec`, `db.transaction` (including nested savepoints) |
+| Process | `process.run`, `process.spawn`, `process.shell` |
+| Multi-agent | `agent.spawn` (`spawn agent ... timeout`), `agent.parallel` (`parallel { ... }`) |
+
+Each incoming HTTP request gets its own fresh `trace_id` — independent from
+whatever trace the server process itself started under — since a request is
+its own logical operation; this holds correctly across the HTTP server's
+worker pool, where several requests run concurrently on different workers.
+`spawn agent`/`parallel { ... }` do the opposite: the spawned agent
+**inherits the parent's `trace_id`** (via `Diagnostics::for_child()`) so a
+delegated sub-task still correlates back to the operation that triggered
+it, and starts its own `agent.spawn`/`agent.parallel` span nested under
+whatever span was active in the parent at spawn time.
+
+### CLI flags
+
+| Flag | Effect |
+|---|---|
+| *(default)* | Tier 1 logging active at `info`; tier 2 tracing off |
+| `--trace` | Turn on tier 2 (spans, correlation IDs) |
+| `--log-level <level>` | Set the tier 1 minimum level (`debug`/`info`/`warn`/`error`) |
+| `GX_LOG_LEVEL` env var | Same as `--log-level`, used when the flag isn't passed |
+
+### Production best practices
+
+- Leave `--trace` off in normal production traffic unless you're actively
+  debugging — tier 1 logging plus capability-denial audit events is usually
+  enough, and tier 2 adds per-span UUID generation and JSON serialization
+  overhead you don't need until you're chasing a specific problem.
+- Correlate logs across a distributed deployment by forwarding `trace_id`
+  in a request header and having the receiving service continue the same
+  logical trace (not yet automatic — this runtime is deliberately designed
+  so that a future distributed-tracing integration has a `trace_id`/
+  `span_id`/`parent_span_id` shape ready to extend, without a breaking
+  change to today's output format).
+- Prefer `data` (the structured second argument to `log_*`/the attributes
+  a span records) over string-interpolating values into the message — it's
+  what makes the JSONL output queryable with `jq`/a log pipeline instead of
+  needing regex.
+- A capability-denied audit event is emitted at both the pre-check and
+  resolved-address layers for HTTP (SSRF can be blocked by either), so
+  don't assume one `capability_denied` event per blocked request — dedupe
+  on `trace_id` if counting distinct blocked operations.
+
+---
+
+## Task Runtime
+
+The language-level primitive for safe, observable, cancellable concurrent
+work. `spawn agent ... timeout` and `parallel { ... }` are built on top of
+it internally — this is what any GX program (agents, background workers,
+web servers, pipelines) should use for its own concurrency too.
+
+### Model
+
+A task is a GX closure (`fn() { ... }`) run on its own OS thread, against
+its own child `Interpreter` — the same "one Interpreter per unit of
+concurrent work" shape already used by `spawn agent`, the HTTP server's
+worker pool, and `parallel { ... }`. There is no async runtime underneath;
+GX's tree-walking interpreter has no cooperative yield points inside
+expression evaluation, so this is the execution model — no `async`/`await`
+syntax to learn.
+
+```gx
+h = task_spawn(fn() {
+  return process_run({ command: "some-job", args: [] })
+})
+result = task_wait(h)
+if result.ok { say result.value.stdout }
+```
+
+### Primitives
+
+| Builtin | Behavior |
+|---|---|
+| `task_spawn(fn, opts?)` | Runs `fn` (a zero-arg closure) on a new task. Returns a handle string immediately — non-blocking. |
+| `task_wait(handle, timeout_ms?)` | Blocks until the task finishes, or `timeout_ms` elapses (default: waits forever). Returns a result object (below). |
+| `task_wait_all([handles], timeout_ms?)` | Waits for every handle; returns an array of result objects in the same order. |
+| `task_wait_any([handles], timeout_ms?)` | Returns the result of whichever task finishes first, plus `index` identifying which handle won. `null` if the timeout elapses first. |
+| `task_cancel(handle, reason?)` | Flags the task cancelled. Returns `true` if it found a still-running task, `false` for an unknown or already-finished handle. |
+| `task_status(handle)` | `{ status, done, cancelled, label, parent_id, started_at, duration_ms, task_id }`, or `null` for an unknown handle. `status` is `"running"`/`"done"`/`"cancelled"`/`"failed"`. |
+| `task_id()` | The current task's handle, or `null` outside of one. |
+| `is_cancelled()` | Whether the current task (or an ancestor of it) has been cancelled. `false` outside of a task. |
+| `task_emit(value)` | Called from *inside* a running task to report incremental progress. Errors if not running inside a task. |
+| `task_progress(handle)` | Drains every value `task_emit`'d since the last drain (or since the task started) — an empty array, not an error, when there's nothing new. |
+
+Once a `task_wait`/`task_wait_all`/`task_wait_any` call actually observes a
+task as finished, that task's handle is reaped — `task_status`/`task_cancel`
+on it afterward behave exactly as if the handle had never existed (`null`/
+`false`), the same convention `process_wait`/`process_status` already use.
+This is what keeps a long-lived script (an HTTP worker spawning a task per
+request, say) from accumulating finished tasks forever — read whatever you
+need from the result object `task_wait` itself returns, since that's your
+only chance to. A wait call that times out *without* the task actually
+finishing does **not** reap it — `task_status` stays queryable while it
+winds down after cancellation.
+
+`opts` (both optional): `{ timeout: ms }` sets a deadline that cancels the
+task automatically if it's still running once it passes. `{ pool: "name",
+max_concurrent: N }` caps how many tasks sharing that pool name actually
+run at once — see [Bounded parallel execution](#bounded-parallel-execution)
+below.
+
+`task_wait`'s result object:
+
+```gx
+{
+  ok: bool,          // true only on a real successful completion
+  value: any,        // the closure's return value, or null
+  error: string?,    // the failure/cancellation reason, or null
+  cancelled: bool,
+  timed_out: bool,   // true only if THIS wait call's own timeout elapsed
+  status: string,
+  task_id: string,
+  progress: array    // any task_emit values not yet drained via task_progress
+}
+```
+
+### Reporting progress from a still-running task
+
+`task_wait`'s result is only available once a task finishes — there was
+previously no way for a still-running task to report incremental progress
+back to whatever spawned it (each task runs against a completely separate
+`Interpreter`, so there's no memory shared with the caller to poll). A task
+calls `task_emit(value)` to push a progress update; the caller drains new
+updates with `task_progress(handle)`:
+
+```gx
+h = task_spawn(fn() {
+  i = 0
+  while i < 5 {
+    task_emit({ step: i + 1, total: 5 })
+    sleep(0.1)
+    i = i + 1
+  }
+  return "done"
+})
+
+while task_status(h).done == false {
+  updates = task_progress(h)
+  // ... show updates ...
+  sleep(0.05)
+}
+// Anything emitted between the last poll and completion is still
+// reachable — task_wait's own result carries it, so nothing at the tail
+// end of a task's work is ever lost even if you stop polling early.
+result = task_wait(h)
+say result.progress
+```
+
+Capped at 1000 unconsumed entries per task (`task_emit` errors past that,
+the same defense-in-depth shape as `MAX_CONCURRENT_TASKS`) — a task that
+emits in a tight loop with nobody draining it fails loudly instead of
+growing memory without bound.
+
+### Cancellation is cooperative, not preemptive
+
+There is no safe way to forcibly kill a running thread. `task_cancel`
+(and a task's own `timeout` deadline, and `task_wait`'s own timeout — see
+below) all just set a flag; the task's own execution notices it at the
+next checkpoint:
+
+- **Every statement**, automatically — no loop needs to check anything
+  itself. A cancelled task raises internally and unwinds like any other
+  error, running `db_transaction` rollbacks and `span(...)` cleanup on the
+  way out.
+- **`sleep()`** wakes up promptly instead of completing its full duration.
+- **`process_run`/`process_spawn`** kill the child OS process the moment
+  cancellation is noticed, rather than leaving it running.
+
+A single very long `http_get`/`db_query` call with no timeout of its own
+will still run to completion before a cancellation takes effect — the
+same boundary every mainstream language's cancellation model has (Go's
+`context`, Java's `Thread.interrupt`, .NET's `CancellationToken`). Give
+it its own `timeout` if that matters for a specific call.
+
+A task's own cancellation check is unreachable from `try`/`catch` — a
+`catch { }` block can catch an error, but not silently absorb a
+cancellation the task was relying on to stop. If you need to react to
+cancellation deliberately (flush partial state, log something), poll
+`is_cancelled()`.
+
+### Structured concurrency — no orphans
+
+```gx
+parent = task_spawn(fn() {
+  child = task_spawn(fn() { ... })
+  return task_wait(child)
+})
+task_cancel(parent)   // cancels the child too
+```
+
+A task spawned from inside another task is linked to it: cancelling the
+parent cancels every task nested under it. And because a task's body runs
+against its own `Interpreter`, any further tasks *it* spawns live in that
+Interpreter's own registry — cleaned up the moment that Interpreter's
+thread function returns, for any reason (normal completion, error, panic,
+or cancellation). A task can never outlive the Interpreter that owns it,
+recursively — if a script spawns a task and never calls `task_wait` on it
+at all, it's still cancelled and joined (within a bounded grace period)
+when the owning Interpreter is dropped, exactly like a `process_spawn`
+child process already was.
+
+### Bounded parallel execution
+
+```gx
+handles = []
+i = 0
+while i < 100 {
+  handles = handles + [task_spawn(fn() { return fetch_item(i) }, {
+    pool: "fetchers", max_concurrent: 8
+  })]
+  i = i + 1
+}
+results = task_wait_all(handles)
+```
+
+`pool`/`max_concurrent` names a concurrency group, created on first use and
+shared by every later `task_spawn` naming the same pool from that
+Interpreter. Only `max_concurrent` tasks in the group actually run at
+once; the rest wait for a slot (and still respond to cancellation while
+waiting).
+
+### Integration with every other runtime
+
+| Runtime | What happens |
+|---|---|
+| Diagnostics | Every task gets its own span (named by `label`, default `"task"`), nested under whatever span was active when it was spawned, with a `cancelled` outcome distinct from `error`. |
+| Capability | A task inherits the spawning script's capabilities — the same `spawn agent`/`parallel {}` already had. |
+| Process | Cancelling a task kills any child process it started via `process_run`/`process_spawn`. |
+| Database | Each task runs against its own `Interpreter`, so it has its own connection pool and transaction-nesting state — one task's `db_transaction` can never be corrupted by another's. |
+| Multi-agent | `spawn agent ... timeout` / `parallel { ... }` are implemented on top of `task_spawn`/`task_wait` — no separate mechanism, and no more orphaned threads on timeout. |
+
+### What this doesn't do (yet)
+
+- No distributed execution — every task runs as a thread in this same OS
+  process. The handle/status vocabulary (`task_id`, `parent_id`, `status`)
+  is deliberately shaped so a future distributed variant could extend it
+  without a breaking change.
+- No async/await syntax — GX's execution model doesn't need one for this.
+- No preemption of a single long blocking call with no timeout of its own
+  (see "Cancellation is cooperative" above).
+
+### Why there's no separate "event runtime"
+
+A dedicated async/event layer was investigated and deliberately not
+built, because the capabilities it would provide already exist:
+
+| Capability | Already provided by |
+|---|---|
+| Timers | `sleep(seconds)` — cancellation-aware when running inside a task |
+| Intervals | `while true { ...; sleep(n) }` inside a `task_spawn`'d closure — cancellable via `task_cancel` exactly like any other task (`sleep` polls for cancellation rather than blocking the full duration) |
+| Scheduling | `when cron "*/5 * * * *" { ... }` inside an `agent`/`helper` |
+| Event emitters/listeners, subscriptions | `emit`/`broadcast`/`send "event" to "agent"` and `when message "event" { }` inside an `agent`/`helper` |
+| Signals (reactive triggers) | `when <expr> changes { }` |
+| Progress/incremental results from background work | `task_emit`/`task_progress` (above) |
+
+The one genuine gap found — a still-running task having no way to report
+incremental progress before finishing — is what `task_emit`/
+`task_progress` fill. Everything else was already there, just not
+necessarily obvious without reading the interpreter directly.
+
+---
+
+## AI Context Runtime
+
+The runtime responsible for managing AI conversation state — message
+history, token budgeting, trimming, and prompt assembly — for every GX
+application. It is deliberately *not* an AI framework: it does not decide
+when to call a model, which tools to invoke, or how to summarize a
+conversation. It provides the primitives every such policy is built from.
+
+### A context is plain data
+
+Unlike `process_spawn`/`task_spawn`, `context_create()` does not return an
+opaque handle into a registry — it returns an ordinary GX object. A
+context wraps no external resource (no OS process, no background thread)
+that needs tracking; it's a system prompt, an array of messages, and some
+token-budget configuration, and GX's existing value semantics already give
+that everything a handle-based design would need extra machinery for:
+
+- **Isolation**: a context passed into a `task_spawn`/`spawn agent`
+  closure is already an independent snapshot — mutating it inside never
+  affects the caller's copy.
+- **Inheritance**: passing a context as a task/agent input argument already
+  hands the child a full copy of the conversation so far — the same
+  closure capture the Task Runtime already provides for any value.
+- **Cloning**: `ctx2 = ctx` already deep-copies; `context_clone` (below)
+  exists as an explicit, discoverable primitive that also stamps a fresh
+  id and records the lineage, for branching a conversation into two
+  continuations.
+- **Serialization/persistence**: a context is already JSON-serializable —
+  `context_serialize`/`context_deserialize` add version checking so a
+  context saved before a future schema change fails loudly instead of
+  loading silently-wrong. Persistence is just `db_exec`/`db_query` on the
+  resulting string; there is no separate AI-context database API.
+
+### Primitives
+
+| Builtin | Behavior |
+|---|---|
+| `context_create(opts?)` | Creates a fresh context. `opts`: `system`, `max_history_tokens` (default 8000), `reserve_tokens` (default 1000, must be less than `max_history_tokens`), `max_messages` (default 200), `trim_strategy` (default `"drop_oldest_pair"`), `tool_output_max_chars` (default 8000). |
+| `context_set_system(ctx, text)` | Returns an updated context with the system prompt set/replaced. |
+| `context_add_message(ctx, role, content, opts?)` | Appends a message (`role`: `"user"`/`"assistant"`/`"tool"` — not `"system"`, use `context_set_system`). `opts`: `tool_call_id`/`name` (role `"tool"` requires `tool_call_id`), `tool_calls` (role `"assistant"` requesting tool use). Auto-trims afterward if configured. |
+| `context_add_tool_result(ctx, tool_call_id, name, content)` | Sugar for `context_add_message(ctx, "tool", content, { tool_call_id, name })`, with `tool_output_max_chars` truncation applied. |
+| `context_ask(ctx, provider, opts?)` | Sends the full context to `provider` (`"openai"`/`"anthropic"`). `opts`: `model`, `max_tokens` (response length, default 1024), `temperature`, `timeout`, `tools`. Returns the AI response fields (`ok`/`text`/`tokens_used`/`tool_calls`/`error`/`error_kind`/`retry_after_ms`) plus `.context` — the updated context with the assistant's reply already appended (only on success). |
+| `context_trim(ctx, opts?)` | Forces a trim pass now if the context is over budget. `opts.strategy` overrides `ctx`'s own `trim_strategy` for this call. |
+| `context_summarize_and_trim(ctx, summary_text, opts?)` | Replaces the oldest messages with one summary message. `opts.keep_last` (default 0) keeps that many of the most recent messages verbatim after the summary. See "Automatic summarization" below. |
+| `context_clone(ctx)` | An independent copy with a new context id, recording `forked_from` in stats. |
+| `context_reset(ctx, opts?)` | A fresh context (new id, empty history, reset stats) preserving configuration. `opts.keep_system` (default `true`) controls whether the system prompt survives the reset. |
+| `context_serialize(ctx)` / `context_deserialize(json)` | Versioned JSON round-trip; `context_deserialize` rejects an incompatible version or invalid JSON. |
+| `context_stats(ctx)` | `{ context_id, message_count, estimated_tokens, system_present, max_history_tokens, over_budget, trim_strategy, ask_count, total_tokens_used, total_messages_added, total_messages_trimmed, created_at, last_ask_at }`. |
+
+`ctx` in every builtin above must come from `context_create`/
+`context_deserialize`/another context builtin — an arbitrary object is
+rejected with a clear error rather than silently misread.
+
+### Conversations
+
+```gx
+ctx = context_create({ system: "You are a helpful assistant.", max_history_tokens: 6000 })
+ctx = context_add_message(ctx, "user", "What's the capital of France?")
+
+result = context_ask(ctx, "openai", { model: "gpt-4o-mini" })
+if result.ok {
+  say result.text
+  ctx = result.context   // assistant's reply already appended
+} else {
+  say "failed: {result.error_kind} — {result.error}"
+}
+```
+
+### Tool calls
+
+```gx
+result = context_ask(ctx, "openai", { model: "gpt-4o-mini", tools: my_tool_schemas })
+ctx = result.context
+if result.tool_calls {
+  for each call in result.tool_calls {
+    output = run_my_tool(call.name, call.arguments)   // application logic — GX doesn't decide this
+    ctx = context_add_tool_result(ctx, call.id, call.name, output)
+  }
+  result2 = context_ask(ctx, "openai", { model: "gpt-4o-mini", tools: my_tool_schemas })
+  ctx = result2.context
+}
+```
+
+The provider-neutral message list (`role`/`content`/`tool_call_id`/`name`/
+`tool_calls`) is translated to each provider's actual wire format inside
+the runtime — OpenAI's `tool_calls` field vs. Anthropic's `tool_use`/
+`tool_result` content blocks, Anthropic's top-level `system` field vs.
+OpenAI's system-role message — so a script never needs to know which
+provider it's talking to when assembling a conversation.
+
+### Automatic trimming
+
+Every `context_add_message` call (and `context_ask`'s own append of the
+assistant's reply) checks the context against its budget afterward and
+trims automatically unless `trim_strategy` is `"none"`:
+
+| Strategy | Behavior |
+|---|---|
+| `"none"` | Never auto-trims. `context_stats(ctx).over_budget` still reports honestly; call `context_trim` explicitly when you want to act on it. |
+| `"drop_oldest"` | Removes the single oldest message, repeated until back under budget. |
+| `"drop_oldest_pair"` (default) | Removes the two oldest messages at a time — usually keeps `user`/`assistant` turns paired rather than leaving a dangling reply with no prompt. A heuristic, not a dependency-aware conversation-graph trimmer. |
+| `"summarize"` | Behaves exactly like `"drop_oldest_pair"` automatically — see below for why. |
+
+Two independent triggers, either one starts a trim pass: the estimated
+token count (`system` + every message's cached per-message estimate, the
+same ~4-chars-per-token heuristic as `token_count()`) exceeding
+`max_history_tokens - reserve_tokens`, or the message count exceeding
+`max_messages` — a hard ceiling that exists specifically because the token
+estimate is a heuristic, not an exact tokenizer.
+
+**Automatic summarization.** `trim_strategy: "summarize"` does not call a
+model itself — this runtime doesn't decide when to spend tokens/money on
+summarization, or which model/prompt to use for it, on an application's
+behalf. What it provides is the actual hook: `context_summarize_and_trim`,
+the mechanical "replace these old messages with one summary message"
+operation. The typical pattern:
+
+```gx
+if context_stats(ctx).over_budget {
+  old_messages = ctx.messages   // read what's about to be summarized
+  summary = context_ask(context_reset(ctx), "openai", {
+    model: "gpt-4o-mini",
+  }).text   // your own summarization call — your model, your prompt
+  ctx = context_summarize_and_trim(ctx, summary, { keep_last: 4 })
+}
+```
+
+### Persistence
+
+```gx
+db_exec(db_path, "CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, data TEXT)")
+db_exec(db_path, "INSERT OR REPLACE INTO conversations(id, data) VALUES (?, ?)", [conv_id, context_serialize(ctx)])
+
+// later:
+row = db_query(db_path, "SELECT data FROM conversations WHERE id = ?", [conv_id])[0]
+ctx = context_deserialize(row.data)
+```
+
+### Integration with every other runtime
+
+| Runtime | What happens |
+|---|---|
+| Diagnostics | `context_ask` (and the single-shot `ask`/`Think`/`embed`/`infer`) get an automatic `ai.request`/`ai.embed`/`ai.infer` span with `provider`/`model`/`context_id`/`message_count`/`tokens_used` attributes and an `error_kind`-aware outcome. |
+| Capability | `context_ask` authorizes through the same `Resource::AiProviders` check (`dependencies.ai` in `gx.json`) as every other AI primitive. |
+| HTTP | `context_ask` and the cloud (`openai`/`anthropic`) single-shot calls now reuse the same capability-checked, connection-pooled `ureq::Agent` `http_get`/etc. already use, with a longer default read timeout (120s vs. 30s) appropriate for a real completion. `ollama` deliberately stays on its own plain connection — it's a loopback endpoint (`localhost:11434`), and routing it through the SSRF-aware resolver would newly require `--allow-internal-http` for an already-shipped feature. |
+| Task | A context is ordinary data — see "A context is plain data" above; no special propagation code was needed. |
+| Database | Persistence is `context_serialize`/`context_deserialize` plus ordinary `db_exec`/`db_query` — no dedicated API. |
+| Process | A tool's output (often a `process_run(...).stdout`) flows into `context_add_tool_result` like any other string — no special integration code needed. |
+
+### Retry and rate-limit hooks
+
+Every AI response — `context_ask` and the single-shot primitives alike —
+carries a structured `error_kind` (`rate_limited`/`auth_error`/
+`invalid_request`/`server_error`/`timeout`/`network_error`/`http_error`)
+classified from the provider's HTTP status, and `retry_after_ms` when the
+provider sent a `Retry-After` header. This is the actual "retry hook" —
+not a new retry engine, since GX already has one:
+
+```gx
+result = retry(fn() {
+  r = context_ask(ctx, "openai", {})
+  if r.ok { return r }
+  if r.error_kind == "rate_limited" or r.error_kind == "server_error" {
+    if r.retry_after_ms { sleep(r.retry_after_ms / 1000) }
+    x = 1 / 0   // force retry() to treat this attempt as failed
+  }
+  return r   // invalid_request/auth_error: retrying won't help, stop
+}, 5, { delay: 1000, backoff: "exponential" })
+```
+
+### Provider neutrality
+
+No `openai`-, `anthropic`-, `ollama`-, or application-specific behavior
+exists in this runtime — every provider-specific translation (message
+shape, tool-call format, system-prompt placement) lives inside the AI
+Runtime's connectors, never in the Context Runtime or exposed to scripts.
+`ollama`'s multi-turn `/api/chat` endpoint is not yet wired into
+`context_ask` (only its single-shot `/api/generate` path is supported
+today, via plain `ask ollama { ... }`) — `context_ask(ctx, "ollama", ...)`
+returns a clear "not yet supported" error rather than silently degrading.
+
+### What this doesn't do (yet)
+
+- No streaming support in `context_ask` (the single-shot `ask ... {
+  stream: true }` is unaffected). Nothing in the context object's design
+  precludes adding it later.
+- No multimodal (image/audio) message content — `content` is a string.
+- No distributed/shared conversation state across processes — persistence
+  is explicit (`context_serialize` + your own storage), not automatic
+  replication.
+- No automatic tool-execution loop — `context_ask` returns `tool_calls`;
+  deciding which tool to run and actually running it is application logic,
+  same as it already was for the single-shot `ask` primitive.
+
+---
+
+## Module & Package Runtime
+
+Production-grade module resolution and dependency management for
+multi-file GX projects: deterministic `import` resolution, package
+metadata, semantic versioning, dependency locking (`gx.lock`), package
+integrity verification, and a local package cache. `gx.json`'s
+`name`/`version`/`entry`/`dependencies.gx` fields existed since `gx init`
+first scaffolded them but were previously entirely inert — this runtime is
+what reads them.
+
+### File imports
+
+```gx
+import "./lib/utils.gx"          // relative to this file's own directory
+import "./lib/utils.gx" as utils // namespaced — utils.func_name()
+```
+
+- **Resolved relative to the importing file's own directory first**, a
+  current-working-directory-relative (or absolute) path only as a
+  fallback. This is deterministic: the same script resolves the same way
+  regardless of which directory `gx` was invoked from.
+- **Transitive**: an imported file's own `import`s are followed too, at
+  any depth. `a.gx` importing `b.gx`, which itself imports `c.gx`, loads
+  all three.
+- **Each file is parsed at most once**, no matter how many places import
+  it (a "diamond" — two files that both import a common third file — is
+  detected and merged from cache, not re-parsed or falsely flagged as a
+  collision).
+- **Import cycles are detected**, reported with the full chain
+  (`a.gx -> b.gx -> a.gx`) rather than overflowing the stack.
+- A flat (unaliased) import whose function/agent name collides with an
+  existing definition from a *different* file follows the previous
+  last-import-wins behavior for compatibility, but now logs a diagnostics
+  warning (`Level::Warn`) instead of silently shadowing it.
+
+### Package imports
+
+```gx
+import "leftpad"   // a bare name — no .gx suffix, no path separator, no leading "."
+```
+
+A bare name (as opposed to `"./leftpad.gx"` or `"leftpad.gx"`) is resolved
+as a **package**: looked up in `gx.lock`, then read from wherever it was
+cached at `gx install` time, entering at its own `gx.json`'s `entry` field
+(default `main.gx`). Resolving the same package from several files in one
+run only reads `gx.lock` and re-verifies its integrity hash once, not once
+per importer.
+
+### `gx.json` dependencies
+
+```json
+{
+  "name": "my-app",
+  "version": "0.1.0",
+  "entry": "main.gx",
+  "dependencies": {
+    "js": [],
+    "py": [],
+    "gx": {
+      "leftpad": "^1.2.0",
+      "some-lib": { "git": "https://github.com/example/some-lib", "rev": "v2.0.0" },
+      "shared": { "path": "../shared" }
+    }
+  }
+}
+```
+
+Three dependency source kinds:
+
+| Source | Shape | Resolves via |
+|---|---|---|
+| Registry (semver range) | `"^1.2.0"` | The local cache only — the highest cached version satisfying the range. Nothing is ever fetched implicitly; `gx install` is what populates the cache. There is no hosted GX package registry (see below), so this errors clearly if nothing cached satisfies the range, naming a `git`/`path` dependency as the alternative. |
+| Git | `{ "git": "<url>", "rev": "<ref>"? }` | `gx install` clones it (shells out to `git`, `--quiet`), checks out `rev` if given, strips `.git` metadata before hashing, and caches it under the version its own `gx.json` declares (or `0.0.0+git.<short-sha>` if it declares none). |
+| Path | `{ "path": "<relative path>" }` | Used directly at that location, relative to the *dependent's* `gx.json` directory — never cached, never integrity-checked (a path dependency is meant to always reflect its current on-disk state, the entire point of using one during local/monorepo development). |
+
+### `gx install` / `gx publish`
+
+```bash
+gx install <js.pkg|py.pkg>        # add/update a single js/py bridge package (unchanged)
+gx install                        # no args: resolve gx.json's dependencies.gx, write gx.lock
+gx install --offline              # fail clearly instead of touching the network
+GX_OFFLINE=1 gx install            # same, via environment variable
+gx publish                        # validate + hash this package, write <name>-<version>.gxpkg.json
+```
+
+`gx install` (no arguments) resolves every entry in `dependencies.gx`
+against its source, computes a SHA-256 integrity hash over the resolved
+package's file tree, and writes/updates `gx.lock`. `--offline` (or
+`GX_OFFLINE`) makes any dependency that isn't already cached a hard error
+instead of reaching the network.
+
+`gx publish` does not upload anything — **there is no hosted GX package
+registry**, deliberately: GX has no server infrastructure to run one, and
+building a fake one would be exactly the kind of feature added "because
+other languages have it." Git-based distribution (clone a tagged
+repository) is a real, complete, offline-capable-after-first-fetch source
+that needs no new infrastructure — the same bootstrap path early Cargo
+used before crates.io existed. `gx publish` validates the package has a
+name and a valid semver version, rejects publishing with a `path`
+dependency still in place (meaningless outside this checkout), computes
+the same integrity hash `gx install` will later verify against, writes a
+`<name>-<version>.gxpkg.json` descriptor, and prints the actual git-tag
+workflow for distributing it.
+
+### `gx.lock`
+
+```json
+{
+  "version": 1,
+  "packages": {
+    "leftpad": {
+      "version": "1.2.0",
+      "resolved": "git+https://github.com/example/gx-leftpad#a1b2c3d",
+      "integrity": "sha256-…"
+    }
+  }
+}
+```
+
+Versioned (an incompatible future lockfile format fails loudly rather than
+being silently misread) and key-sorted for clean diffs. Every resolution
+that finds a `gx.lock` (a `git` or registry dependency; path dependencies
+are exempt, see above) re-verifies the cached package's hash against it
+before using it — a tampered or corrupted local cache entry is rejected,
+not silently used.
+
+### Local package cache
+
+Cached packages live at `~/.gx/packages/<name>/<version>/`, overridable
+with `GX_PACKAGE_CACHE_DIR` (mirrors the existing `GX_STATE_DIR`
+convention for persistent memory). Package names/versions are sanitized
+before being used to build filesystem paths, and a symlink anywhere inside
+a package's tree is rejected outright when computing its integrity hash —
+an untrusted git/registry dependency could otherwise plant one pointing
+outside the package (e.g. a `main.gx` symlinked to `~/.ssh/id_rsa`) that
+would later be read as the package's own source the moment something
+imports it.
+
+### Capability scope (deliberate boundary)
+
+Imported/dependency code — a plain file import, a namespaced module
+import, or a package import — runs with **exactly the same
+[Capability Runtime](#capability-runtime) grant as the script that
+imported it**. There is no per-package capability sandboxing: a
+dependency's functions execute in the same interpreter, sharing its one
+capability set, the same way an ordinary function call does. This is a
+deliberate scope boundary for this milestone, not an oversight — isolating
+each dependency in its own capability sandbox is a real, valuable, but
+substantially larger feature (per-module capability declarations, grant
+attenuation across call boundaries, enforcement at every call site rather
+than once at process start), left as a future consideration.
+
+### Diagnostics
+
+Two spans, active under `--trace` like every other diagnostics span:
+`module.import` (wraps the whole import-resolution pass for a program run,
+with a `files_resolved` count) and `package.resolve` (one per package
+import, with `package`/`version`/`source` attributes — see
+[Diagnostics & Observability](#diagnostics--observability)).
+
+---
+
+## Error Handling
+
+GX has two coexisting failure-signaling conventions, because different
+runtime subsystems were built at different times against different
+precedents. Neither is "correct" — this section exists so the difference
+is something you look up once, not something you discover by watching a
+`try/catch` silently never fire.
+
+### The two conventions
+
+**Throwing** — the operation raises an error that propagates up until a
+`try/catch` (or the top level) catches it. Used by: `db_query`/`db_exec`/
+`db_transaction`, file I/O (`read_file`/`write_file`/`delete_file`/...),
+`readline`, `assert`, and most builtins that fail only on a genuine
+programmer/environment error (a missing argument, an unreadable path).
+
+```gx
+try {
+  rows = db_query(path, "SELECT * FROM users WHERE id = ?", id)
+} catch e {
+  log("query failed: " + e.message)
+}
+```
+
+**Returning a result object** — the operation always returns normally;
+success or failure is a field on the returned value, `{ ok: true, ... }`
+or `{ ok: false, error, error_kind, ... }`. Used by `http_get`/`http_post`/
+`http_put`/`http_delete`/`http_request`, `process_run`/`process_spawn`/
+`process_wait`, `task_wait`/`task_wait_all`/`task_wait_any`, `ask`, and
+`context_ask` — every one of these treats a timeout, a non-2xx status, a
+non-zero exit, or a provider error as an *expected, operational* outcome,
+not a programmer error, so it never throws for one.
+
+```gx
+result = http_get(url)
+if !result.ok {
+  log("request failed: " + result.error)
+} else {
+  data = result.data
+}
+```
+
+**Why this matters**: code written assuming the wrong convention doesn't
+fail loudly — it fails *silently*. A `try/catch` wrapped around `http_get`
+never fires, because `http_get` doesn't throw; an `if !result.ok` check
+after `db_query` never runs, because a failed query throws before
+producing any result to check. Both look reasonable and both pass review;
+neither does what its author expected.
+
+### `unwrap()` — bridging the two conventions
+
+```gx
+try {
+  data = unwrap(http_get(url))     // throws if result.ok is false
+  rows = unwrap(db_query(path, sql)) // db_query already throws — unaffected
+} catch e {
+  log("failed: " + e.message + " (" + e.kind + ")")
+}
+```
+
+`unwrap(result)` normalizes a `{ ok: false, error, error_kind, ... }`
+result into a thrown error (catchable exactly like `db_query`'s own
+failures — `e.message`/`e.kind` work the same way). Anything else —
+`{ ok: true, ... }`, or a value with no `ok` field at all — passes through
+completely unchanged; `unwrap` never guesses which field holds "the real
+payload," since that differs per builtin (`.data` for `http_*`, `.value`
+for `task_wait`, `.text` for `ask`/`context_ask`, the rows array itself
+for `db_query`). Use it when you want one idiom (throw-and-catch)
+regardless of which convention the wrapped call actually uses; ignore it
+entirely if you're happy checking `.ok` — nothing about the returning
+convention changes.
+
+`retry(fn, max?, opts?)` already understands both conventions on its own:
+it retries a closure that throws *or* one that returns `{ ok: false, ...
+}`, and returns the final attempt's outcome unchanged once attempts are
+exhausted (a thrown error stays thrown; a returned `{ ok: false, ... }`
+stays a returned value) — so `retry(fn() { return http_get(url) }, 3)`
+retries on a failed request, not just on a thrown error.
+
+### `error_kind` vocabulary reference
+
+The two conventions also use different vocabularies for classifying
+*what kind* of failure occurred — this is the other half of "don't assume
+one convention where the other applies." `try/catch`'s inferred `kind` is
+PascalCase and guessed from the error message's text (see the caveat
+below); a result object's `error_kind` field is a specific, deliberately
+chosen snake_case string with no PascalCase equivalent.
+
+| Convention | Kind values |
+|---|---|
+| `try/catch`'s `e.kind` (`infer_error_kind`) | `JsonParseError`, `NetworkError`, `PermissionError`, `NotFoundError`, `AssertionError`, `RuntimeError` |
+| `http_*`'s `error_kind` | `http_status`, `blocked` (SSRF-denied), `timeout`, `dns_error`, `connection_failed`, `too_many_redirects`, `io_error`, `transport_error` |
+| `process_*`'s `error_kind` | `not_found`, `permission_denied`, `spawn_failed`, `timeout`, `killed`, `unresponsive` |
+| `ask`/`context_ask`'s `error_kind` | `rate_limited`, `auth_error`, `invalid_request`, `timeout`, `server_error`, `http_error`, `network_error`, `unknown` |
+
+**Caveat**: `try/catch`'s `e.kind` is inferred by checking whether the
+error *message* contains certain substrings (`"timeout"` → `NetworkError`,
+`"not found"` → `NotFoundError`, ...) — it is not a structured
+classification, and it can misfire on a message that happens to contain a
+matching word for an unrelated reason (e.g. a request to a hostname
+literally named `*.invalid` can surface as `JsonParseError` purely because
+the message contains the substring `"invalid"`). Don't rely on `catch
+<Kind>` where getting the classification exactly right matters — check
+`e.message` directly, or use `unwrap()` on a result-object builtin and
+inspect the original `error_kind` string yourself before it gets
+re-classified.
+
+### Checking a capability before you use it
+
+```gx
+if has_capability("external_network") {
+  data = http_get(url)
+} else {
+  data = read_file("cached_response.json")
+}
+
+if has_capability("ai", "openai") {
+  result = ask openai { prompt: "..." }
+}
+```
+
+`has_capability(resource, name?)` answers "would this be allowed?" without
+attempting the operation — no side effect, no denial thrown, no audit-log
+entry. Before this existed, the only way to learn whether a capability was
+granted was to attempt the operation and catch a `capability_denied`
+error — workable, but it means a script that wants to *choose* a strategy
+up front (use the network if allowed, otherwise fall back to a cache) has
+to structure that as error handling instead of a plain `if`. `resource` is
+one of the same names used in `gx.json`/`--deny`/error messages: `shell`,
+`process`, `filesystem`, `internal_network`, `external_network`,
+`http_server`, `database`, `environment`, `ai`, `js`, `ts`, `py`, `binary`,
+`go`, `rust_bin` (see [Capability Runtime](#capability-runtime)). `name`
+narrows the check against a resource's allowlist (an AI provider, a bridge
+module, a process executable) — omit it to check only the resource-level
+grant.
+
+---
+
+## Debugger Runtime
+
+Built directly on `run_stmt` — the same per-statement checkpoint the Task
+Runtime already uses for cooperative cancellation — so pausing execution
+needed no redesign of the tree-walking interpreter: it's one more check
+before a statement runs, exactly like the existing cancellation check.
+
+### `breakpoint()` — pause from inside a script
+
+```gx
+x = compute_something()
+breakpoint()
+y = x + 1
+```
+
+Call it anywhere, in any execution context (`gx run`, `gx debug`, `gx -e`,
+`gx test`, even from inside the REPL) — no flag or prior debug session
+required. Drops into an interactive `(gx-debug)` prompt right there.
+
+### `gx debug` / `gx run --break`
+
+```bash
+gx debug <file.gx> [--break line1,line2,...]
+gx run <file.gx> --break line1,line2,...
+```
+
+`gx debug` is `gx run` with the debugger available — same flags, same
+execution path, just named for discoverability. `--break` sets external,
+source-unmodified line-number breakpoints (works on either command).
+
+### The `(gx-debug)` prompt
+
+| Command | Effect |
+|---|---|
+| `c`, `continue` | Resume execution |
+| `s`, `step` | Run the next statement, then pause again (single-stepping) |
+| `l`, `locals` | List every variable in the current scope |
+| `bt`, `stack` | Show the current call stack |
+| `p`, `print <expr>` | Evaluate and print a real GX expression (method calls, field access, interpolation — anything) |
+| `w`, `watch <expr>` | Re-evaluate `<expr>` and print it at every future pause |
+| `q`, `quit` | Stop execution |
+| `h`, `help` | List these commands |
+
+```
+$ gx debug order.gx --break 12
+[breakpoint] paused at line 12
+(gx-debug) locals
+  item = { name: "widget", price: 9.99, qty: 3 }
+  total = 0
+(gx-debug) watch total
+watch added: total
+(gx-debug) step
+[breakpoint] paused at line 13
+watch: total = 29.97
+(gx-debug) continue
+```
+
+Every pause also emits a `debugger.pause` diagnostics event (visible with
+`--trace`), so a paused breakpoint shows up in the same structured output
+as every other subsystem's tracing.
+
+**Concurrency note**: `debug_pause` blocks on stdin exactly like the
+pre-existing `readline()` builtin — a breakpoint hit inside a spawned
+task or a `parallel {}` branch pauses only that thread (each has its own
+`Interpreter`/call stack), never the whole process.
+
+---
+
+## Testing Framework
+
+`gx test` already ran whole files and reported pass/fail per *file*. This
+adds named, isolated test cases within a file, setup/teardown, golden-file
+comparison, deterministic randomness, and a sandbox-safe scratch
+directory — composing existing primitives (the same `assert`, the same
+capability-gated file I/O) rather than introducing a parallel system.
+
+### `test(name, fn)`
+
+Registers a named test case — deferred, not run immediately. `gx test`
+runs every registered case separately, after the top-level script
+finishes, each with its own fresh assertion count and failure list, so
+one test's failure is reported under its own name and doesn't abort the
+others the way a bare top-level `assert` would:
+
+```gx
+test("addition works", fn() {
+  assert 1 + 1 == 2 "math is broken"
+})
+
+test("handles the empty case", fn() {
+  assert len([]) == 0
+})
+```
+
+```
+$ gx test
+  PASS   tests/test_math.gx
+  PASS   tests/test_math.gx :: addition works (1 assertions)
+  PASS   tests/test_math.gx :: handles the empty case (1 assertions)
+
+Results: 3 passed, 0 failed, 0 errors | 2 total assertions
+```
+
+### `before_each(fn)` / `after_each(fn)`
+
+Setup/teardown run around every `test()` case in the file — a single
+active hook each (a later call replaces an earlier one). GX closures
+capture their outer scope **by value**, so a plain variable
+`before_each` mutates is invisible to the test body's own, separately
+captured snapshot of it. `memory.*` is this language's existing channel
+for state that needs to survive across separate closure calls (every
+agent already relies on exactly this) — `gx test` runs `before_each`, the
+test body, and `after_each` for one test case against the *same*
+underlying scope, so `memory.*` is how setup hands state to the test:
+
+```gx
+before_each(fn() {
+  memory.db = test_temp_dir() + "/test.db"
+})
+
+after_each(fn() {
+  log("cleaning up {memory.db}")
+})
+
+test("insert then query", fn() {
+  db_exec(memory.db, "CREATE TABLE t (v INTEGER)", [])
+  db_exec(memory.db, "INSERT INTO t VALUES (?)", [1])
+  rows = db_query(memory.db, "SELECT * FROM t", [])
+  assert len(rows) == 1
+})
+```
+
+Teardown always gets a chance to run, even if `before_each` or the test
+body itself failed — the same "cleanup runs regardless" shape a `finally`
+block has.
+
+### `set_random_seed(n)`
+
+Makes `random`/`random_int`/`random_choice`/`shuffle` fully deterministic
+for the rest of the run — the same seed always produces the same sequence
+of draws:
+
+```gx
+set_random_seed(42)
+a = random_int(1, 100)
+set_random_seed(42)
+b = random_int(1, 100)
+assert a == b   // always true
+```
+
+Scripts that never call `set_random_seed` see exactly the prior,
+clock-seeded behavior — this is purely additive.
+
+### `test_temp_dir()`
+
+Returns a fresh, writable scratch directory on every call — resolved
+through the same capability-gated path resolution as every other file
+builtin (sandboxed under the script's own directory when `gx run`
+sandboxing is active; relative to cwd under `gx test`'s unrestricted
+default, matching a script's own `write_file("foo.txt", ...)` calls
+either way):
+
+```gx
+test("round-trips through a file", fn() {
+  dir = test_temp_dir()
+  write_file(dir + "/out.txt", "hello")
+  assert read_file(dir + "/out.txt") == "hello"
+})
+```
+
+### `assert_golden(actual, path)`
+
+Byte-for-byte comparison against a saved "golden" file:
+
+```gx
+test("renders the expected summary", fn() {
+  summary = { status: "ok", count: 3 }
+  assert_golden(summary, "tests/golden/summary.json")
+})
+```
+
+A `Value::Str` is compared as-is (the natural shape for golden *text*
+output — a rendered template, an HTTP body); anything else is serialized
+as pretty-printed JSON with sorted keys (deterministic regardless of GX
+object's own unordered internal representation). No golden file yet, or
+`GX_UPDATE_GOLDEN=1` set: writes `actual` as the new golden and passes —
+so a fresh golden test doesn't need two separate runs (one to create the
+file, one to verify it) before it can go green:
+
+```bash
+GX_UPDATE_GOLDEN=1 gx test   # (re)write every golden file to match current output
+```
+
+---
+
+## Configuration Runtime
+
+A GX app previously had to manually chain `json_parse`/`yaml_parse`/
+`toml_parse` + `env()` + `schema_validate` with no single ergonomic entry
+point. `config_load` organizes those existing primitives — it doesn't
+duplicate them.
+
+### `config_load(options)`
+
+Layered merge, later layers win:
+
+```
+defaults  <  config file  <  environment overrides  <  explicit overrides
+```
+
+```gx
+config = config_load({
+  defaults: { port: 3000, host: "localhost", debug: false },
+  file: "config.json",       // auto-detected: .json/.yaml/.yml/.toml
+  env_prefix: "APP_",        // APP_PORT overrides port, type-coerced
+  overrides: { debug: true }, // highest precedence
+  schema: { port: "number", host: "string", debug: "boolean" },
+})
+```
+
+Every layer is independently optional — `config_load({ defaults: {...} })`
+is a valid, if trivial, call.
+
+- **`defaults`** — the base layer.
+- **`file`** — path to a config file. A *missing* file is not an error
+  (defaults carry the app); a file that exists but fails to parse, or
+  whose extension isn't `.json`/`.yaml`/`.yml`/`.toml`, is.
+- **`env_prefix`** — enables the environment-override layer. For each key
+  already present after `defaults`+`file`, checks
+  `{env_prefix}{KEY_UPPERCASED}` and, if set, overrides that key —
+  coerced to match the *existing* value's type (env vars are always
+  strings; a numeric/boolean default makes `"8080"`/`"true"` usable
+  without a separate parse step). **Security property**: this can only
+  ever override a key the app already declared via `defaults`/`file` — it
+  can never inject a brand-new config key purely from an environment
+  variable. A key denied by `gx.json`'s `capabilities.env_deny` throws
+  (the same as a direct `env()` call would), audited the same way every
+  other capability denial is.
+- **`overrides`** — highest precedence, applied last.
+- **`schema`** — if given, the *final* merged config is run through the
+  existing `schema_validate`, and `config_load` throws on failure (fail
+  fast on bad config) rather than returning an invalid object the caller
+  might forget to check.
+
+### Secrets stay separate
+
+`config_load` is for *non-secret* settings. Secrets belong in
+`.env`/`load_env()` + `env()` — already capability-gated, and never part
+of what `config_load` returns:
+
+```gx
+config = config_load({ defaults: { port: 3000 }, file: "config.json" })
+load_env(".env")
+api_key = env("API_KEY", "")
+```
+
+Before logging or returning a config object, shape it with the existing
+`pick()`/`omit()` builtins the same way you would any other API response
+— `omit(config, ["internal_debug_token"])` — rather than assuming nothing
+sensitive ever ends up in a config file.
+
+Workspace/monorepo configuration (linking multiple packages' configs
+together) is intentionally out of scope: GX has no monorepo/workspace
+concept to hang that on today, and inventing one speculatively isn't a
+gap-fill.
+
+---
+
+## Serialization Runtime
+
+JSON, YAML, TOML, CSV, and XML support already existed
+(`json_parse`/`json_stringify`, `yaml_parse`/`yaml_stringify`,
+`toml_parse`/`toml_stringify`, `csv_parse`/`csv_stringify`,
+`xml_parse`/`xml_stringify`) and are already deterministic — every one of
+them sorts object keys before serializing, so the same value always
+produces byte-identical output regardless of GX's own `Object` type being
+internally unordered. This section covers what was genuinely missing:
+JSON Lines, versioned serialization, and format-agnostic file I/O.
+
+### JSON Lines (NDJSON)
+
+Distinct from `json_parse`/`json_stringify`, which expect the whole text
+to be exactly one JSON value: JSON Lines is one independent JSON value per
+line — the standard shape for log streams and data-pipeline exports.
+
+```gx
+jsonl_stringify([{ id: 1 }, { id: 2 }])   // '{"id":1}\n{"id":2}\n'
+jsonl_parse(text)                          // → array<value>, one per non-empty line
+```
+
+A malformed line is a parse error naming which line failed
+(`jsonl_parse: line 2: ...`); a blank line is skipped.
+
+### Versioned serialization
+
+Generalizes the AI Context Runtime's own `context_serialize`/
+`context_deserialize` pattern — a version tag checked on load, rejecting a
+stale/foreign blob loudly rather than silently deserializing it into a
+wrong shape — into a primitive any GX app can use for its own persisted
+data:
+
+```gx
+saved = versioned_stringify({ name: "Ada" }, 2)
+// '{"__gx_version":2,"data":{"name":"Ada"}}'
+
+restored = versioned_parse(saved, 2)   // → { name: "Ada" }
+versioned_parse(saved, 3)              // throws: unsupported version 2 (expected 3)
+versioned_parse(saved)                 // no expected version: returns the data unconditionally
+```
+
+### `data_import(path)` / `data_export(path, value, schema?)`
+
+Format-agnostic "read+parse"/"stringify+write", format detected from the
+path's extension (`.json`/`.yaml`/`.yml`/`.toml`/`.csv`/`.xml`/`.jsonl`) —
+composes every existing parser/stringifier rather than adding new parsing
+logic:
+
+```gx
+data_export("report.yaml", { status: "ok", count: 3 })
+report = data_import("report.yaml")
+
+// Optional schema validation before writing — fails fast, writes nothing
+// on a validation failure, using the existing schema_validate.
+data_export("config.json", cfg, { port: "number" })
+```
+
+A missing extension `data_import` doesn't recognize is an error naming
+every extension it does; a *missing file* is a plain I/O error (unlike
+`config_load`'s `file` option, which deliberately tolerates a missing
+config file — `data_import`/`data_export` are a direct file-access
+primitive, not a layered-defaults system).
+
+### What was already solved, and what wasn't built
+
+- **Deterministic serialization** — already true for every existing
+  format (see above); no new API needed.
+- **Cross-format conversion** — already trivially composable
+  (`toml_stringify(yaml_parse(text))` converts YAML to TOML in one line);
+  a dedicated `convert_format()` wrapper would just be two existing calls
+  with extra ceremony.
+- **Binary serialization** (MessagePack, CBOR, Protobuf, ...) — not
+  justified: GX has no existing binary wire-format need (no gRPC, no
+  custom binary protocol anywhere in the language), and adding one would
+  be a new dependency in search of a use case.
+- **Custom serializers** — not needed for a dynamically-typed language:
+  a script can already transform its own data with a plain function call
+  before `json_stringify`/`data_export`, which is what a custom serializer
+  would exist to do in a statically-typed language with real `Serialize`
+  trait impls.
+
+---
+
+## Template & Code Generation Runtime
+
+GX already has a full programming language for generating text: string
+interpolation (`"{expr}"`), `while`/`for each`, and `write_file` let a
+script build up and emit arbitrary text or source code. That covers
+"generate text from code I'm writing right now." What it couldn't do is
+the other common shape: render an *external* template — loaded from a
+file, written once, reused many times — against a data object only
+available at runtime, because `"{expr}"` interpolation resolves against
+variables in scope at the exact point the string literal appears in the
+source, not against an arbitrary value passed into a function.
+
+### `render_template(template, data)`
+
+```gx
+tmpl = read_file("greeting.template")   // "Hello, {{name}}! You are {{age}}."
+render_template(tmpl, { name: "Ada", age: 36 })
+// → "Hello, Ada! You are 36."
+```
+
+`{{dotted.path}}` substitution against `data` — each segment is looked up
+as an object field first, or as an array index if the current value is an
+array and the segment parses as a number (`{{items.0.name}}`). A path
+that doesn't resolve is a rendering error, not a silently-blanked
+placeholder — `class {{name}} {` rendering to `class  {` on a typo is a
+worse failure mode than refusing to render at all. Literal `{{`/`}}` in
+the output (e.g. generating a file that itself contains template syntax)
+are written as `\{{`/`\}}`.
+
+**Important**: write templates to a *file* (or otherwise construct the
+string at runtime), not as a GX string literal in source. GX's own
+`"{expr}"` interpolation runs at parse time and will consume `{{name}}`
+inside a literal before `render_template` ever sees it
+(`"{{name}}"` in source becomes the already-mangled string `"{name}"`).
+A template loaded via `read_file` is a plain runtime string GX's
+interpolation never touches, which is also the realistic shape for a
+reusable template anyway.
+
+Deliberately not a web template engine: no HTML auto-escaping (this is
+for source files, config files, and docs, not rendering untrusted values
+into an HTML response), and no expression evaluation or control-flow
+syntax (no `{{#if}}`/`{{#each}}` mini-language) inside `{{ }}` — a
+repeated block is just an ordinary GX loop calling `render_template` once
+per item:
+
+```gx
+names = ["Button", "Header", "Footer"]
+tmpl = read_file("component.template")
+i = 0
+while i < len(names) {
+  write_file(names[i] + ".jsx", render_template(tmpl, { name: names[i] }))
+  i = i + 1
+}
+```
+
+This is also the full "project scaffolding" story — `render_template` +
+an ordinary loop + `write_file`/`make_dir`. No separate `scaffold()`
+primitive was built; it would just be this same composition with extra
+ceremony.
+
+---
+
+## Developer Tooling
+
+### `gx repl` — Interactive REPL
+
+```bash
+gx repl [--trace] [--log-level <level>]
+```
+
+A real interactive development environment, not a line-at-a-time
+`run_program` wrapper:
+
+- **State persists across lines.** `x = 42` on one line, `x` visible on
+  every line after — backed by one persistent `Env` held for the whole
+  session (see `Interpreter::run_repl_stmts`). Declarations
+  (`function`/`agent`/`helper`/`tool`/`import`/`use`) still go through the
+  ordinary program-execution path, so they behave exactly as they would in
+  a file; everything else (assignments, expressions, calls) runs against
+  the session's shared scope.
+- **Multiline input.** An unclosed `{`/`(`/`[` switches the prompt to
+  `... ` and keeps buffering until it balances — detected by tokenizing
+  the buffered input and counting real bracket *tokens* (not raw
+  characters), so a `{` inside a string literal is never mistaken for an
+  unclosed block, and the input is only sent to the parser once it's
+  actually complete.
+- **Auto-print.** A bare expression's value prints automatically (`5 + 5`
+  shows `10`); an assignment or a `say` (which already prints) doesn't
+  echo anything extra.
+- **Persistent history.** Every accepted line is appended to
+  `~/.gx_history` (best-effort — a read-only home directory doesn't
+  interrupt the session) and listed with `:history`.
+- **`:help` / `:help <name>`** — REPL commands, or documentation for a
+  specific builtin (reuses the same table `gx lsp`'s hover uses).
+- **`:vars`** — list every variable currently in scope.
+- **`:trace on|off`** — toggle diagnostics tracing mid-session, same
+  effect as `--trace`.
+- **Imports work.** `import "./lib.gx"` resolves relative to the
+  directory `gx repl` was launched from, the same convention `gx run`
+  already uses.
+
+```
+$ gx repl
+gx> x = 10
+gx> y = 20
+gx> x + y
+30
+gx> function double(n) {
+...   return n * 2
+... }
+gx> double(21)
+42
+gx> :vars
+  x = 10
+  y = 20
+gx> exit
+Goodbye!
+```
+
+**Known limitation**: no arrow-key line recall/in-place editing — that
+needs raw-terminal handling (a new dependency, e.g. `rustyline`),
+deliberately scoped out rather than half-implemented. `:history` still
+shows the full session log.
+
+### Diagnostics with source snippets
+
+Parser, lexer, and runtime errors are rendered with the offending source
+line and (when available) a caret at the exact column, Rust-compiler
+style, for `gx run`, `gx check`, `gx -e`, and `gx repl`:
+
+```
+$ gx run script.gx
+Error: expected identifier, got Say
+  --> script.gx:4:5
+   |
+ 4 |     say "unreachable"
+   |     ^
+```
+
+This is rendering, not a new error format — GX's parser/lexer/interpreter
+errors are still plain strings (`"Line N: message"` or `"Line N, col C:
+message"`); the CLI parses that convention back out at the point it prints
+the final error (see `src/diagnostics_render.rs`) rather than requiring a
+structured error type throughout the whole codebase. A message that
+doesn't follow the convention — or whose reported line is out of the
+source's range — falls back to printing unchanged, so this can never hide
+information a plainer error would have shown.
+
+An uncaught assertion failure now also shows its call stack (`in agent
+"..."`), matching every other kind of uncaught error — previously only
+`Signal::Error` got that context; `assert`'s failure message deliberately
+stays exactly what the script wrote when it's *caught* (`e.message` must
+keep matching it verbatim), so the call stack is only ever added at the
+top-level, uncaught conversion, never to what a `catch` block sees.
+
+**Known limitation**: this location-recovery approach only works where an
+error's message already embeds a line number in one of the two
+conventions above. Not every runtime error does (e.g. a caught-then-
+rethrown value, or a message built entirely outside those two call sites)
+— those still print without a snippet, exactly as before this milestone,
+never with a wrong one.
+
+### `gx doc` — API reference generation
+
+```bash
+gx doc <file.gx|dir> [--out <file.md>]
+```
+
+Generates a Markdown reference: every `function`, `agent`/`helper`, and
+`tool` definition, its signature, and any `//`-comment block immediately
+preceding its declaration in the source (GX's lexer discards comments
+during tokenization, so this reads the doc comment from the raw source
+text directly, not the parsed AST). Tools are self-documenting already —
+`description` and each parameter's `description` are real AST fields, not
+comments — and are used verbatim. Directory targets are scanned
+recursively for every `.gx` file, the same discovery `gx test` and `gx
+fmt` use. Prints to stdout without `--out`.
+
+### `gx fmt` — directories and `--check`
+
+```bash
+gx fmt <file.gx|dir>            # format in place
+gx fmt <file.gx|dir> --check    # report only, write nothing; exits non-zero if any file would change
+```
+
+`gx fmt` now accepts a directory (every `.gx` file found recursively) in
+addition to a single file, and `--check` — the same CI-friendly
+convention `cargo fmt --check`/`prettier --check` established — for
+verifying formatting without touching anything.
+
+This milestone also fixed two real, pre-existing formatter bugs
+uncovered while building `--check` (which depends on `gx fmt` being
+idempotent — format, then format again, must produce identical output —
+to ever succeed right after `gx fmt` itself runs):
+
+- The brace-syntax formatter's token-to-text conversion had a catch-all
+  fallback covering nearly every keyword beyond a small hand-picked set —
+  `fn`, `assert`, `while`, `import`, `parallel`, `tool`, `await`, and
+  more all silently vanished from the formatted output. `assert x ==
+  y` could become `x == y` (assertion silently removed), `fn(n) { ... }`
+  could become `(n) { ... }` (invalid syntax). The conversion is now an
+  exhaustive match over every token kind — a future keyword that's missed
+  is a compile error, not a silently-deleted token.
+- String literals containing `\n`/`\t`/`\\`/`\"` were re-emitted with the
+  literal decoded characters instead of the escape sequence, silently
+  turning a one-line string into a multi-line one in the formatted
+  output.
+
+Both were verified fixed against every real `.gx` file in this repository
+(formats cleanly, still parses, still runs with identical behavior, and
+is now idempotent).
+
+### `gx lsp` — Language Server
+
+```bash
+gx lsp
+```
+
+A real, intentionally-scoped Language Server over stdio (JSON-RPC 2.0,
+hand-rolled framing — no new dependency). Point any LSP-capable editor's
+GX language configuration at `gx lsp` as the server command. Implemented:
+
+- **Diagnostics** (`textDocument/didOpen`/`didChange`) — re-parses on
+  every edit and publishes the same column-aware errors `gx run`/`gx
+  check` show, so an editor's error squiggles land on the exact token.
+- **Hover** (`textDocument/hover`) — signatures for a curated set of the
+  most commonly-used builtins (`retry`, `unwrap`, `has_capability`,
+  `http_get`, `db_query`, `task_spawn`, ...; see `builtin_docs` in
+  `src/lsp.rs` for the full list — deliberately not the entire several-
+  hundred-entry Built-in Functions reference, though extending it is a
+  one-line addition per entry), and for any `function`/`agent`/`tool`
+  defined in the same file.
+- **Go to definition** (`textDocument/definition`) — jumps to a
+  `function`/`agent`/`helper`/`tool` declaration *within the same file*.
+
+**Known, deliberate limitations** — each would be a substantial feature
+in its own right, and a half-implemented version (a rename that misses
+references, a completion list that's just keyword-matching) would be
+worse than being honest it isn't there yet:
+
+- No cross-file go-to-definition/find-references (a call into an
+  `import`ed file's function won't jump, even though the Module & Package
+  Runtime's import resolution could in principle supply this later).
+- No rename, no completion/autocomplete suggestion lists, no semantic
+  (token-type-aware) highlighting, no signature help while typing a call.
+- Position columns follow the LSP spec's UTF-16 code-unit convention only
+  for the common case — text containing astral-plane Unicode (rare
+  emoji, some CJK extension characters) inside a line could misalign
+  hover/definition by one position; GX source is overwhelmingly ASCII, so
+  this is narrow in practice.
+- No `initialize`-before-any-other-request enforcement — a well-behaved
+  client (every mainstream editor) always sends `initialize` first
+  anyway.
+
+### `gx <command> --help`
+
+Every subcommand now accepts `--help`/`-h` and prints its usage —
+previously only the bare `gx help`/`gx --help` (no command) worked, and
+`gx run --help` fell through to `run`'s own argument parsing, producing a
+confusing "file not found: --help" instead of ever showing usage.
+
+---
+
+## Resource Limits
+
+A handful of fixed, generous-but-not-unbounded ceilings exist across the
+runtime specifically to turn "an unbounded resource leak eventually crashes
+or wedges the process" into a normal, catchable error instead. These are
+deliberate safety bounds, not configuration you're expected to tune — none
+of them should be reachable by a realistic single workload, only by a bug
+or a hostile input.
+
+| Limit | Value | What happens at the limit |
+|---|---|---|
+| Bridge (`use js/ts/py/binary/go`) call timeout | 300s | The call returns a clear timeout error instead of blocking the calling task/worker forever; the bridge's underlying process is treated as unusable afterward and a fresh one is spawned on the next call. |
+| Concurrent `respond stream` (SSE) responders, per server | 256 | A new `respond stream` call returns an error ("too many concurrent streaming connections") instead of accepting an unbounded number of threads blocked writing to clients that never read. |
+| Pooled SQLite connections, per Interpreter | 128 | The least-recently-used *idle* connection (no active `db_transaction`) is closed to make room; a connection with an in-flight transaction is never closed to enforce this cap. |
+| Concurrently-tracked tasks (`task_spawn`), per Interpreter | 10,000 | `task_spawn` returns a clear error naming the limit; call `task_wait`/`task_wait_all` on finished tasks to free slots, or use a bounded pool (`{ pool: "name", max_concurrent: N }`). |
+| HTTP response / process output body size | 32 MiB | The body is truncated; the result reports `truncated: true` and the actual byte count rather than silently returning a partial body with no indication. |
 
 ---
 

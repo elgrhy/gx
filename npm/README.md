@@ -9,11 +9,18 @@
 
 Every AI assistant today is a black box. GX makes it a glass box — every decision explicit, every AI call logged, every agent fully auditable. Built in Rust. No cloud lock-in.
 
+GX stays brain-first, but it's a general-purpose language for production
+applications, not just prototyping agents: a capability-sandboxed runtime,
+native Process/HTTP/Database/Crypto/Task/AI Context runtimes, a package
+manager with lockfiles, a testing framework, a debugger, a REPL, and more —
+see the [full documentation](https://github.com/elgrhy/gx#readme) for the
+complete picture.
+
 ## Install
 
 ```bash
 npm install -g gxlang
-gx --version   # gx 0.5.0
+gx --version   # gx 0.6.0
 ```
 
 Downloads the correct native binary for your platform (macOS arm64/x64, Linux x64/arm64, Windows x64). No Rust required.
@@ -26,21 +33,21 @@ cd my-agent
 gx run main.gx
 ```
 
-## What's New in v0.5.0
+## What's New in v0.6.0
 
-| Feature | Example |
+| Runtime | Example |
 |---|---|
-| **Inline eval** | `gx -e 'say sha256("hello")'` |
-| **SHA-256** | `sha256("text")` → 64-char hex |
-| **UUID v4** | `uuid()` → `"f47ac10b-..."` |
-| **Path helpers** | `dirname`, `basename`, `path_join` |
-| **Glob** | `glob("src/**/*.gx")` |
-| **URL parsing** | `url_parse(url).host` |
-| **Group by** | `group_by(rows, "dept")` |
-| **Truncate** | `truncate("hello world", 8)` → `"hello w…"` |
-| **Token count** | `token_count(text)`, `tokens_used()` |
-| **Inline write** | `write("Loading...")` — no trailing newline |
-| **Stdlib namespace** | `use std.crypto`, `use std.fs`, `use std.net` |
+| **Capability Runtime** | Filesystem/process/shell/network/database/AI-provider access sandboxed by default — `gx run --allow-process --allow-shell` |
+| **Process** | `process_run({ command: "git", args: ["status"] })` — no shell, no injection surface |
+| **HTTP** | `serve on port 3000 { route GET "/health" { respond json { ok: true } } }`, SSRF-defended client |
+| **Database** | `db_transaction(path) { db_exec(db, "...", [...]) }` — pooled connections, real transactions |
+| **Task** | `task_spawn(fn() { ... }, { timeout: 30s })`, cancellable, bounded concurrency |
+| **Testing / Debugger / REPL** | `gx test`, `breakpoint()` + `gx debug`, `gx repl` with persistent state |
+| **Package Runtime** | `gx install`, lockfile-pinned dependencies (`gx.lock`) |
+
+Full details, including this release's security and reliability hardening,
+in the [CHANGELOG](https://github.com/elgrhy/gx/blob/main/CHANGELOG.md) and
+[full README](https://github.com/elgrhy/gx#readme).
 
 ## v0.4.0 Features
 
