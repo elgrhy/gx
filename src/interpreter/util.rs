@@ -76,7 +76,7 @@ pub(super) fn strip_html_tags(html: &str) -> String {
 
 /// Returns true if the helper's brain accesses `input`, meaning it's designed
 /// to be called via `spawn agent` rather than run standalone.
-pub(super) fn helper_is_callable_only(h: &HelperDef) -> bool {
+pub(crate) fn helper_is_callable_only(h: &HelperDef) -> bool {
     if let Some(brain) = &h.brain {
         stmts_use_input(&brain.plan)
             || stmts_use_input(&brain.execute)

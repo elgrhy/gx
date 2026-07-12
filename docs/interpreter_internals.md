@@ -227,8 +227,8 @@ print("test_repeat: all passed")
 To cut a release:
 ```bash
 # Bump version in Cargo.toml and npm/package.json first
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
 ---

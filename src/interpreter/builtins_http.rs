@@ -344,6 +344,38 @@ fn build_result(resp_result: Result<ureq::Response, ureq::Error>) -> Value {
     }
 }
 
+/// Send `body_val` as the request body, matching what every other
+/// language's HTTP client does with a string body: a `Value::Str` is sent
+/// as the literal raw bytes (`req.send_string`), not re-serialized.
+///
+/// Before this, every body went through `gx_value_to_json` +
+/// `.send_json()` unconditionally — for a `Value::Str`,
+/// `gx_value_to_json` just wraps it in `serde_json::Value::String(s)`, so
+/// an already-JSON-stringified body (`http_post(url, json_stringify(x))`,
+/// the natural pattern coming from `curl -d`, `fetch(..., {body:
+/// JSON.stringify(x)})`, or `requests.post(data=json.dumps(x))`) got
+/// double-encoded: the server received a quoted, escaped string literal
+/// instead of the object it expected. Confirmed against a real server
+/// (Ollama's `/api/generate`) returning HTTP 400 "cannot unmarshal string
+/// into Go value" for the double-encoded form, 200 for the raw object —
+/// and present at effectively every `http_post` call site across a real
+/// production app's integration layer (Telegram, Slack, Discord, GitHub,
+/// Notion, Gmail, Microsoft 365, HubSpot, Home Assistant), independently,
+/// because it's the idiomatic pattern in every other ecosystem.
+// `ureq::Error` is large (>270 bytes) and every other function in this file
+// that hands one back does so as a parameter to `build_result`, not a
+// return value — this is the one place that returns it directly, straight
+// into `build_result` at each call site, so boxing it would only add an
+// allocation without shrinking anything that actually gets stored.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::result_large_err)]
+fn send_body(req: ureq::Request, body_val: &Value) -> Result<ureq::Response, ureq::Error> {
+    match body_val {
+        Value::Str(s) => req.send_string(s),
+        other => req.send_json(gx_value_to_json(other)),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn http_builtin(
     name: &str,
@@ -369,8 +401,7 @@ pub(super) fn http_builtin(
             let headers_val = args.get(2).cloned().unwrap_or(Value::Null);
             let req = agent.post(&url).set("Content-Type", "application/json");
             let req = apply_timeout(apply_headers(req, &headers_val), &headers_val);
-            let json_body = gx_value_to_json(&body_val);
-            Ok(build_result(req.send_json(&json_body)))
+            Ok(build_result(send_body(req, &body_val)))
         }
         "http_put" => {
             let url = args
@@ -381,8 +412,7 @@ pub(super) fn http_builtin(
             let headers_val = args.get(2).cloned().unwrap_or(Value::Null);
             let req = agent.put(&url).set("Content-Type", "application/json");
             let req = apply_timeout(apply_headers(req, &headers_val), &headers_val);
-            let json_body = gx_value_to_json(&body_val);
-            Ok(build_result(req.send_json(&json_body)))
+            Ok(build_result(send_body(req, &body_val)))
         }
         "http_delete" => {
             let url = args
@@ -444,9 +474,7 @@ pub(super) fn http_stream_builtin(args: &[Value], agent: &ureq::Agent) -> Result
     let req = apply_timeout(agent.request(&method.to_uppercase(), &url), &opts);
     let resp = match method.to_uppercase().as_str() {
         "POST" | "PUT" | "PATCH" => {
-            let json_body = gx_value_to_json(&body_val);
-            req.set("Content-Type", "application/json")
-                .send_json(&json_body)
+            send_body(req.set("Content-Type", "application/json"), &body_val)
         }
         _ => req.call(),
     }
@@ -675,6 +703,72 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         IpAddr::from_str(s).unwrap()
+    }
+
+    /// Starts a tiny local HTTP server on `port` that reads exactly one
+    /// request, replies `200 {}`, and hands the raw request body bytes
+    /// back through `body_tx` — used to prove `http_post` puts a
+    /// `Value::Str` body on the wire byte-for-byte instead of
+    /// re-serializing (quoting/escaping) it a second time.
+    fn spawn_body_capturing_server(port: u16, body_tx: std::sync::mpsc::Sender<Vec<u8>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().take(1).flatten() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let trimmed = line.trim_end();
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = trimmed.to_ascii_lowercase().strip_prefix("content-length:") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let _ = body_tx.send(body);
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+    }
+
+    #[test]
+    fn http_post_sends_a_string_body_raw_instead_of_double_encoding_it() {
+        // Regression test: a pre-stringified JSON body used to be handed to
+        // `gx_value_to_json`, which wraps a `Value::Str` in
+        // `serde_json::Value::String(..)` — so `send_json` put a quoted,
+        // escaped string literal on the wire instead of the object the
+        // caller already serialized. The fix routes a `Value::Str` body
+        // through `send_string` (raw bytes) instead.
+        let port = 18490;
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_body_capturing_server(port, tx);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut caps = Capabilities::new();
+        caps.internal_network = true;
+        let agent = http_agent(&caps, &crate::diagnostics::Diagnostics::new());
+        let url = format!("http://127.0.0.1:{}/", port);
+        let body_val = Value::Str(r#"{"foo":"bar"}"#.to_string());
+        let req = agent.post(&url).set("Content-Type", "application/json");
+        let _ = send_body(req, &body_val);
+
+        let received = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("server never received a request");
+        assert_eq!(
+            String::from_utf8(received).unwrap(),
+            r#"{"foo":"bar"}"#,
+            "a Value::Str body must be sent raw, not re-encoded as a JSON string literal"
+        );
     }
 
     #[test]

@@ -224,6 +224,10 @@ pub fn ask_ai(
     // module so it never leaks into the interpreter or GX scripts.
     let messages_val = params.get("messages").cloned();
 
+    // Structured-output constraint — OpenAI-only pass-through (see
+    // `ask_openai_with_tools`'s doc for why Anthropic isn't emulated here).
+    let response_format_val = params.get("response_format").cloned();
+
     let timeout = params
         .get("timeout")
         .and_then(|v| v.as_number())
@@ -254,6 +258,7 @@ pub fn ask_ai(
                     temperature,
                     tools_val.as_ref(),
                     messages_val.as_ref(),
+                    response_format_val.as_ref(),
                     agent,
                     timeout,
                 )
@@ -284,7 +289,14 @@ pub fn ask_ai(
                 )
             }
         }
-        "ollama" => ask_ollama(model.unwrap_or("llama3"), &prompt, system.as_deref()),
+        "ollama" => ask_ollama(
+            model.unwrap_or("llama3"),
+            &prompt,
+            system.as_deref(),
+            messages_val.as_ref(),
+            agent,
+            timeout,
+        ),
         other => AiResponse::error(
             other,
             format!(
@@ -459,6 +471,7 @@ fn ask_openai_with_tools(
     temperature: f64,
     tools: Option<&Value>,
     messages_val: Option<&Value>,
+    response_format: Option<&Value>,
     agent: &ureq::Agent,
     timeout: std::time::Duration,
 ) -> Value {
@@ -508,6 +521,19 @@ fn ask_openai_with_tools(
                 body["tool_choice"] = serde_json::json!("auto");
             }
         }
+    }
+
+    // Structured-output constraint — a direct pass-through to a param
+    // OpenAI's API already accepts natively (`{"type": "json_object"}` or
+    // `{"type": "json_schema", "json_schema": {...}}`), so a script gets
+    // schema-constrained generation without GX inventing its own schema
+    // language. No native equivalent exists on Anthropic's API today (Claude
+    // achieves structured output via forced tool-choice instead, a
+    // materially different request shape) — deliberately not emulated here
+    // rather than build a shim that would need to fake a different
+    // provider's protocol under one shared param name.
+    if let Some(rf) = response_format {
+        body["response_format"] = crate::interpreter::gx_value_to_json(rf);
     }
 
     match agent
@@ -1115,27 +1141,95 @@ fn parse_anthropic_response(resp: ureq::Response, model: &str) -> Value {
 
 // ── Ollama (local) ────────────────────────────────────────────────────────────
 
+/// Translate the AI Context Runtime's provider-neutral message list into
+/// Ollama's `/api/chat` shape (`{"role": ..., "content": ...}`, no tool-call
+/// wire format of its own to speak of) — same idea as
+/// `gx_messages_to_openai_json`, deliberately simpler since Ollama's chat
+/// endpoint doesn't support tool calls.
 #[cfg(not(target_arch = "wasm32"))]
-fn ask_ollama(model: &str, prompt: &str, system: Option<&str>) -> Value {
+fn gx_messages_to_ollama_json(messages: &[Value]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .filter_map(|m| {
+            let Value::Object(m) = m else { return None };
+            let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+            let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            Some(serde_json::json!({"role": role, "content": content}))
+        })
+        .collect()
+}
+
+/// Ollama connector. Routed through the same shared, capability-checked,
+/// pooled `ureq::Agent` and `timeout` every other provider uses — before
+/// this fix, `ask_ollama` called the bare `ureq::post` free function
+/// directly, silently dropping both the `timeout` param `ask`'s callers
+/// already computed and set (`ask_ai`'s own `timeout` local, honored by
+/// every other provider) and the connection pooling/SSRF-resolver wiring
+/// the shared agent carries. A slow local model had no way to be bounded,
+/// forcing scripts back to hand-rolled `http_post` calls just to get a
+/// timeout — which re-triggers the SSRF gate `ask ollama` is otherwise
+/// specifically exempt from.
+///
+/// When `messages_val` carries a non-empty message list (the AI Context
+/// Runtime's `context_ask`, or a direct multi-turn `ask ollama { messages:
+/// [...] }`), this hits `/api/chat` instead of the single-shot
+/// `/api/generate` — Ollama's chat endpoint is already message-array based,
+/// so the wire format only needed a thin translation, not a new protocol.
+#[cfg(not(target_arch = "wasm32"))]
+fn ask_ollama(
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+    messages_val: Option<&Value>,
+    agent: &ureq::Agent,
+    timeout: std::time::Duration,
+) -> Value {
     let base_url = std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
-    let endpoint = format!("{}/api/generate", base_url);
 
-    let mut body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "stream": false
-    });
-    if let Some(sys) = system {
-        body["system"] = serde_json::json!(sys);
-    }
+    let use_chat = matches!(messages_val, Some(Value::Array(items)) if !items.is_empty());
 
-    match ureq::post(&endpoint)
+    let (endpoint, body) = if use_chat {
+        let Some(Value::Array(items)) = messages_val else {
+            unreachable!()
+        };
+        let mut messages = Vec::new();
+        if let Some(sys) = system {
+            messages.push(serde_json::json!({"role": "system", "content": sys}));
+        }
+        messages.extend(gx_messages_to_ollama_json(items));
+        (
+            format!("{}/api/chat", base_url),
+            serde_json::json!({
+                "model": model,
+                "messages": messages,
+                "stream": false
+            }),
+        )
+    } else {
+        let mut body = serde_json::json!({
+            "model": model,
+            "prompt": prompt,
+            "stream": false
+        });
+        if let Some(sys) = system {
+            body["system"] = serde_json::json!(sys);
+        }
+        (format!("{}/api/generate", base_url), body)
+    };
+
+    match agent
+        .post(&endpoint)
         .set("Content-Type", "application/json")
+        .timeout(timeout)
         .send_json(&body)
     {
         Ok(resp) => match resp.into_json::<serde_json::Value>() {
             Ok(json) => {
-                let text = json["response"].as_str().unwrap_or("").to_string();
+                let text = if use_chat {
+                    json["message"]["content"].as_str().unwrap_or("").to_string()
+                } else {
+                    json["response"].as_str().unwrap_or("").to_string()
+                };
                 let tokens = json["eval_count"].as_u64().unwrap_or(0);
                 let confidence = adjust_confidence_for_hedging(0.85, &text);
                 AiResponse {

@@ -20,7 +20,7 @@ complete picture.
 
 ```bash
 npm install -g gxlang
-gx --version   # gx 0.6.0
+gx --version   # gx 0.6.1
 ```
 
 Downloads the correct native binary for your platform (macOS arm64/x64, Linux x64/arm64, Windows x64). No Rust required.
@@ -32,6 +32,22 @@ gx init my-agent
 cd my-agent
 gx run main.gx
 ```
+
+## What's New in v0.6.1
+
+Production-hardening patch based on real-world feedback migrating a large GX
+application (~55 files, 23 agents, 8 bridge integrations) onto v0.6.0.
+Backward compatible. Full detail in
+[CHANGELOG.md](https://github.com/elgrhy/gx/blob/main/CHANGELOG.md).
+
+- `spawn agent` now requires a callable `brain{}` — a clear error instead of
+  a silent `null` when the target only exposes async `when message` handlers
+- Fire-and-forget `spawn "event" to "agent"` now fails clearly on an
+  undeclared target instead of silently queuing an undeliverable message
+- `http_post`/`http_put` no longer double-encode a pre-stringified body
+- `gx check` runs real whole-project static diagnostics, not just a parse check
+- `ask ollama` honors `timeout` via a pooled connection; `context_ask`
+  supports Ollama
 
 ## What's New in v0.6.0
 

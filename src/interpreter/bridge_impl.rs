@@ -653,12 +653,12 @@ mod tests {
     use super::*;
     use crate::capability::{Allowlist, Resource};
 
-    // `use binary "path"`/`use go "path"` currently can't be reached
-    // through either GX parser (parse_import only accepts the dotted
-    // `namespace.identifier` form used by js/py — a pre-existing gap,
-    // unrelated to this milestone). These tests call `bridge_call`
-    // directly to verify the capability check itself is correct
-    // regardless of whether the surface syntax to reach it exists yet.
+    // `use binary "path" [as alias]`/`use go "path" [as alias]` are now
+    // reachable through both GX parsers (see `parser::tests::
+    // use_quoted_path_form_resolves_bridge_calls_to_the_literal_path_not_the_alias`
+    // for an end-to-end parse test) — these tests still call `bridge_call`
+    // directly since they're specifically about the capability check, not
+    // the surface syntax that reaches it.
 
     #[test]
     fn binary_bridge_denied_by_allowlist_fails_before_spawning() {

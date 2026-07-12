@@ -84,7 +84,19 @@ rl.on('line', (line) => {
   if (req.type === 'exit') { process.exit(0); }
   if (req.type === 'call') {
     try {
-      const mod = require(req.module);
+      // `req.module` is either a bare specifier ("axios", resolved via
+      // node_modules/NODE_PATH as always) or a local file path declared via
+      // `use js "./scripts/foo.js" as foo`. A relative path can't be passed
+      // to require() as-is: require() resolves relative paths against the
+      // *calling module's own directory*, which here is this shim's temp
+      // file (wherever the OS temp dir is) — not the directory `gx run` was
+      // invoked from. Resolving against process.cwd() ourselves first is
+      // what makes the quoted-path bridge form point at the project file
+      // the developer actually meant.
+      const path = require('path');
+      const isPathLike = req.module.startsWith('.') || path.isAbsolute(req.module);
+      const specifier = isPathLike ? path.resolve(process.cwd(), req.module) : req.module;
+      const mod = require(specifier);
       // Navigate nested method: "get", "post", "data.parse" etc.
       const parts = req.method.split('.');
       let target = mod;
@@ -132,7 +144,28 @@ function respond(obj) {
 const PY_SHIM: &str = r#"
 import sys
 import json
+import os
 import importlib
+import importlib.util
+
+def load_module(spec_str):
+    # `spec_str` is either a bare, dotted module name ("requests", resolved
+    # via sys.path/PYTHONPATH as always) or a local file path declared via
+    # `use py "./scripts/foo.py" as foo`. importlib.import_module() only
+    # understands the former — a path isn't a valid dotted module name — so
+    # a path-like string is loaded via spec_from_file_location instead,
+    # resolved against this process's own cwd (the directory `gx run` was
+    # invoked from) so a relative path points at the project file the
+    # developer actually meant.
+    is_path_like = spec_str.startswith(".") or os.path.isabs(spec_str) or spec_str.endswith(".py")
+    if is_path_like:
+        abs_path = os.path.abspath(spec_str)
+        module_name = os.path.splitext(os.path.basename(abs_path))[0]
+        spec = importlib.util.spec_from_file_location(module_name, abs_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    return importlib.import_module(spec_str)
 
 def get_nested(obj, parts):
     for part in parts:
@@ -164,7 +197,7 @@ for line in sys.stdin:
 
     if req.get("type") == "call":
         try:
-            mod = importlib.import_module(req["module"])
+            mod = load_module(req["module"])
             parts = req["method"].split(".")
             if len(parts) == 1:
                 fn_ref = getattr(mod, parts[0])

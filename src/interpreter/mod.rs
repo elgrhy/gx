@@ -87,9 +87,14 @@ use builtins_vector::{
     vector_store_search_impl, vector_store_size_impl,
 };
 use builtins_xml::{xml_parse_impl, xml_stringify_impl};
+/// Re-exported (not just `use`d) so `checker::check_program`'s dead-agent
+/// lint can apply the exact same "is this agent meant to be spawned, or
+/// does it run standalone" rule `run_program` itself uses — one rule, not
+/// two definitions that could quietly drift apart.
+pub(crate) use util::helper_is_callable_only;
 use util::{
-    cron_matches, helper_is_callable_only, infer_error_kind, is_package_import, parse_gx_source,
-    strip_html_tags, value_to_json,
+    cron_matches, infer_error_kind, is_package_import, parse_gx_source, strip_html_tags,
+    value_to_json,
 };
 
 /// Ceiling on how long `sse_send` will retry against a full buffer before
@@ -318,6 +323,16 @@ pub struct Interpreter {
     /// correct for the interpreter's whole lifetime.
     #[cfg(not(target_arch = "wasm32"))]
     http_agent: Option<ureq::Agent>,
+    /// Same idea as `http_agent`, but with `internal_network` force-granted
+    /// — see `ollama_agent`'s doc for why Ollama specifically needs this.
+    #[cfg(not(target_arch = "wasm32"))]
+    ollama_agent: Option<ureq::Agent>,
+    /// Every cross-file function/agent name collision `build_project_index`
+    /// found — see `warn_on_import_collision`. Populated during import
+    /// resolution regardless of whether `--trace` is on, so `gx check` can
+    /// report them even though it never runs the program (and so never
+    /// produces the runtime warning any other way).
+    import_collisions: Vec<String>,
     /// The in-flight HTTP server request, handed off by `run_serve` right
     /// before running a matched route's body so `respond stream { ... }`
     /// can take ownership of it mid-execution (to open a streaming
@@ -511,6 +526,9 @@ impl Interpreter {
             #[cfg(not(target_arch = "wasm32"))]
             http_agent: None,
             #[cfg(not(target_arch = "wasm32"))]
+            ollama_agent: None,
+            import_collisions: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             pending_request: None,
             #[cfg(not(target_arch = "wasm32"))]
             sse_tx: None,
@@ -631,6 +649,47 @@ impl Interpreter {
             ));
         }
         self.http_agent.clone().expect("just set")
+    }
+
+    /// Like `http_agent`, but with `internal_network` force-granted.
+    ///
+    /// Ollama's entire purpose is talking to a model server on `localhost`
+    /// — before the fix that introduced this method, `ask_ollama` bypassed
+    /// the capability-aware agent entirely (a bare `ureq::post` call with
+    /// *no* SSRF resolver at all), which is how it ended up exempt from
+    /// `--allow-internal-http` in practice. Routing it through the same
+    /// `http_agent` used by every other HTTP path would have closed a real
+    /// gap (no SSRF protection against a redirect to some unrelated
+    /// internal address) but also introduced a regression: the single most
+    /// common Ollama workflow — a local dev machine talking to a local
+    /// model server — would suddenly need `--allow-internal-http`, a flag
+    /// nothing about "using a local AI provider" suggests is required.
+    /// This keeps both properties: `ai` capability for `"ollama"` (already
+    /// checked via `authorize_ai_provider` at every call site) is treated
+    /// as sufficient authorization for its own loopback traffic, while the
+    /// SSRF resolver still runs — still enforcing `external_network` policy
+    /// if `OLLAMA_URL` or a redirect ever points somewhere public, and
+    /// still real protection compared to the old zero-checks path.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ollama_agent(&mut self) -> ureq::Agent {
+        if self.ollama_agent.is_none() {
+            let mut caps = self.capabilities.clone();
+            caps.internal_network = true;
+            self.ollama_agent = Some(builtins_http::http_agent(&caps, &self.diagnostics));
+        }
+        self.ollama_agent.clone().expect("just set")
+    }
+
+    /// Picks `http_agent` or `ollama_agent` based on which provider is
+    /// about to be called — see `ollama_agent`'s doc for why Ollama needs a
+    /// different one.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn agent_for_provider(&mut self, provider: &str) -> ureq::Agent {
+        if provider == "ollama" {
+            self.ollama_agent()
+        } else {
+            self.http_agent()
+        }
     }
 
     /// Get or open a pooled SQLite connection for `path` — see the
@@ -897,7 +956,16 @@ impl Interpreter {
         Ok(last)
     }
 
-    pub fn run_program(&mut self, program: &Program) -> Result<(), String> {
+    /// Merges `program` and everything it transitively `import`s into this
+    /// Interpreter's `helpers`/`functions`/`tools`/`imports` — every step
+    /// `run_program` needs *before* it actually executes anything. Split
+    /// out so `gx check`'s static analysis (which needs the same
+    /// whole-project picture — every agent and function across every
+    /// imported file — to check things like "was this agent ever spawned"
+    /// or "does this spawn target a real `when message` handler" without
+    /// false-positiving on names declared in a file it never merged) can
+    /// build the identical index without running a single statement.
+    pub(crate) fn build_project_index(&mut self, program: &Program) -> Result<(), String> {
         self.imports = program.imports.clone();
 
         for f in &program.functions {
@@ -977,6 +1045,39 @@ impl Interpreter {
                 self.functions.insert(f.name.clone(), f.clone());
             }
         }
+        Ok(())
+    }
+
+    /// Runs `gx check`'s static analysis over `entry` plus everything
+    /// already merged into this Interpreter via `build_project_index` —
+    /// the accessor `checker::check_program` needs, kept narrow rather than
+    /// exposing `helpers`/`functions`/`tools` themselves.
+    pub(crate) fn run_static_checks(&self, entry: &Program) -> Vec<crate::checker::Finding> {
+        let mut findings =
+            crate::checker::check_program(entry, &self.helpers, &self.functions, &self.tools);
+        findings.extend(
+            self.import_collisions
+                .iter()
+                .map(|message| crate::checker::Finding {
+                    severity: crate::checker::Severity::Warning,
+                    message: message.clone(),
+                    line: 0,
+                }),
+        );
+        findings
+    }
+
+    /// Total agents visible after `build_project_index` — the entry file's
+    /// own plus everything merged in from its transitive `import`s. Used
+    /// only for `gx check`'s summary line, which used to report just the
+    /// entry file's own `program.helpers.len()` even when most of a
+    /// project's agents live in imported files.
+    pub(crate) fn project_agent_count(&self) -> usize {
+        self.helpers.len()
+    }
+
+    pub fn run_program(&mut self, program: &Program) -> Result<(), String> {
+        self.build_project_index(program)?;
 
         // Execute top-level statements (x = 1, load_env(".env"), config = yaml_parse(...))
         // before any agent runs. Results are stored as global_vars and injected into
@@ -1362,7 +1463,7 @@ impl Interpreter {
     }
 
     fn warn_on_import_collision(
-        &self,
+        &mut self,
         kind: &str,
         name: &str,
         source_file: &std::path::Path,
@@ -1393,16 +1494,22 @@ impl Interpreter {
         // which is exactly the top-level-program case since only file
         // imports populate `defined_by`) — both are genuine collisions
         // worth surfacing.
-        self.diagnostics.log(
-            crate::diagnostics::Level::Warn,
-            &format!(
-                "import: {} '{}' from '{}' overwrites an existing definition of the same name \
-                 (last import wins) — rename one of them, or import with `as <alias>`, to avoid \
-                 relying on this",
-                kind, name, source_path
-            ),
-            None,
+        let message = format!(
+            "import: {} '{}' from '{}' overwrites an existing definition of the same name \
+             (last import wins) — rename one of them, or import with `as <alias>`, to avoid \
+             relying on this",
+            kind, name, source_path
         );
+        self.diagnostics
+            .log(crate::diagnostics::Level::Warn, &message, None);
+        // Also recorded here (not just logged) so `gx check` — which never
+        // runs the program, so this warning would otherwise only ever
+        // surface at runtime, buried in `--trace` JSONL output — can
+        // promote it to a real check-time finding instead. Confirmed in a
+        // real production migration: three files independently defined the
+        // same helper function, and nothing caught it until this warning
+        // started appearing in a production log stream.
+        self.import_collisions.push(message);
     }
 
     fn run_helper(&mut self, helper: &HelperDef) -> Result<(), Signal> {
@@ -1669,6 +1776,30 @@ impl Interpreter {
     }
 
     /// Phase 5: call another agent by name, inject `input`, return communicate value.
+    ///
+    /// `spawn agent "name" with { ... }` expects a synchronous return value.
+    /// `brain{}` is GX's one sanctioned "synchronously callable, returns a
+    /// value" contract; `when message "event" { ... }` is deliberately
+    /// async-only — dispatched by `send`/`spawn "event" to "agent"`, never
+    /// promising a return value to any caller. These stay genuinely
+    /// distinct concepts, not two spellings of the same thing: a handler's
+    /// contract must be knowable from its own declaration, not from
+    /// whichever call site happens to invoke it (the same reason Erlang/OTP
+    /// keeps `handle_call` and `handle_cast` as separate callbacks rather
+    /// than letting one opportunistically satisfy the other).
+    ///
+    /// Before this, `call_agent` silently fell through to `Ok(Value::Null)`
+    /// for any agent with no `brain{}`, regardless of `input.action`, with
+    /// no signal that anything had gone wrong — silently no-op'ing entire
+    /// subsystems (security validation, dashboards, search) built from
+    /// `when message` blocks instead of `brain{}`. The fix is *not* to
+    /// route a synchronous call into a matching `when message` handler —
+    /// that would make the handler's meaning depend on its caller, and
+    /// would make it unsafe to ever add a second, unrelated `spawn agent`
+    /// call site targeting the same handler. Instead: an agent with no
+    /// `brain{}` is never synchronously callable, full stop, and
+    /// `call_agent` fails loudly with a message naming the agent and what
+    /// it actually exposes, instead of returning null.
     pub fn call_agent(&mut self, name: &str, input: Value) -> IResult {
         let helper = self.helpers.get(name).cloned().ok_or_else(|| {
             Signal::Error(format!(
@@ -1715,8 +1846,42 @@ impl Interpreter {
             }
         }
 
-        // No brain — return the env's last meaningful value or Null
-        Ok(Value::Null)
+        // No brain{} — this agent has no synchronous return path, full
+        // stop. `when message` handlers are never treated as an alternate
+        // return channel for `spawn agent`, regardless of whether the
+        // `action` passed happens to name one of them — see this method's
+        // doc comment for why. The error still lists any async actions the
+        // agent does expose, so the message points at the correct fix
+        // (`spawn "action" to "name"`) instead of just saying "no."
+        let message_actions: Vec<String> = helper
+            .when_blocks
+            .iter()
+            .filter_map(|wb| match &wb.trigger {
+                WhenTrigger::Message(event) => Some(event.clone()),
+                _ => None,
+            })
+            .collect();
+
+        if message_actions.is_empty() {
+            return Err(Signal::Error(format!(
+                "Agent \"{name}\" cannot be called synchronously.\n\n\
+                 This agent only exposes asynchronous handlers (`when started`, `when <expr> changes`, \
+                 or none at all) — no `brain {{ }}` block.\n\n\
+                 Use:\n  spawn \"action\" to \"{name}\" with {{ ... }}\n\
+                 or convert the agent to a `brain {{ }}` implementation."
+            )));
+        }
+
+        Err(Signal::Error(format!(
+            "Agent \"{name}\" cannot be called synchronously.\n\n\
+             This agent only exposes asynchronous `when message` handlers ({}) — no `brain {{ }}` \
+             block. A `when message` handler never returns a value to a `spawn agent` caller, \
+             regardless of the `action` passed — it only runs in response to `send`/\
+             `spawn \"action\" to \"agent\"`.\n\n\
+             Use:\n  spawn \"action\" to \"{name}\" with {{ ... }}\n\
+             or convert the agent to a `brain {{ }}` implementation.",
+            message_actions.join(", "),
+        )))
     }
 
     /// Run communicate stmts and return the last expression value (for call_agent).
@@ -2312,6 +2477,26 @@ impl Interpreter {
                         )))
                     }
                 };
+                // A message to an agent that doesn't exist anywhere in this
+                // project can never be delivered — before this check, it
+                // was silently queued into `event_bus` under a key nothing
+                // will ever drain, forever (a permanently-undeliverable
+                // message, indistinguishable from a successful send, and a
+                // small unbounded leak on top). `spawn agent` already fails
+                // loudly for an unknown target (see `call_agent`); this
+                // makes the fire-and-forget form consistent with it instead
+                // of being the one call form that still hides a typo'd
+                // agent name. Deliberately narrower than "no handler for
+                // this event" (below): an agent that *exists* but doesn't
+                // yet declare a matching `when message` is a different,
+                // legitimate case — still queued, unchanged.
+                let Some(h) = self.helpers.get(&target).cloned() else {
+                    return Err(Signal::Error(format!(
+                        "send: agent '{target}' not defined — \"{event}\" can never be delivered \
+                         to it. Check the agent name passed to \
+                         `spawn \"{event}\" to \"{target}\" with {{ ... }}`."
+                    )));
+                };
                 let mut map = HashMap::new();
                 map.insert("event".into(), Value::Str(event.clone()));
                 for (k, v) in data {
@@ -2319,22 +2504,19 @@ impl Interpreter {
                 }
                 let msg = Value::Object(map);
                 // Deliver synchronously to the target agent's when message handlers
-                let helper = self.helpers.get(&target).cloned();
-                if let Some(h) = helper {
-                    let handlers: Vec<_> = h
-                        .when_blocks
-                        .iter()
-                        .filter(|wb| matches!(&wb.trigger, WhenTrigger::Message(e) if e == event))
-                        .cloned()
-                        .collect();
-                    if !handlers.is_empty() {
-                        let mut msg_env = Env::new();
-                        msg_env.set("message", msg.clone());
-                        for wb in &handlers {
-                            self.run_stmts(&wb.body, &mut msg_env)?;
-                        }
-                        return Ok(Value::Null);
+                let handlers: Vec<_> = h
+                    .when_blocks
+                    .iter()
+                    .filter(|wb| matches!(&wb.trigger, WhenTrigger::Message(e) if e == event))
+                    .cloned()
+                    .collect();
+                if !handlers.is_empty() {
+                    let mut msg_env = Env::new();
+                    msg_env.set("message", msg.clone());
+                    for wb in &handlers {
+                        self.run_stmts(&wb.body, &mut msg_env)?;
                     }
+                    return Ok(Value::Null);
                 }
                 // No handler found — queue for deferred processing
                 let bus_key = format!("{}:{}", target, event);
@@ -2548,7 +2730,7 @@ impl Interpreter {
                     let mut params: HashMap<String, Value> = HashMap::new();
                     params.insert("prompt".into(), prompt_val);
                     params.insert("temperature".into(), temp_val);
-                    let agent = self.http_agent();
+                    let agent = self.agent_for_provider(provider);
                     let span = self.diagnostics.start_span("ai.request");
                     let result = ai::ask_ai(provider, None, &params, &agent);
                     self.record_tokens(&result);
@@ -3119,6 +3301,23 @@ impl Interpreter {
             Expr::Ident(name) => {
                 let val = env.get(name);
                 if matches!(val, Value::Null) {
+                    // `remember { ... }` is the *declaration* keyword;
+                    // `memory.x` is the only accessor the runtime ever
+                    // populated. A bare `remember`/`remember.x` reference
+                    // in value position — most commonly reached through
+                    // string interpolation (`"{remember.port}"`), where
+                    // `remember` lexes as a plain identifier rather than
+                    // the reserved block keyword — used to silently
+                    // evaluate to null, indistinguishable from a
+                    // legitimately-unset field (confirmed live in
+                    // production: a boot banner, a port override, and a
+                    // status log all silently read `null`). Aliasing it to
+                    // `memory` fixes the silent failure; nothing could
+                    // have depended on the old null-returning behavior on
+                    // purpose.
+                    if name == "remember" {
+                        return Ok(env.get("memory"));
+                    }
                     let mem = env.get_memory();
                     if let Some(v) = mem.get(name) {
                         return Ok(v.clone());
@@ -3280,7 +3479,7 @@ impl Interpreter {
                 self.authorize_ai_provider(provider)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 let result = {
-                    let agent = self.http_agent();
+                    let agent = self.agent_for_provider(provider);
                     let span = self.diagnostics.start_span("ai.request");
                     let result =
                         ai::ask_ai(provider, effective_model.as_deref(), &resolved, &agent);
@@ -9101,6 +9300,25 @@ helper "interp" {
     }
 
     #[test]
+    fn remember_dot_field_is_aliased_to_memory_dot_field_instead_of_silently_null() {
+        // Regression test: `remember` is the declaration keyword, `memory`
+        // is the accessor — but `remember.x` used to silently evaluate to
+        // null (indistinguishable from a legitimately-unset field) instead
+        // of erroring or working. This was live in production: a boot
+        // banner printed "null", a port override silently no-op'd, and a
+        // status log lied about which port the server was on.
+        run(r#"
+agent "t" {
+  remember { port = "8080" }
+  when started {
+    assert remember.port == "8080" "remember.x must alias memory.x, not silently return null"
+    assert memory.port == "8080" "memory.x must keep working as before"
+  }
+}"#)
+        .unwrap();
+    }
+
+    #[test]
     fn test_nested_memory() {
         run(r#"
 helper "nested" {
@@ -9626,6 +9844,44 @@ helper "modimp" {
             ],
         );
         run_entry_file(&root, "main.gx").unwrap();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn gx_check_surfaces_a_cross_file_function_collision_as_a_finding() {
+        // Regression test: a same-named function defined independently by
+        // two imported files only ever warned at *runtime* (buried in
+        // `--trace` JSONL output) — `gx check` never ran the program, so it
+        // had no way to catch this at all. `build_project_index` now
+        // records it on `import_collisions` regardless, so `gx check`
+        // (via `run_static_checks`) can report it as a real finding.
+        let root = temp_gx_project(
+            "collision",
+            &[
+                (
+                    "main.gx",
+                    "import \"a.gx\"\nimport \"b.gx\"\nlog(shared_helper())\n",
+                ),
+                ("a.gx", "function shared_helper() { return \"from a\" }\n"),
+                ("b.gx", "function shared_helper() { return \"from b\" }\n"),
+            ],
+        );
+        let entry_path = root.join("main.gx");
+        let src = std::fs::read_to_string(&entry_path).unwrap();
+        let tokens = Lexer::new(&src).tokenize().unwrap();
+        let program = Parser::new(tokens).parse().unwrap();
+        let mut interp = Interpreter::new();
+        interp.base_path = Some(entry_path.to_string_lossy().into_owned());
+        interp.build_project_index(&program).unwrap();
+
+        let findings = interp.run_static_checks(&program);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("shared_helper") && f.message.contains("overwrites")),
+            "expected a collision finding, got: {:?}",
+            findings.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -10434,6 +10690,151 @@ helper "errctx" {
             "error should include stack frame: {}",
             msg
         );
+    }
+
+    #[test]
+    fn spawn_agent_errors_clearly_instead_of_routing_into_a_when_message_handler() {
+        // Regression test for the single most damaging finding from the
+        // GClaw migration: an agent built entirely from `when message`
+        // blocks (no `brain{}`) used to make `spawn agent ... with {...}`
+        // silently return null, no matter what `action` was passed.
+        //
+        // The fix is deliberately *not* to route the call into the
+        // matching `when message` handler — `brain{}` and `when message`
+        // stay genuinely distinct concepts (a handler's contract must be
+        // knowable from its own declaration, not from which call form a
+        // caller happens to use), so this must still fail clearly, even
+        // when the `action` given matches a real handler by name.
+        let src = r#"
+agent "worker" {
+  when message "do_thing" {
+    { ok: true, data: "hello" }
+  }
+}
+agent "caller" {
+  when started {
+    spawn agent "worker" with { action: "do_thing" }
+  }
+}
+"#;
+        let err = run(src).unwrap_err();
+        assert!(
+            err.contains("cannot be called synchronously") && err.contains("do_thing"),
+            "expected a clear async-only error naming the available action, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn spawn_agent_errors_clearly_for_a_truly_async_only_agent() {
+        let src = r#"
+agent "worker" {
+  when started {
+    log("worker started")
+  }
+}
+agent "caller" {
+  when started {
+    spawn agent "worker" with { action: "do_thing" }
+  }
+}
+"#;
+        let err = run(src).unwrap_err();
+        assert!(
+            err.contains("cannot be called synchronously"),
+            "expected a clear async-only error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn spawn_agent_still_works_normally_for_a_brain_agent() {
+        // `brain{}` remains the one sanctioned synchronous, return-a-value
+        // contract — unaffected by `when message` staying async-only.
+        let src = r#"
+agent "worker" {
+  brain {
+    plan { }
+    execute { result = input.x + 1 }
+    remember { }
+    communicate { result }
+  }
+}
+agent "caller" {
+  when started {
+    result = spawn agent "worker" with { x: 41 }
+    assert result == 42 "brain{} agents must still be callable synchronously"
+  }
+}
+"#;
+        run(src).unwrap();
+    }
+
+    #[test]
+    fn send_to_a_nonexistent_agent_errors_instead_of_silently_queuing_forever() {
+        // Regression test: `spawn "event" to "agent"` used to silently
+        // queue the message into `event_bus` under a key nothing would
+        // ever drain when the target agent didn't exist at all (a typo,
+        // most commonly) — a permanently-undeliverable message
+        // indistinguishable from a successful send, plus a small unbounded
+        // leak. `spawn agent` already failed loudly for an unknown target;
+        // this makes the fire-and-forget form consistent with it.
+        let src = r#"
+agent "caller" {
+  when started {
+    spawn "some_event" to "totally_nonexistent_agent" with { x: 1 }
+  }
+}
+"#;
+        let err = run(src).unwrap_err();
+        assert!(
+            err.contains("'totally_nonexistent_agent' not defined") && err.contains("some_event"),
+            "expected a clear undefined-target error naming both the agent and the event, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn send_to_an_existing_agent_with_a_matching_handler_still_delivers() {
+        // Valid fire-and-forget delivery must keep working — including to
+        // an agent declared *after* the sender in source order, since
+        // `self.helpers` is fully populated before any agent runs.
+        let src = r#"
+agent "caller" {
+  when started {
+    spawn "greet" to "later_agent" with { name: "world" }
+  }
+}
+
+agent "later_agent" {
+  when message "greet" {
+    assert message.name == "world" "the message payload must reach the matching handler"
+  }
+}
+"#;
+        run(src).unwrap();
+    }
+
+    #[test]
+    fn send_to_an_existing_agent_with_no_matching_handler_still_queues_not_errors() {
+        // A different, legitimate case from a nonexistent agent: the
+        // target is real, it just doesn't (yet) declare a handler for
+        // this specific event — still queued for deferred delivery,
+        // unchanged from before this fix. Only a genuinely nonexistent
+        // *agent* is an error.
+        let src = r#"
+agent "worker" {
+  when message "known_event" {
+    log("handled")
+  }
+}
+agent "caller" {
+  when started {
+    spawn "unknown_event" to "worker" with { x: 1 }
+  }
+}
+"#;
+        run(src).unwrap();
     }
 
     #[test]

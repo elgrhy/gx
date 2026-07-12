@@ -421,6 +421,7 @@ impl super::Interpreter {
         m.insert("stats".into(), Value::Object(stats));
 
         let removed = apply_trim(&mut m);
+        self.warn_if_summarize_strategy_evicted(&m, removed);
         record_trim(&mut m, removed);
 
         Ok(Value::Object(m))
@@ -472,8 +473,36 @@ impl super::Interpreter {
         // explicitly — but "none" still means "never auto-trim", so honor
         // it here too rather than special-casing an explicit call.
         let removed = apply_trim(&mut m);
+        self.warn_if_summarize_strategy_evicted(&m, removed);
         record_trim(&mut m, removed);
         Ok(Value::Object(m))
+    }
+
+    /// `trim_strategy: "summarize"` deliberately behaves exactly like
+    /// `"drop_oldest_pair"` today (see `apply_trim`'s doc for why actually
+    /// generating a summary isn't something this automatic path can do
+    /// itself) — plain eviction, not the rolling-summary behavior the name
+    /// implies. That gap being *silent* was the actual problem: a developer
+    /// choosing "summarize" gets no signal that they're not getting
+    /// summarization at all. Warns every time it actually evicts messages
+    /// under this strategy, so the gap is visible in practice, not just in
+    /// documentation — use `context_summarize_and_trim` for real
+    /// summarization instead.
+    fn warn_if_summarize_strategy_evicted(&self, ctx: &HashMap<String, Value>, removed: usize) {
+        if removed > 0 && get_str(ctx, "trim_strategy").as_deref() == Some("summarize") {
+            self.diagnostics.log(
+                crate::diagnostics::Level::Warn,
+                &format!(
+                    "context_ask/context_add_message: trim_strategy 'summarize' evicted {} \
+                     message(s) by plain removal, not summarization — this strategy does not \
+                     yet generate a summary. Use context_summarize_and_trim for real \
+                     summarization, or trim_strategy 'drop_oldest_pair' to make the eviction \
+                     policy explicit.",
+                    removed
+                ),
+                None,
+            );
+        }
     }
 
     /// Replace the oldest messages with a single caller-supplied summary
@@ -667,35 +696,13 @@ impl super::Interpreter {
 
         self.authorize_ai_provider(&provider)?;
 
-        // Ollama's multi-turn chat endpoint (`/api/chat`) isn't wired up
-        // yet — only its single-shot `/api/generate` path is (via the
-        // `messages` param `ask_ai` doesn't forward to `ask_ollama` at
-        // all). Without this check, `context_ask(ctx, "ollama", ...)`
-        // would silently send an *empty* prompt (the flat `prompt` param
-        // `context_ask` never sets) instead of the conversation — a real
-        // bug caught in adversarial review, not a hypothetical one. Fail
-        // clearly instead of silently degrading.
-        if provider == "ollama" {
-            let mut out = HashMap::new();
-            out.insert("ok".into(), Value::Bool(false));
-            out.insert("text".into(), Value::Str(String::new()));
-            out.insert(
-                "error".into(),
-                Value::Str(
-                    "context_ask: multi-turn conversations are not yet supported for 'ollama' \
-                     (only single-shot `ask ollama { ... }` is). Use 'openai' or 'anthropic', \
-                     or use the single-shot ask primitive for ollama."
-                        .into(),
-                ),
-            );
-            out.insert("error_kind".into(), Value::Str("invalid_request".into()));
-            out.insert("retry_after_ms".into(), Value::Null);
-            out.insert("provider".into(), Value::Str("ollama".into()));
-            out.insert("tokens_used".into(), Value::Number(0.0));
-            out.insert("context".into(), Value::Object(ctx));
-            return Ok(Value::Object(out));
-        }
-
+        // Ollama's `/api/chat` (message-array based, same shape `ask_ai`
+        // already builds for openai/anthropic) is wired up via `ask_ollama`
+        // — `context_ask` no longer needs to special-case it. Previously
+        // this hard-rejected every 'ollama' call here because `ask_ai`
+        // never forwarded `messages` to `ask_ollama` at all, which would
+        // have silently sent an *empty* prompt (the flat `prompt` param
+        // `context_ask` never sets) instead of the conversation.
         let mut params: HashMap<String, Value> = HashMap::new();
         if let Some(sys) = get_str(&ctx, "system") {
             params.insert("system".into(), Value::Str(sys));
@@ -715,8 +722,11 @@ impl super::Interpreter {
         if let Some(tools) = opts.get("tools").cloned() {
             params.insert("tools".into(), tools);
         }
+        if let Some(response_format) = opts.get("response_format").cloned() {
+            params.insert("response_format".into(), response_format);
+        }
 
-        let agent = self.http_agent();
+        let agent = self.agent_for_provider(&provider);
         let span = self.diagnostics.start_span("ai.request");
         let message_count = get_messages(&ctx).len();
         let context_id = get_str(&ctx, "__gx_context_id").unwrap_or_default();
@@ -918,6 +928,27 @@ assert s.total_messages_added == 80 "stats must count every add, even ones later
     }
 
     #[test]
+    fn trim_strategy_summarize_still_evicts_like_drop_oldest_pair_and_does_not_error() {
+        // "summarize" deliberately still behaves like plain eviction (see
+        // `apply_trim`'s doc) — this only proves that behavior is
+        // unchanged and the new diagnostics warning
+        // (`warn_if_summarize_strategy_evicted`) doesn't disrupt it. The
+        // warning's own text isn't asserted here, matching this codebase's
+        // existing convention for diagnostics-only side effects (see
+        // `capability_denied_process_call_emits_an_audit_event_and_still_returns_the_same_error`
+        // in `interpreter::mod`) — it's additive logging, inspectable via
+        // `--trace`, not something a script's own behavior depends on.
+        run(r#"
+ctx = context_create({ max_history_tokens: 1, reserve_tokens: 0, trim_strategy: "summarize" })
+ctx = context_add_message(ctx, "user", "this alone already exceeds the tiny budget")
+ctx = context_add_message(ctx, "assistant", "so does this")
+s = context_stats(ctx)
+assert s.message_count <= 2 "summarize must still evict under budget pressure, same as drop_oldest_pair"
+"#)
+        .unwrap();
+    }
+
+    #[test]
     fn trim_strategy_none_never_auto_trims() {
         run(r#"
 ctx = context_create({ max_history_tokens: 1, reserve_tokens: 0, trim_strategy: "none" })
@@ -1091,23 +1122,79 @@ assert result.error_kind != null "every failure must carry a structured error_ki
         .unwrap();
     }
 
+    /// Serializes every test that points `OLLAMA_URL` at a local mock
+    /// server — `std::env::set_var` is process-global, and Rust runs tests
+    /// in parallel by default.
+    static OLLAMA_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Starts a tiny local HTTP server that answers every request with a
+    /// fixed Ollama `/api/chat`-shaped JSON body, regardless of what was
+    /// sent — enough to prove `context_ask` actually reaches Ollama's chat
+    /// endpoint and parses its response, without depending on a real
+    /// Ollama install being present (or absent) on whatever machine runs
+    /// this test.
+    fn spawn_mock_ollama_chat_server(port: u16) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().take(1).flatten() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if line.trim_end().is_empty() {
+                        break;
+                    }
+                    if let Some(v) = line
+                        .trim_end()
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut discard = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut discard);
+                let json_body = r#"{"model":"llama3","message":{"role":"assistant","content":"hi from ollama"},"done":true,"eval_count":7}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    json_body.len(),
+                    json_body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+    }
+
     #[test]
-    fn context_ask_rejects_ollama_clearly_instead_of_silently_sending_an_empty_prompt() {
-        // Regression test for a real bug found in adversarial review:
-        // ask_ai's flat `prompt` param (what ask_ollama actually reads) is
-        // never set by context_ask (only `messages` is) — without this
-        // explicit check, a context_ask against "ollama" would silently
-        // send an *empty* prompt instead of the real conversation, rather
-        // than failing in an obviously-wrong way.
-        run(r#"
+    fn context_ask_wires_ollama_through_its_chat_endpoint_instead_of_rejecting_it() {
+        // Ollama's `/api/chat` is message-array based, the same shape
+        // `ask_ai` already builds for openai/anthropic — `context_ask`
+        // used to hard-reject "ollama" because `ask_ai` never forwarded
+        // `messages` to `ask_ollama` at all. This proves the real wiring:
+        // a local mock server stands in for Ollama, and `context_ask` must
+        // reach it, parse the reply, and append it to the conversation.
+        let _guard = OLLAMA_ENV_LOCK.lock().unwrap();
+        let port = 18495;
+        spawn_mock_ollama_chat_server(port);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::env::set_var("OLLAMA_URL", format!("http://127.0.0.1:{}", port));
+
+        let result = run(r#"
 ctx = context_create({ system: "test" })
 ctx = context_add_message(ctx, "user", "hello")
 result = context_ask(ctx, "ollama", {})
-assert result.ok == false "ollama is not yet supported by context_ask and must fail clearly"
-assert result.error_kind == "invalid_request" "this is a caller/configuration error, not a transient one"
-assert len(result.context.messages) == 1 "the context must be preserved unchanged, not corrupted"
-"#)
-        .unwrap();
+assert result.ok == true "context_ask must succeed against a reachable Ollama chat endpoint"
+assert result.text == "hi from ollama" "the assistant reply must come from /api/chat's message.content"
+assert len(result.context.messages) == 2 "the assistant's reply must be appended to the conversation"
+"#);
+
+        std::env::remove_var("OLLAMA_URL");
+        result.unwrap();
     }
 
     #[test]

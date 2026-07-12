@@ -2,13 +2,33 @@
 
 use crate::ast::*;
 use crate::lexer::{Token, TokenKind};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     /// Namespaces declared via `use js.X`, `use py.X`
     namespaces: HashSet<String>,
+    /// Module name -> namespace, for every `use <ns>.<module>` declaration
+    /// seen so far (e.g. `use js.playwright_bridge` records
+    /// `"playwright_bridge" -> "js"`).
+    ///
+    /// Without this, `playwright_bridge.navigate(...)` — the natural
+    /// reading of "I `use js.playwright_bridge`, now I have a callable
+    /// `playwright_bridge`" — parsed as an ordinary field-access call on an
+    /// undefined identifier: it evaluated to `null.navigate(...)`, printed
+    /// a stderr warning, and silently returned null. Every bridge call site
+    /// in a real production migration used this 2-part form; none of that
+    /// functionality had ever actually run. `parse_postfix` now rewrites
+    /// `module.method(args)` to the correct `BridgeCall` when `module`
+    /// matches a declared bridge, so the natural reading just works instead
+    /// of requiring the undocumented 3-part `js.module.method(args)` form.
+    bridge_modules: HashMap<String, String>,
+    /// Module/alias name -> literal path, for every `use <ns> "<path>" [as
+    /// <alias>]` declaration — the actual string handed to
+    /// `Bridge::call`/`Bridge::new_binary` at runtime is the path, not the
+    /// alias a script calls it by.
+    bridge_paths: HashMap<String, String>,
 }
 
 // ── Core helpers ──────────────────────────────────────────────────────────────
@@ -19,6 +39,8 @@ impl Parser {
             tokens,
             pos: 0,
             namespaces: HashSet::new(),
+            bridge_modules: HashMap::new(),
+            bridge_paths: HashMap::new(),
         }
     }
 
@@ -447,12 +469,48 @@ impl Parser {
         let line = self.line();
         self.advance(); // consume `use`
         let namespace = self.expect_ident()?;
+        self.namespaces.insert(namespace.clone());
+
+        // `use <ns> "<path>" [as <alias>]` — local file (js/ts/py) or
+        // executable (binary/go/rust_bin) form. Before this, `use binary
+        // "path"`/`use go "path"` couldn't be reached through either GX
+        // parser at all (only the dotted `namespace.identifier` form
+        // below was recognized) despite the capability system, `Bridge::
+        // new_binary`, and the interpreter's `bridge_call` dispatch all
+        // already supporting them — a pre-existing gap, not something this
+        // milestone's report caught. A quoted path also gives js/ts/py a
+        // way to point at a local project file instead of only a
+        // require()/importlib bare-specifier lookup.
+        if matches!(self.peek_kind(), TokenKind::StringLit(_)) {
+            let path = self.expect_string()?;
+            let alias = if self.eat(&TokenKind::As) {
+                self.expect_ident()?
+            } else {
+                default_alias_for_path(&path)
+            };
+            self.bridge_modules.insert(alias.clone(), namespace.clone());
+            self.bridge_paths.insert(alias.clone(), path.clone());
+            return Ok(ImportDecl {
+                namespace,
+                package: alias,
+                path: Some(path),
+                line,
+            });
+        }
+
+        // `use <ns>.<package>` — bare-specifier form.
         self.expect(&TokenKind::Dot)?;
         let package = self.expect_ident()?;
-        self.namespaces.insert(namespace.clone());
+        // Record `package -> namespace` so `parse_postfix` can rewrite the
+        // natural-but-currently-broken 2-part call form
+        // (`package.method(args)`) into the correct `BridgeCall` — see the
+        // `bridge_modules` field doc.
+        self.bridge_modules
+            .insert(package.clone(), namespace.clone());
         Ok(ImportDecl {
             namespace,
             package,
+            path: None,
             line,
         })
     }
@@ -1849,6 +1907,13 @@ impl Parser {
                                 if matches!(self.peek_kind(), TokenKind::LParen) {
                                     self.advance();
                                     let args = self.parse_args()?;
+                                    // If `module` was declared via the
+                                    // quoted-path form (`use binary "./x" as
+                                    // module` / `use js "./x.js" as
+                                    // module`), the runtime needs the real
+                                    // path, not the alias.
+                                    let module =
+                                        self.bridge_paths.get(&module).cloned().unwrap_or(module);
                                     expr = Expr::BridgeCall {
                                         namespace: ns.clone(),
                                         module,
@@ -1871,6 +1936,42 @@ impl Parser {
                                     field: module,
                                 };
                             }
+                            continue;
+                        }
+                    }
+                    // The 2-part form: `playwright_bridge.navigate(...)` when
+                    // `playwright_bridge` was declared via `use js.playwright_bridge`.
+                    // See the `bridge_modules` field doc for why this exists.
+                    if let Expr::Ident(ref name) = expr {
+                        if let Some(namespace) = self.bridge_modules.get(name).cloned() {
+                            let method = field;
+                            self.skip_newlines();
+                            if matches!(self.peek_kind(), TokenKind::LParen) {
+                                self.advance();
+                                let args = self.parse_args()?;
+                                // Same path-vs-alias substitution as the
+                                // 3-part form above.
+                                let module = self
+                                    .bridge_paths
+                                    .get(name)
+                                    .cloned()
+                                    .unwrap_or_else(|| name.clone());
+                                expr = Expr::BridgeCall {
+                                    namespace,
+                                    module,
+                                    method,
+                                    args,
+                                };
+                                continue;
+                            }
+                            // Referenced without a call — e.g. passing the
+                            // bridge module around as a value. No BridgeCall
+                            // to build; fall through to a plain field access
+                            // like any other identifier.
+                            expr = Expr::FieldAccess {
+                                object: Box::new(expr),
+                                field: method,
+                            };
                             continue;
                         }
                     }
@@ -2229,6 +2330,34 @@ impl Parser {
     }
 }
 
+/// Derives a callable name from a bridge path when `use <ns> "<path>"` is
+/// written without an explicit `as <alias>` — the file stem
+/// (`"./scripts/playwright_bridge.js"` -> `"playwright_bridge"`,
+/// `"./my-service"` -> `"my-service"`) with any characters that aren't
+/// valid in a GX identifier replaced by `_`, so the derived name is always
+/// usable as one even when the path itself isn't (`"./my-service"` ->
+/// `"my_service"`).
+fn default_alias_for_path(path: &str) -> String {
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path);
+    let mut out: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() || out.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        out = format!("_{out}");
+    }
+    out
+}
+
 fn normalize_provider(s: &str) -> String {
     match s.to_lowercase().as_str() {
         "openai" | "gpt" | "chatgpt" => "openai".into(),
@@ -2411,6 +2540,109 @@ helper "h" { brain { plan {} execute {} remember {} communicate {} } }
         assert_eq!(p.imports.len(), 2);
         assert_eq!(p.imports[0].namespace, "js");
         assert_eq!(p.imports[0].package, "axios");
+        assert_eq!(p.imports[0].path, None);
+    }
+
+    #[test]
+    fn use_quoted_path_form_resolves_bridge_calls_to_the_literal_path_not_the_alias() {
+        // Regression test: `use binary "path"`/`use go "path"` couldn't be
+        // reached through either GX parser at all before this fix (only
+        // the dotted `namespace.identifier` bare-specifier form was
+        // recognized), despite the capability system and runtime dispatch
+        // already supporting them. This also gives js/ts/py a way to point
+        // at a local project file instead of only a require()/importlib
+        // bare-specifier lookup.
+        let p = parse(
+            r#"
+use binary "./my_service" as svc
+helper "h" {
+  brain {
+    plan {}
+    execute { x = svc.run({}) }
+    remember {}
+    communicate {}
+  }
+}
+"#,
+        );
+        assert_eq!(p.imports[0].namespace, "binary");
+        assert_eq!(p.imports[0].package, "svc");
+        assert_eq!(p.imports[0].path.as_deref(), Some("./my_service"));
+
+        let brain = p.helpers[0].brain.as_ref().unwrap();
+        let Stmt::Assign { value, .. } = &brain.execute[0] else {
+            panic!("expected an assignment statement");
+        };
+        match value {
+            Expr::BridgeCall {
+                namespace, module, ..
+            } => {
+                assert_eq!(namespace, "binary");
+                assert_eq!(
+                    module, "./my_service",
+                    "the runtime must see the real path, not the alias"
+                );
+            }
+            other => panic!("expected a BridgeCall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn use_quoted_path_form_derives_a_default_alias_from_the_file_stem_when_none_is_given() {
+        let p = parse(
+            r#"
+use js "./scripts/playwright-bridge.js"
+helper "h" {
+  brain {
+    plan {}
+    execute { x = playwright_bridge.navigate({}) }
+    remember {}
+    communicate {}
+  }
+}
+"#,
+        );
+        assert_eq!(p.imports[0].package, "playwright_bridge");
+    }
+
+    #[test]
+    fn two_part_bridge_call_resolves_to_the_same_bridgecall_as_the_three_part_form() {
+        // Regression test: `use js.playwright_bridge` followed by the
+        // natural-looking `playwright_bridge.navigate(...)` used to parse
+        // as an ordinary field-access call on an undefined identifier
+        // (silently `null.navigate(...)`), not a bridge call — every
+        // bridge call site in a real production migration was written this
+        // way and none of it had ever actually run.
+        let p = parse(
+            r#"
+use js.playwright_bridge
+helper "h" {
+  brain {
+    plan {}
+    execute { x = playwright_bridge.navigate({ url: "https://example.com" }) }
+    remember {}
+    communicate {}
+  }
+}
+"#,
+        );
+        let brain = p.helpers[0].brain.as_ref().unwrap();
+        let Stmt::Assign { value, .. } = &brain.execute[0] else {
+            panic!("expected an assignment statement");
+        };
+        match value {
+            Expr::BridgeCall {
+                namespace,
+                module,
+                method,
+                ..
+            } => {
+                assert_eq!(namespace, "js");
+                assert_eq!(module, "playwright_bridge");
+                assert_eq!(method, "navigate");
+            }
+            other => panic!("expected a BridgeCall, got {:?}", other),
+        }
     }
 
     #[test]

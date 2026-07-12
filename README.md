@@ -41,7 +41,7 @@ git clone https://github.com/elgrhy/gx.git && cd gx && cargo build --release
 ```
 
 ```bash
-gx --version   # gx 0.6.0
+gx --version   # gx 0.6.1
 ```
 
 ---
@@ -58,10 +58,27 @@ gx run main.gx
 agent "hello" {
   when started {
     name = "World"
-    say "Hello, {name}! GX v0.6.0 is running."
+    say "Hello, {name}! GX v0.6.1 is running."
   }
 }
 ```
+
+---
+
+## What's New in v0.6.1
+
+Production-hardening patch based on real-world feedback from migrating GClaw (~55 files, 23 agents, 8 bridge integrations) onto v0.6.0. Backward compatible — no previously-working script changes behavior. Full detail in [CHANGELOG.md](CHANGELOG.md).
+
+- **`spawn agent` requires a callable `brain{}`** — targeting an agent with no `brain{}` (including a `when message`-only agent) now fails immediately with a clear error naming the agent and what it actually exposes, instead of silently returning `null`. `brain{}` and `when message` stay genuinely distinct concepts; neither is auto-routed into the other.
+- **Fire-and-forget target validation** — `spawn "event" to "agent"` now fails clearly if the target agent isn't declared anywhere in the project, instead of silently queuing a message nothing can ever deliver.
+- **`http_post`/`http_put` no longer double-encode a pre-stringified body** — a `Value::Str` body is sent as literal raw bytes, matching every other language's HTTP client convention.
+- **`remember.x` aliases `memory.x`** instead of silently evaluating to `null`.
+- **Malformed `gx.json` dependency shapes fail loudly** instead of silently becoming deny-all.
+- **Bridge call fixes** — the natural 2-part bridge call form now works; `use <ns> "<path>" [as <alias>]` gives js/ts/py/binary/go/rust_bin bridges a local-file/executable form (binary/go/rust_bin were previously unreachable through either parser at all).
+- **`gx check` runs real whole-project static diagnostics** — not just a parse check: unreachable spawn targets, undeliverable fire-and-forget sends, dead agents, cross-file name collisions, and SQL built by string concatenation/interpolation, all calibrated for a low false-positive rate.
+- **Ollama**: `ask ollama` now honors `timeout` and uses a pooled, capability-checked connection; `context_ask` supports Ollama via `/api/chat`.
+- **`response_format` on `ask openai`** — direct pass-through for structured output.
+- **Bridge documentation** — a complete "Writing a Bridge Script" guide with worked JS/Python examples.
 
 ---
 
@@ -1324,6 +1341,7 @@ gx repl                     # Interactive REPL
 
 | Version | Highlights |
 |---|---|
+| **v0.6.1** | **Production hardening** — GClaw migration feedback: `spawn agent`/fire-and-forget target validation, HTTP string-body fix, strict manifest validation, bridge syntax + local-path fixes, Ollama timeout/managed-context support, whole-project `gx check` diagnostics, OpenAI structured output. Backward compatible. See [What's New in v0.6.1](#whats-new-in-v061) and [CHANGELOG.md](CHANGELOG.md). |
 | **v0.6.0** | **Production Runtime** — Capability/Crypto/Process/HTTP/Database/Task/AI Context/Module & Package runtimes, Diagnostics & Observability, Testing Framework, Debugger, REPL, Configuration/Serialization/Template runtimes, LSP, formatter, doc generation · security and resource-cap hardening · progressive-syntax parity fixes. See [What's New in v0.6.0](#whats-new-in-v060) and [CHANGELOG.md](CHANGELOG.md). |
 | **v0.5.1** | **Production patch** — `db_transaction` block · `sleep(seconds)` · `500ms`/`5s` duration literals · array-form `db_exec(db, sql, [params])` · regex quantifier interpolation fix |
 | **v0.5.0** | **DX + stdlib** — `gx -e` inline eval · `sha256`, `uuid` · `glob`, `dirname`, `basename`, `path_join` · `url_parse` · `group_by` · `truncate` · `token_count`, `tokens_used` · `write` (no newline) · `use std.fs\|crypto\|net\|collections` · `load_env` sandbox fix |

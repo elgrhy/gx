@@ -8,6 +8,113 @@ release notes since the first release.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.1] — 2026-07-12 — GClaw Production Feedback & Hardening
+
+Findings from migrating GClaw (~55 files, 23 agents, 8 bridge integrations)
+from v0.5.x to v0.6.0. Every item below traces to a reproduced bug, not a
+hypothetical one. Backward compatible — no previously-working script
+changes behavior.
+
+### Fixed — Critical
+
+- **`spawn agent "x" with { ... }` silently returned `null` for any agent
+  built from `when message "..."` blocks instead of `brain { }`** — the
+  single most damaging finding: it broke entire subsystems (dashboards,
+  search, safety validation) with no error at all. `brain { }` and
+  `when message` stay genuinely distinct concepts — `spawn agent` is not
+  routed into a matching `when message` handler, even when its `action`
+  names one, since a handler's contract should be knowable from its own
+  declaration, not from which call form happens to invoke it. Instead,
+  targeting an agent with no `brain { }` now fails immediately with a clear
+  error naming the agent and what it actually exposes, instead of
+  returning `null`.
+- **`spawn "event" to "agent"` (fire-and-forget) silently queued a message
+  forever when the target agent didn't exist** — a typo'd or removed agent
+  name used to queue into an internal event bus under a key nothing would
+  ever drain: a permanently-undeliverable message, indistinguishable from a
+  successful send, plus a small unbounded leak. Now fails immediately with
+  a clear error naming the agent, unless the target genuinely exists —
+  an existing agent that just doesn't (yet) declare a matching handler is
+  unaffected and still queues, exactly as before.
+- **`http_post`/`http_put` double-encoded a pre-stringified JSON body** —
+  `http_post(url, json_stringify(x))` sent a quoted, escaped string literal
+  instead of the object the server expected. A `Value::Str` body is now
+  sent as the literal raw bytes, matching every other language's HTTP
+  client convention for a string body.
+- **`remember.x` silently evaluated to `null`** instead of erroring or
+  working — `remember` is the declaration keyword, `memory` is the
+  accessor, and the two are easy to reach for interchangeably. `remember.x`
+  now aliases `memory.x` instead of silently losing the value.
+- **A malformed `gx.json` `dependencies.*` shape silently became deny-all**
+  — an array of `{"name": ..., "path": ...}` objects (a reasonable, more
+  informative shape to write by hand) filtered down to an empty allowlist
+  with `filter_map`, denying every call in that namespace with no signal
+  the *shape*, not the intent, was wrong. Now rejected loudly at manifest
+  load time.
+- **The 2-part bridge call form (`playwright_bridge.navigate(...)` after
+  `use js.playwright_bridge`) silently resolved to `null.navigate(...)`** —
+  only the undocumented 3-part form (`js.playwright_bridge.navigate(...)`)
+  actually worked. The natural 2-part form now resolves correctly.
+
+### Fixed — High
+
+- `ask ollama` now honors the `timeout` param (previously silently
+  dropped) and reuses the same pooled, capability-checked HTTP agent every
+  other provider uses — with `internal_network` pre-authorized specifically
+  for ollama, so the single most common workflow (a local model on
+  `localhost`) doesn't newly require `--allow-internal-http`.
+- `use binary "path"`/`use go "path"`/`use rust_bin "path"` — previously
+  unreachable through **either** GX parser at all, despite the capability
+  system and runtime dispatch already supporting them. `use <ns> "<path>"
+  [as <alias>]` now works for `js`/`ts`/`py`/`binary`/`go`/`rust_bin`,
+  also giving js/ts/py bridges a way to point at a local project file
+  instead of only a `require()`/`importlib` bare-specifier lookup.
+- `context_ask(ctx, "ollama", ...)` now actually wires into Ollama's
+  `/api/chat` (message-array based, the same shape used for
+  openai/anthropic) instead of hard-rejecting every call.
+- Cross-file function/agent name collisions (`import`'s "last one wins")
+  are now a `gx check` finding, not just a runtime log line easy to miss in
+  a production log stream.
+
+### Added
+
+- **`gx check` now runs real static diagnostics**, not just a parse check
+  — across the whole project (the entry file plus everything it
+  transitively `import`s): a spawn target with no `brain { }` (including a
+  `when message`-only agent, regardless of whether `action` names a real
+  handler), a fire-and-forget `spawn "event" to "agent"` target that
+  resolves to no declared agent, an agent declared but never spawned, a
+  cross-file name collision, and SQL built by string
+  concatenation/interpolation instead of a `?` placeholder. Every check is
+  conservative by design (a dynamically-constructed target is skipped, not
+  guessed at) to keep the false-positive rate low enough to trust in CI.
+- `response_format` on `ask openai { ... }` — a direct pass-through to
+  OpenAI's own structured-output param (no equivalent exists on Anthropic's
+  API to pass through to).
+- A `trim_strategy: "summarize"` context now warns (instead of staying
+  silent) when it evicts messages by plain removal — it still doesn't
+  generate an actual summary; see `context_summarize_and_trim` for that.
+- A "Writing a Bridge Script" doc section with complete, correct JS and
+  Python examples — the actual calling convention (a plain module, no
+  stdin/IPC handling of its own) had no worked example anywhere before
+  this, and every bridge script in a real production migration was written
+  the wrong way as a result.
+
+### Deferred (tracked, not implemented this round)
+
+- An automatic tool-execution loop (`agent_loop`-style builtin) — the
+  highest-leverage remaining gap for competing with Claude/ChatGPT-class
+  agentic products, but a genuinely new primitive deserving its own design
+  pass rather than a rushed addition here.
+- WebSocket support — explicitly out of scope already; SSE covers
+  server→client push today.
+- Full `trim_strategy: "summarize"` implementation (an actual
+  provider-driven summary) — the eviction-vs-summarization gap is now
+  *visible* (see Fixed — High above) rather than fixed outright, since
+  auto-triggering an AI call during ordinary context trimming would itself
+  be a "silent AI call" — the exact failure class this release otherwise
+  spent its effort closing.
+
 ## [0.6.0] — 2026-07-11
 
 GX's production runtime, standard library, developer tooling, and language

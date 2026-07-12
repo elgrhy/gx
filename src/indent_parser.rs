@@ -713,6 +713,7 @@ pub fn parse(source: &str) -> Result<Program, String> {
                 imports.push(ImportDecl {
                     namespace: rest[..dot].to_string(),
                     package: rest[dot + 1..].to_string(),
+                    path: None,
                     line: line.no,
                 });
             }

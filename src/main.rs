@@ -4,6 +4,7 @@ mod ai;
 mod ast;
 mod bridge;
 mod capability;
+mod checker;
 mod diagnostics;
 mod diagnostics_render;
 mod indent_parser;
@@ -426,7 +427,7 @@ fn cmd_run(
     // sandboxing — file-access confinement and the allowlists governing
     // bridges/AI/process/network are different concerns, and disabling one
     // (`--no-sandbox`) must not silently disable the other.
-    load_capability_manifest(&mut interp.capabilities, &script_dir);
+    load_capability_manifest(&mut interp.capabilities, &script_dir)?;
 
     for resource in deny {
         interp.capabilities.deny(resource);
@@ -477,7 +478,7 @@ fn cmd_eval(
     // `gx run` — so the same script behaved differently (allowlists
     // silently unenforced) depending only on which command ran it. Loading
     // it here, from cwd, makes both commands consistent.
-    load_capability_manifest(&mut interp.capabilities, &cwd);
+    load_capability_manifest(&mut interp.capabilities, &cwd)?;
 
     for resource in deny {
         interp.capabilities.deny(resource);
@@ -496,14 +497,77 @@ fn cmd_check(path: &str) -> Result<(), String> {
     let program = parse_file(&source, path)
         .map_err(|e| diagnostics_render::render_diagnostic(&e, path, &source))?;
 
+    // Build the same whole-project index `gx run` would (this file plus
+    // everything it transitively `import`s), without executing a single
+    // statement, so static checks see every agent/function in the project
+    // rather than just this one file.
+    let mut interp = Interpreter::new();
+    // `gx check` never runs the program, so the usual runtime diagnostics
+    // stream (JSONL to stderr) has nothing to show *except* the collision
+    // warning `build_project_index` itself can emit — which this command
+    // already surfaces as a clean check finding below. Silencing it here
+    // avoids printing the same warning twice in two different formats.
+    interp.diagnostics.set_min_level(diagnostics::Level::Error);
+    let script_dir = Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    interp.base_path = Some(
+        std::fs::canonicalize(&script_dir)
+            .unwrap_or(script_dir)
+            .join(Path::new(path).file_name().unwrap_or_default())
+            .to_string_lossy()
+            .into_owned(),
+    );
+    interp
+        .build_project_index(&program)
+        .map_err(|e| format!("{}: {}", path, e))?;
+
+    let findings = interp.run_static_checks(&program);
+    let errors = findings
+        .iter()
+        .filter(|f| f.severity == checker::Severity::Error)
+        .count();
+    let warnings = findings.len() - errors;
+
+    for f in &findings {
+        let label = match f.severity {
+            checker::Severity::Error => "error",
+            checker::Severity::Warning => "warning",
+        };
+        if f.line == 0 {
+            // Project-wide findings (e.g. a cross-file name collision)
+            // aren't anchored to one line.
+            println!("{}: {}: {}", path, label, f.message);
+        } else {
+            println!("{}:{}: {}: {}", path, f.line, label, f.message);
+        }
+    }
+
+    let agent_count = interp.project_agent_count();
     println!(
-        "{}: OK ({} helper{}, {} import{})",
+        "{}: {} ({} agent{} across the project, {} import{}, {} error{}, {} warning{})",
         path,
-        program.helpers.len(),
-        if program.helpers.len() == 1 { "" } else { "s" },
+        if errors == 0 { "OK" } else { "FAILED" },
+        agent_count,
+        if agent_count == 1 { "" } else { "s" },
         program.imports.len(),
         if program.imports.len() == 1 { "" } else { "s" },
+        errors,
+        if errors == 1 { "" } else { "s" },
+        warnings,
+        if warnings == 1 { "" } else { "s" },
     );
+
+    if errors > 0 {
+        return Err(format!(
+            "{}: {} check error{}",
+            path,
+            errors,
+            if errors == 1 { "" } else { "s" }
+        ));
+    }
     Ok(())
 }
 
@@ -873,14 +937,17 @@ fn parse_log_level(s: &str) -> Result<crate::diagnostics::Level, String> {
 /// `--no-sandbox`: file-sandboxing and the dependency/capability allowlists
 /// are different concerns, and disabling one should not silently disable
 /// the other.
-fn load_capability_manifest(capabilities: &mut capability::Capabilities, dir: &Path) {
+fn load_capability_manifest(
+    capabilities: &mut capability::Capabilities,
+    dir: &Path,
+) -> Result<(), String> {
     let manifest_path = dir.join("gx.json");
     let Ok(content) = std::fs::read_to_string(&manifest_path) else {
-        return;
+        return Ok(());
     };
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-        capabilities.apply_manifest(&json);
-    }
+    let json = serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|e| format!("gx.json: invalid JSON — {e}"))?;
+    capabilities.apply_manifest(&json)
 }
 
 fn print_usage() {
@@ -906,7 +973,7 @@ fn print_help() {
     println!("  gx run <file.gx> --no-limit                    Remove while-loop iteration cap (for REPLs, infinite I/O loops)");
     println!("  gx debug <file.gx> [--break line1,line2,...]   Run with the interactive debugger (also: the breakpoint() builtin)");
     println!("  gx -e '<source>'                       Run inline GX source (no temp file)");
-    println!("  gx check <file.gx>                     Check syntax without running");
+    println!("  gx check <file.gx>                     Check syntax + static diagnostics (dead agents, bad spawn targets, SQL concat, ...) without running");
     println!("  gx init <name>                         Create a new GX project");
     println!("  gx build <file.gx> [-o name] [--allow-shell|--allow-process|--allow-internal-http|--deny <r>]");
     println!("                                          Build standalone launcher (capability flags baked in)");
@@ -1132,7 +1199,7 @@ mod tests {
         assert!(caps
             .authorize(capability::Resource::HttpServer, None)
             .is_ok());
-        load_capability_manifest(&mut caps, &dir);
+        load_capability_manifest(&mut caps, &dir).unwrap();
         assert!(caps
             .authorize(capability::Resource::HttpServer, None)
             .is_err());
@@ -1147,12 +1214,40 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let mut caps = capability::Capabilities::new();
-        load_capability_manifest(&mut caps, &dir);
+        load_capability_manifest(&mut caps, &dir).unwrap();
         // Defaults untouched — no panic, no spurious restriction.
         assert!(caps
             .authorize(capability::Resource::HttpServer, None)
             .is_ok());
         assert!(caps.authorize(capability::Resource::Shell, None).is_err());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_capability_manifest_errors_loudly_on_a_malformed_dependency_shape() {
+        // Regression test: `dependencies.js: [{"name": "x", "path": "y"}]`
+        // (a reasonable, arguably more informative shape to write by hand)
+        // used to silently filter down to an empty allowlist — deny-all —
+        // with no signal that the shape, not the intent, was wrong.
+        let dir = std::env::temp_dir().join(format!(
+            "gx_main_test_malformed_manifest_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("gx.json"),
+            r#"{ "dependencies": { "js": [{ "name": "playwright_bridge", "path": "js/playwright_bridge.js" }] } }"#,
+        )
+        .unwrap();
+
+        let mut caps = capability::Capabilities::new();
+        let err = load_capability_manifest(&mut caps, &dir).unwrap_err();
+        assert!(
+            err.contains("dependencies.js[0]") && err.contains("must be a string"),
+            "expected a clear shape-validation error, got: {}",
+            err
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -309,36 +309,63 @@ impl Capabilities {
     /// flag, decided by whoever invokes `gx` rather than whoever wrote the
     /// script, may grant them; a manifest may still narrow the process
     /// allowlist once the CLI has granted `process`, exactly as before.
-    pub fn apply_manifest(&mut self, manifest: &serde_json::Value) {
-        let names = |key: &str| -> Option<Vec<String>> {
-            manifest["dependencies"][key].as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
+    /// Applies `gx.json`'s `dependencies`/`capabilities` sections, or
+    /// returns `Err` if a `dependencies.*` array contains anything other
+    /// than plain strings.
+    ///
+    /// Before this, a malformed element (e.g. `{"name": "x", "path": "y"}`
+    /// instead of a bare `"x"` — a reasonable, arguably more informative
+    /// shape to write by hand) was silently dropped by
+    /// `filter_map(|v| v.as_str())`. An array of only such objects filtered
+    /// down to an *empty* allowlist, which `Allowlist::only` (correctly)
+    /// treats as deny-all: every bridge call in the program was denied, and
+    /// the only symptom was "not listed in gx.json's allowlist" — reading
+    /// exactly like "you forgot to declare it," never like "you declared it
+    /// in the wrong shape." Failing to load the manifest at all is a much
+    /// louder, more diagnosable failure than a silently-empty allowlist.
+    pub fn apply_manifest(&mut self, manifest: &serde_json::Value) -> Result<(), String> {
+        let names = |key: &str| -> Result<Option<Vec<String>>, String> {
+            let Some(arr) = manifest["dependencies"][key].as_array() else {
+                return Ok(None);
+            };
+            let mut out = Vec::with_capacity(arr.len());
+            for (i, v) in arr.iter().enumerate() {
+                match v.as_str() {
+                    Some(s) => out.push(s.to_string()),
+                    None => {
+                        return Err(format!(
+                            "gx.json: dependencies.{key}[{i}] must be a string (got {}). \
+                             Each entry names a package/module/executable directly, e.g. \
+                             \"axios\" — not an object.",
+                            describe_json_kind(v)
+                        ))
+                    }
+                }
+            }
+            Ok(Some(out))
         };
-        if let Some(list) = names("js") {
+        if let Some(list) = names("js")? {
             self.js_modules = Allowlist::only(list);
         }
-        if let Some(list) = names("ts") {
+        if let Some(list) = names("ts")? {
             self.ts_modules = Allowlist::only(list);
         }
-        if let Some(list) = names("py") {
+        if let Some(list) = names("py")? {
             self.py_modules = Allowlist::only(list);
         }
-        if let Some(list) = names("binary") {
+        if let Some(list) = names("binary")? {
             self.binary_executables = Allowlist::only(list);
         }
-        if let Some(list) = names("go") {
+        if let Some(list) = names("go")? {
             self.go_executables = Allowlist::only(list);
         }
-        if let Some(list) = names("rust_bin") {
+        if let Some(list) = names("rust_bin")? {
             self.rust_bin_executables = Allowlist::only(list);
         }
-        if let Some(list) = names("process") {
+        if let Some(list) = names("process")? {
             self.process_executables = Allowlist::only(list);
         }
-        if let Some(list) = names("ai") {
+        if let Some(list) = names("ai")? {
             self.ai_providers = Allowlist::only(list);
         }
 
@@ -352,12 +379,23 @@ impl Capabilities {
             self.database = v;
         }
         if let Some(arr) = manifest["capabilities"]["env_deny"].as_array() {
-            let denied: HashSet<String> = arr
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect();
+            let mut denied = HashSet::with_capacity(arr.len());
+            for (i, v) in arr.iter().enumerate() {
+                match v.as_str() {
+                    Some(s) => {
+                        denied.insert(s.to_string());
+                    }
+                    None => {
+                        return Err(format!(
+                            "gx.json: capabilities.env_deny[{i}] must be a string (got {}).",
+                            describe_json_kind(v)
+                        ))
+                    }
+                }
+            }
             self.environment = EnvAccess::Denied(denied);
         }
+        Ok(())
     }
 
     /// The raw sandbox directory, when filesystem access is scoped — for
@@ -479,6 +517,20 @@ impl Capabilities {
 impl Default for Capabilities {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A short, human-readable JSON type name for error messages — deliberately
+/// not `serde_json::Value`'s own `Debug` output, which would dump the
+/// entire (potentially large) offending value into the error.
+fn describe_json_kind(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
     }
 }
 
@@ -657,7 +709,7 @@ mod tests {
         let manifest: serde_json::Value = serde_json::json!({
             "dependencies": { "js": ["axios"], "binary": ["./svc"] }
         });
-        caps.apply_manifest(&manifest);
+        caps.apply_manifest(&manifest).unwrap();
         assert!(caps.authorize(Resource::JsBridge, Some("axios")).is_ok());
         assert!(caps
             .authorize(Resource::JsBridge, Some("left-pad"))
@@ -678,7 +730,7 @@ mod tests {
         let manifest: serde_json::Value = serde_json::json!({
             "capabilities": { "shell": true, "process": true, "internal_network": true }
         });
-        caps.apply_manifest(&manifest);
+        caps.apply_manifest(&manifest).unwrap();
         assert!(caps.authorize(Resource::Shell, None).is_err());
         assert!(caps.authorize(Resource::Process, None).is_err());
         assert!(caps.authorize(Resource::InternalNetwork, None).is_err());
@@ -696,7 +748,7 @@ mod tests {
                 "env_deny": ["SECRET_TOKEN"]
             }
         });
-        caps.apply_manifest(&manifest);
+        caps.apply_manifest(&manifest).unwrap();
         assert!(caps.authorize(Resource::HttpServer, None).is_err());
         assert!(caps.authorize(Resource::Database, None).is_err());
         assert!(caps.authorize(Resource::ExternalNetwork, None).is_err());

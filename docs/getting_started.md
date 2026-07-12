@@ -20,7 +20,7 @@ sudo cp target/release/gx /usr/local/bin/
 
 Verify:
 ```bash
-gx version   # gx 0.6.0
+gx version   # gx 0.6.1
 ```
 
 ---

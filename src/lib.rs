@@ -31,6 +31,7 @@ pub mod ai;
 pub mod ast;
 pub mod bridge;
 pub mod capability;
+pub mod checker;
 pub mod diagnostics;
 pub mod diagnostics_render;
 pub mod indent_parser;

@@ -1,6 +1,6 @@
 # GX Language — Reference
 
-Complete reference for GX v0.6.0 syntax, built-in functions, and AI primitives.
+Complete reference for GX v0.6.1 syntax, built-in functions, and AI primitives.
 
 ---
 
@@ -203,6 +203,11 @@ remember {
 ```
 
 Values here are accessible as `memory.key` everywhere in the helper.
+`remember.key` also works as an alias for `memory.key` in value position
+(e.g. inside `"{remember.key}"` interpolation) — `remember` is the
+*declaration* keyword above, `memory` is the conventional accessor, and the
+two are easy to reach for interchangeably. Prefer `memory.key` in new code;
+the alias exists so the natural mistake doesn't silently evaluate to `null`.
 
 ### `brain` — Cognitive Cycle
 
@@ -1777,6 +1782,22 @@ result = ask openai {
   tools: [get_weather],
   model: "gpt-4o"
 }
+
+// Structured output (openai only — a direct pass-through to OpenAI's own
+// `response_format`; Anthropic has no native equivalent to pass through to)
+result = ask openai {
+  prompt: "Extract the name and age as JSON.",
+  response_format: { type: "json_object" }
+}
+
+// Per-call timeout override (seconds) — every provider honors this,
+// including ollama, routed through the same pooled connection as
+// openai/anthropic (just with `internal_network` pre-authorized, since
+// ollama is inherently a loopback endpoint).
+result = ask ollama {
+  prompt: "...",
+  timeout: 10
+}
 ```
 
 **Response object:**
@@ -1833,11 +1854,62 @@ Returns the matched class as a string.
 
 ## Multi-Agent Orchestration
 
-### `spawn agent` — Call Another Agent
+Two agent shapes exist, and they stay genuinely distinct — not two
+spellings of the same thing:
+
+- **`brain { }`** — a synchronous, callable agent. `spawn agent` calls it
+  and gets back whatever `communicate` produces.
+- **`when message "event" { }`** — an asynchronous event handler. It runs
+  in response to `send`/`spawn "event" to "agent"` and never returns a
+  value to any caller, regardless of how it's invoked.
+
+```gx
+agent "summarizer" {
+  brain {
+    plan { }
+    execute { summary = input.text }
+    remember { }
+    communicate { summary }
+  }
+}
+
+agent "classifier" {
+  when message "classify" {
+    log("classifying: {message.text}")
+  }
+}
+```
+
+A handler's contract comes from its own declaration, not from whichever
+call form happens to invoke it — the same reason Erlang/OTP keeps
+`handle_call` (synchronous, expects a reply) and `handle_cast`
+(asynchronous, no reply) as separate callbacks rather than letting one
+opportunistically satisfy the other. `when message` is GX's `handle_cast`;
+`brain { }` is GX's `handle_call`.
+
+### `spawn agent` — Call a brain{} Agent and Get a Value Back
 
 ```gx
 result = spawn agent "summarizer" with { text: "hello world" }
 log(result)
+```
+
+`spawn agent` only ever calls a `brain { }`. Targeting an agent with no
+`brain { }` — including a `when message`-only agent, even when the
+`action` given names a real handler — fails with a clear error naming the
+agent and what it actually exposes, instead of silently returning `null`:
+
+```
+Agent "classifier" cannot be called synchronously.
+
+This agent only exposes asynchronous `when message` handlers (classify) —
+no `brain { }` block. A `when message` handler never returns a value to a
+`spawn agent` caller, regardless of the `action` passed — it only runs in
+response to `send`/`spawn "action" to "agent"`.
+
+Use:
+  spawn "action" to "classifier" with { ... }
+or convert the agent to a `brain { }` implementation.
 ```
 
 ### `|>` Pipeline
@@ -1848,34 +1920,130 @@ result = { value: 5 } |> spawn agent "doubler" |> spawn agent "formatter"
 
 Non-object values are auto-wrapped as `{ value: X }`.
 
-### `spawn "event" to "agent"` — Send a Message
+### `spawn "event" to "agent"` — Fire-and-Forget
 
 ```gx
 spawn "task" to "worker" with { task: "process data" }
 ```
 
+No return value — the target's matching `when message "task"` handler runs,
+but the caller doesn't wait for or receive anything back. Use this instead
+of `spawn agent` when the target is meant to be asynchronous by design (a
+notification, a background job) rather than because it happens to lack a
+synchronous return path.
+
+**The target agent must exist.** `spawn "task" to "worker"` fails
+immediately with a clear error if no agent named `"worker"` is declared
+anywhere in the project — a typo'd or removed agent name is caught rather
+than silently queuing a message nothing can ever deliver. This is
+narrower than "no matching handler": an agent that exists but doesn't
+(yet) declare a `when message "task"` handler is unaffected and still
+queues the message for deferred delivery, exactly as before — only a
+genuinely undeclared *agent* is an error.
+
 ---
 
 ## Package Interop
 
+### Bare-specifier form — an installed package
+
 ```gx
 use js.path
-result = js.path.join("/home", "user")
+result = js.path.join("/home", "user")     // 3-part: namespace.module.method(...)
+result = path.join("/home", "user")        // 2-part: module.method(...) — same call
 
 use py.os
 cwd = py.os.getcwd()
 
 use ts.analytics
 report = ts.analytics.generate(data)
-
-use binary "./my_processor"
-output = binary.transform(payload)
 ```
+
+`path`/`os`/`analytics` are resolved as bare specifiers — `require('path')`
+(Node's own module resolution, so `node_modules`/`NODE_PATH` apply) or
+Python's `importlib.import_module`. The 2-part form (`path.join(...)`, no
+`js.` prefix) and the 3-part form (`js.path.join(...)`) are exactly
+equivalent — both resolve to the same call. Use whichever reads better at
+the call site.
+
+### Quoted-path form — a local project file or executable
+
+```gx
+use js "./scripts/playwright_bridge.js" as playwright_bridge
+playwright_bridge.navigate({ url: "https://example.com" })
+
+use py "./scripts/ocr.py" as ocr
+ocr.extract_text("scan.png")
+
+use binary "./bin/my_processor" as processor
+output = processor.transform(payload)
+
+use go "./services/search" as search
+results = search.query("hello")
+```
+
+Use this form to point a bridge at a file that's part of your own project
+instead of an installed package — `require()`/`importlib` never has to find
+it via `node_modules`/`PYTHONPATH`, and relative paths resolve against the
+directory `gx run` was invoked from, not wherever the bridge's internal
+runner process happens to live. `as <alias>` is optional; without it, the
+alias defaults to the path's file stem (`"./scripts/playwright_bridge.js"`
+→ `playwright_bridge`).
 
 **How it works:**
 - JS/Python/TypeScript calls: a persistent child process per bridge, speaking
   a newline-delimited JSON IPC protocol — not a new subprocess per call
 - Go/Binary: compiled binary with the same JSON stdin/stdout protocol
+
+See **Writing a Bridge Script** below for the shim's actual calling
+convention — the thing every bridge script author needs and no prior
+example showed.
+
+### Writing a Bridge Script
+
+A bridge script is a **plain, importable module** — it does not open its own
+stdin/stdout loop, does not parse JSON itself, and does not know it's being
+called from GX at all. GX's own shim process owns the entire IPC loop; your
+script just exposes ordinary top-level functions, called positionally
+(`fn_ref(*args)`). Writing a bridge script as a standalone program with its
+own dispatch loop is the single most common mistake — on Python specifically,
+it doesn't just fail, it **hangs** for the full call timeout, since the
+script's own blocking read races the shim's.
+
+A complete, correct JS bridge script:
+
+```js
+// scripts/greeter.js
+function greet(name) {
+  return "hello " + name;
+}
+
+module.exports = { greet };
+```
+
+```gx
+use js "./scripts/greeter.js" as greeter
+log(greeter.greet("world"))   // "hello world"
+```
+
+A complete, correct Python bridge script:
+
+```python
+# scripts/greeter.py
+def greet(name):
+    return "hello " + name
+```
+
+```gx
+use py "./scripts/greeter.py" as greeter
+log(greeter.greet("world"))   // "hello world"
+```
+
+That's the entire contract: define functions, export/expose them at module
+level (`module.exports` in JS; top-level `def` in Python — no `if __name__ ==
+"__main__":` dispatch), and let GX's shim do the rest. Nested method access
+(`obj.method.deeper`) and promise/async results are handled transparently on
+the JS side; a Python function can return any JSON-serializable value.
 
 ---
 
@@ -1971,6 +2139,14 @@ for `dependencies.js`/`dependencies.py`/`dependencies.process`, just
 extended uniformly to `ts`/`binary`/`go`/`rust_bin`/`ai` — those previously
 had *no* allowlist mechanism at all.
 
+Each `dependencies.*` array element must be a plain string
+(`"axios"`, `"./scripts/foo.js"`) — not an object. `gx run`/`gx check` now
+reject the whole manifest with a clear error if an element isn't a string,
+rather than silently dropping it: an array of `{"name": ..., "path": ...}`
+objects used to filter down to an *empty* allowlist, which denies
+everything in that namespace with no signal that the shape, not the intent,
+was wrong.
+
 `capabilities.*` restricts the resources that aren't a name list: set to
 `false` to deny, omit to leave at the default (open). `env_deny` is an exact
 list of environment variable names to block — not a glob pattern — reading
@@ -1991,6 +2167,26 @@ the other.
    default, or narrows the process/bridge allowlist once a CLI flag has
    granted the underlying resource.
 4. Built-in default (the table above).
+
+### Static Diagnostics (`gx check`)
+
+`gx check <file.gx>` parses the file plus everything it transitively
+`import`s (the whole project, not just that one file) and runs a set of
+static checks — no statement is ever executed. Findings print as
+`file:line: error|warning: message`; any `error`-severity finding makes
+`gx check` exit non-zero.
+
+| Check | Severity | Catches |
+|---|---|---|
+| Spawn target has no `brain{}` | error | `spawn agent "x" with {...}` targeting an agent with no `brain{}` — including a `when message`-only agent, regardless of whether `action` names a real handler. `brain{}` and `when message` stay distinct concepts; this always fails at runtime either way. |
+| Fire-and-forget target doesn't exist | error | `spawn "event" to "x"` where `"x"` isn't declared anywhere in the project — the message can never be delivered. Only the *agent* not existing is flagged; an existing agent with no matching `when message` handler yet is unaffected. |
+| Agent declared but never spawned | warning | An agent whose name never appears as a literal `spawn agent`/`spawn ... to` target anywhere in the project — dead code, or a half-wired refactor. Agents that auto-run standalone (`when started`, `when cron`, or a `brain{}` that never references `input`) are correctly excluded — they're not meant to be spawned. |
+| Cross-file function/agent name collision | warning | Two different imported files independently defining the same function or agent name (`import`'s "last one wins" behavior) — previously only visible as a runtime log line. |
+| SQL built by concatenation/interpolation | warning | `db_exec`/`db_query`'s SQL argument built with `+` or `"...{var}..."` instead of a `?` placeholder — the textbook SQL-injection shape. |
+
+Every check is intentionally conservative: a dynamically-constructed spawn
+target (not a string literal) is skipped rather than guessed at, to keep
+the false-positive rate low enough to trust in CI.
 
 ### Spawned agents and `parallel {}`
 
@@ -2538,7 +2734,7 @@ ctx = context_deserialize(row.data)
 |---|---|
 | Diagnostics | `context_ask` (and the single-shot `ask`/`Think`/`embed`/`infer`) get an automatic `ai.request`/`ai.embed`/`ai.infer` span with `provider`/`model`/`context_id`/`message_count`/`tokens_used` attributes and an `error_kind`-aware outcome. |
 | Capability | `context_ask` authorizes through the same `Resource::AiProviders` check (`dependencies.ai` in `gx.json`) as every other AI primitive. |
-| HTTP | `context_ask` and the cloud (`openai`/`anthropic`) single-shot calls now reuse the same capability-checked, connection-pooled `ureq::Agent` `http_get`/etc. already use, with a longer default read timeout (120s vs. 30s) appropriate for a real completion. `ollama` deliberately stays on its own plain connection — it's a loopback endpoint (`localhost:11434`), and routing it through the SSRF-aware resolver would newly require `--allow-internal-http` for an already-shipped feature. |
+| HTTP | Every provider — `openai`/`anthropic`/`ollama` alike, single-shot `ask` or `context_ask` — reuses a capability-checked, connection-pooled `ureq::Agent`, with a longer default read timeout (120s vs. 30s) appropriate for a real completion, and honors a per-call `timeout` (seconds) override. `ollama` gets its own dedicated agent with `internal_network` force-granted rather than the general one: its whole purpose is talking to a loopback model server, so requiring `--allow-internal-http` (a flag for arbitrary internal-network HTTP access) just to use a local model would break the single most common Ollama workflow. The SSRF resolver still runs on that agent — it's not the same as the old zero-checks connection this replaced. |
 | Task | A context is ordinary data — see "A context is plain data" above; no special propagation code was needed. |
 | Database | Persistence is `context_serialize`/`context_deserialize` plus ordinary `db_exec`/`db_query` — no dedicated API. |
 | Process | A tool's output (often a `process_run(...).stdout`) flows into `context_add_tool_result` like any other string — no special integration code needed. |
@@ -2570,10 +2766,10 @@ No `openai`-, `anthropic`-, `ollama`-, or application-specific behavior
 exists in this runtime — every provider-specific translation (message
 shape, tool-call format, system-prompt placement) lives inside the AI
 Runtime's connectors, never in the Context Runtime or exposed to scripts.
-`ollama`'s multi-turn `/api/chat` endpoint is not yet wired into
-`context_ask` (only its single-shot `/api/generate` path is supported
-today, via plain `ask ollama { ... }`) — `context_ask(ctx, "ollama", ...)`
-returns a clear "not yet supported" error rather than silently degrading.
+`ollama`'s multi-turn `/api/chat` endpoint is wired into `context_ask` the
+same way `openai`/`anthropic` are — `context_ask(ctx, "ollama", {})` sends
+the full conversation and appends the reply, the same as any other
+provider.
 
 ### What this doesn't do (yet)
 

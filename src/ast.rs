@@ -57,8 +57,16 @@ pub struct ToolParam {
 
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
-    pub namespace: String, // "js", "py", "rust"
-    pub package: String,   // "axios", "requests", "serde"
+    pub namespace: String, // "js", "py", "rust", "binary", "go", "rust_bin"
+    /// Bare-specifier form (`use js.axios`): the package name itself
+    /// ("axios"). Path form (`use js "./x.js" as axios`): the callable
+    /// alias ("axios") — see `path`.
+    pub package: String,
+    /// `Some(path)` for the quoted-path form (`use <ns> "<path>" [as
+    /// <alias>]`) — a local file (js/ts/py) or executable (binary/go/
+    /// rust_bin) rather than a bare specifier resolved via
+    /// require()/importlib/`$PATH`. `None` for the bare-specifier form.
+    pub path: Option<String>,
     pub line: usize,
 }
 
