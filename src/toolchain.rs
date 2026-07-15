@@ -828,6 +828,7 @@ fn format_source(source: &str) -> Result<String, String> {
     let mut output = String::new();
     let mut indent = 0usize;
     let mut last_was_newline = false;
+    let mut prev_kind: Option<TokenKind> = None;
 
     for token in &tokens {
         match &token.kind {
@@ -860,15 +861,51 @@ fn format_source(source: &str) -> Result<String, String> {
             other => {
                 if last_was_newline {
                     output.push_str(&"    ".repeat(indent));
+                } else if needs_space_before(prev_kind.as_ref(), other) {
+                    output.push(' ');
                 }
                 output.push_str(&token_to_str(other));
-                output.push(' ');
+                prev_kind = Some(other.clone());
                 last_was_newline = false;
             }
         }
     }
 
     Ok(output.trim().to_string() + "\n")
+}
+
+/// Whether a space belongs between `prev` (the last token actually written,
+/// `None` at the start of a line — indentation already covers that case)
+/// and `next` (the token about to be written). Conventional formatters
+/// (Prettier, rustfmt, gofmt) don't pad every delimiter uniformly — `f(x)`
+/// and `arr[i]`, not `f ( x )` and `arr [ i ]` — and gx fmt's previous
+/// unconditional "one space after every token" rule made dense,
+/// deeply-nested calls (which real GX code has plenty of, e.g. every SQL
+/// query call) noticeably harder to scan than in any comparable language.
+fn needs_space_before(
+    prev: Option<&crate::lexer::TokenKind>,
+    next: &crate::lexer::TokenKind,
+) -> bool {
+    use crate::lexer::TokenKind::*;
+    // These never take a leading space, regardless of what precedes them:
+    // `)`, `]`, `,`, `.`, and object/param `key:` never want a space
+    // before them.
+    if matches!(next, RParen | RBracket | Comma | Dot | Colon) {
+        return false;
+    }
+    match prev {
+        None => false,
+        // Nothing wants a space directly after an opening delimiter or a
+        // `.` (method/property chaining).
+        Some(LParen) | Some(LBracket) | Some(Dot) => false,
+        // Call/subscript syntax: `f(x)`, `arr[i]` — no space between the
+        // callee/target and its opening delimiter. `)`/`]` also chain
+        // this way for `f(x)(y)`/`arr[i][j]`-shaped expressions.
+        Some(Ident(_)) | Some(RParen) | Some(RBracket) if matches!(next, LParen | LBracket) => {
+            false
+        }
+        _ => true,
+    }
 }
 
 fn token_to_str(kind: &crate::lexer::TokenKind) -> String {
@@ -1737,7 +1774,17 @@ fn fmt_indent_syntax(source: &str) -> String {
     let mut result = String::new();
     let mut prev_blank = false;
     for line in source.lines() {
-        let trimmed = line.trim_end();
+        // `trim_end()` only strips *trailing* whitespace — the line's
+        // original leading indentation was still part of the resulting
+        // string, so it got written a second time right after the freshly
+        // computed indent below. That made every `gx fmt` pass on a
+        // progressive-syntax file grow its indentation instead of
+        // normalizing it: a second pass would see the doubled indent from
+        // the first, compute an even deeper level from it, and double it
+        // again — `gx fmt --check` right after `gx fmt` itself would then
+        // report the file as needing to be reformatted again.
+        let stripped_start = line.trim_start();
+        let trimmed = stripped_start.trim_end();
         if trimmed.is_empty() {
             if !prev_blank {
                 result.push('\n');
@@ -1747,7 +1794,7 @@ fn fmt_indent_syntax(source: &str) -> String {
         }
         prev_blank = false;
         // Count existing indentation
-        let indent_count = line.len() - line.trim_start().len();
+        let indent_count = line.len() - stripped_start.len();
         // Normalize: each 4-space or 1-tab indent level becomes 2 spaces
         let level = if indent_count > 0 {
             indent_count.div_ceil(2)
@@ -2400,6 +2447,91 @@ mod fmt_tests {
             } => assert_eq!(s, "a\nb\tc\\d\"e"),
             other => panic!("expected a string assignment, got {:?}", other),
         }
+    }
+
+    #[test]
+    // Regression/guard test for a reported-but-unreproduced bug (AgentX
+    // feedback, 2026-07, item 1.1): "gx fmt silently truncates the last
+    // character of an identifier immediately before a closing `}`". The
+    // exact repro from that report, and several structural variants of
+    // it (CRLF, tabs, trailing whitespace, deeply nested blocks, `for`/
+    // `while`, a bare `return`, two closing braces stacked on adjacent
+    // lines), did not reproduce against this exact source tree — but
+    // formatter trust is close to existential for this feature (a
+    // formatter that can *ever* silently rewrite an identifier is worse
+    // than no formatter), so this asserts the stronger, general property
+    // directly: every `Ident` token in the source must appear, in the
+    // same order and completely unchanged, in the formatted output.
+    // Anything short of that is a variant of the same corruption class,
+    // reproducible or not.
+    fn format_source_never_alters_any_identifier_token() {
+        fn ident_tokens(src: &str) -> Vec<String> {
+            crate::lexer::Lexer::new(src)
+                .tokenize()
+                .unwrap()
+                .into_iter()
+                .filter_map(|t| match t.kind {
+                    crate::lexer::TokenKind::Ident(s) => Some(s),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        let cases = [
+            // The exact repro from the report.
+            "function effective_daily_limit() {\n  limit = round(base * multiplier)\n  if limit < min_limit {\n    limit = min_limit\n  }\n  return limit\n}\n",
+            // CRLF line endings.
+            "function f() {\r\n  x = min_limit\r\n}\r\n",
+            // Tab indentation.
+            "function f() {\n\tx = min_limit\n}\n",
+            // Trailing whitespace on the identifier's own line.
+            "function f() {\n  x = min_limit   \n}\n",
+            // Nested block, identifier immediately before a nested `}`.
+            "function f() {\n  if x {\n    y = min_limit\n  }\n}\n",
+            "function f() {\n  for i in range(1, 10) {\n    y = min_limit\n  }\n}\n",
+            "function f() {\n  while true {\n    y = min_limit\n    break\n  }\n}\n",
+            // Bare `return` immediately before `}`.
+            "function f() {\n  return min_limit\n}\n",
+            // Two closing braces stacked on adjacent lines (the report's
+            // own function ends this way: `limit` then `}` then, one
+            // level up, `return limit` then `}`).
+            "function outer() {\n  function unused_helper_name() {\n    value = inner_identifier\n  }\n  return outer_identifier\n}\n",
+        ];
+
+        for source in cases {
+            let formatted = format_source(source).unwrap();
+            assert_eq!(
+                ident_tokens(source),
+                ident_tokens(&formatted),
+                "gx fmt must never alter identifier tokens — source:\n{}\nformatted:\n{}",
+                source,
+                formatted
+            );
+        }
+    }
+
+    #[test]
+    // Regression test: `fmt_indent_syntax` (progressive-syntax formatting)
+    // used `line.trim_end()` to compute the trimmed line body, which only
+    // strips *trailing* whitespace — the line's original leading
+    // indentation stayed in that string and got written a second time
+    // right after the freshly computed indent, so every `gx fmt` pass on
+    // a progressive-syntax file grew its indentation instead of
+    // normalizing it. Found while manually verifying idempotency across
+    // the whole `tests/` corpus during this milestone, not something the
+    // existing single-fixture idempotency test below happened to cover
+    // (that fixture is brace-syntax).
+    fn fmt_indent_syntax_is_idempotent() {
+        let source = fs::read_to_string("tests/test_progressive_syntax.gx").unwrap();
+        let once = format_source(&source).unwrap();
+        let twice = format_source(&once).unwrap();
+        assert_eq!(
+            once, twice,
+            "a second gx fmt pass must not change indentation further"
+        );
+        // And a third pass, for good measure — the original bug compounded further.
+        let thrice = format_source(&twice).unwrap();
+        assert_eq!(twice, thrice);
     }
 
     #[test]
