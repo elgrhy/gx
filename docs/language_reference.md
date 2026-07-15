@@ -413,6 +413,11 @@ null
 // Null coalescing
 value ?? default_value
 
+// GX has no ternary operator — `cond ? a : b` is a parse error. `??`
+// only covers the null/default-value case; for a general conditional
+// expression, use `if`/`else` as a statement instead:
+//   if cond { result = a } else { result = b }
+
 // Assignment
 =  +=  -=  *=  /=
 

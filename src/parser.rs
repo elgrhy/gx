@@ -2038,7 +2038,7 @@ impl Parser {
         match self.peek_kind().clone() {
             TokenKind::StringLit(s) => {
                 self.advance();
-                Ok(parse_interpolated(s))
+                parse_interpolated(s)
             }
             TokenKind::NumberLit(n) => {
                 self.advance();
@@ -2369,9 +2369,14 @@ fn normalize_provider(s: &str) -> String {
 
 // ── String interpolation ──────────────────────────────────────────────────────
 
-fn parse_interpolated(s: String) -> Expr {
-    if !s.contains('{') {
-        return Expr::Str(s);
+fn parse_interpolated(s: String) -> Result<Expr, String> {
+    // Both `{{`/`}}` escapes are handled below; a string containing only
+    // `}}` and no `{` at all used to skip this whole function (the guard
+    // only checked for `{`), so `"}}"` round-tripped as two literal `}`
+    // characters instead of collapsing to one. Only strings with neither
+    // brace character can safely skip interpolation entirely.
+    if !s.contains('{') && !s.contains('}') {
+        return Ok(Expr::Str(s));
     }
     let mut parts = Vec::new();
     let mut literal = String::new();
@@ -2389,30 +2394,34 @@ fn parse_interpolated(s: String) -> Expr {
                 parts.push(InterpolatedPart::Literal(std::mem::take(&mut literal)));
             }
             i += 1;
-            // Collect the expression source, tracking nested braces and quoted strings
-            // so that `{"key": val}` inside an interpolation works correctly.
+            // Collect the expression source, tracking nested braces and
+            // quoted strings (both `"..."` and `'...'`) so that
+            // `{"key": val}` or `{arr.join(', ')}` inside an interpolation
+            // works correctly — a brace or the *other* quote character
+            // inside a quoted string must not be mistaken for the end of
+            // the interpolated expression.
             let mut expr_src = String::new();
             let mut depth = 1usize;
-            let mut in_str = false;
+            let mut in_str: Option<char> = None;
             let mut escape_next = false;
             while i < chars.len() {
                 let c = chars[i];
                 if escape_next {
                     expr_src.push(c);
                     escape_next = false;
-                } else if in_str {
+                } else if let Some(q) = in_str {
                     if c == '\\' {
                         expr_src.push(c);
                         escape_next = true;
-                    } else if c == '"' {
+                    } else if c == q {
                         expr_src.push(c);
-                        in_str = false;
+                        in_str = None;
                     } else {
                         expr_src.push(c);
                     }
-                } else if c == '"' {
+                } else if c == '"' || c == '\'' {
                     expr_src.push(c);
-                    in_str = true;
+                    in_str = Some(c);
                 } else if c == '{' {
                     depth += 1;
                     expr_src.push(c);
@@ -2428,6 +2437,16 @@ fn parse_interpolated(s: String) -> Expr {
                 }
                 i += 1;
             }
+            // Real GX code intentionally embeds non-expression content
+            // (raw JSON blobs, unbalanced braces) inside `{...}`-shaped
+            // string content without wanting it interpolated — e.g.
+            // `context_deserialize("{\"v\": 1}")` — and relies on this
+            // falling back to literal text rather than being rejected. So
+            // a `{...}` whose content isn't a single valid expression is
+            // not an error: it's re-emitted verbatim as literal text,
+            // exactly as if it had never been recognized as an
+            // interpolation at all. Only content that parses as a clean,
+            // complete expression is ever evaluated.
             match Lexer::new(&expr_src).tokenize() {
                 Ok(toks) => {
                     let mut p = Parser::new(toks);
@@ -2452,10 +2471,10 @@ fn parse_interpolated(s: String) -> Expr {
     }
     if parts.len() == 1 {
         if let InterpolatedPart::Literal(s) = &parts[0] {
-            return Expr::Str(s.clone());
+            return Ok(Expr::Str(s.clone()));
         }
     }
-    Expr::Interpolated(parts)
+    Ok(Expr::Interpolated(parts))
 }
 
 use crate::lexer::Lexer;
@@ -2467,6 +2486,53 @@ mod tests {
     fn parse(src: &str) -> Program {
         let tokens = Lexer::new(src).tokenize().expect("lex failed");
         Parser::new(tokens).parse().expect("parse failed")
+    }
+
+    fn parse_expr_src(src: &str) -> Expr {
+        let tokens = Lexer::new(src).tokenize().expect("lex failed");
+        Parser::new(tokens).parse_one_expr().expect("parse failed")
+    }
+
+    #[test]
+    // Regression test: `parse_interpolated`'s fast path only checked
+    // `s.contains('{')`, so a string containing only a doubled `}}` (no
+    // `{` at all) skipped the whole `{{`/`}}`-unescaping loop and
+    // round-tripped as two literal `}` characters instead of collapsing
+    // to one. This is exactly what made
+    // `"{{" + "x" + "}}"` produce `"{x}}"` (4 chars) instead of the
+    // correct `"{x}"` (3 chars) once the two literals are concatenated
+    // at runtime.
+    fn doubled_close_brace_with_no_open_brace_still_collapses() {
+        assert!(matches!(parse_expr_src(r#""}}""#), Expr::Str(s) if s == "}"));
+        assert!(matches!(parse_expr_src(r#""{{""#), Expr::Str(s) if s == "{"));
+    }
+
+    #[test]
+    fn interpolation_extraction_is_aware_of_both_quote_kinds() {
+        // A single-quoted string argument inside `{...}` interpolation
+        // must not be mistaken for the end of the interpolated
+        // expression, and a brace inside it must not perturb the depth
+        // count used to find the interpolation's real closing `}`.
+        match parse_expr_src(r#""{f('a}b')}""#) {
+            Expr::Interpolated(parts) => {
+                assert_eq!(parts.len(), 1);
+                assert!(matches!(&parts[0], InterpolatedPart::Expr(_)));
+            }
+            other => panic!("expected an interpolated call expression, got {:?}", other),
+        }
+    }
+
+    #[test]
+    // Regression test: real GX code (see
+    // `interpreter/builtins_ai_context.rs`'s
+    // `context_deserialize("{\"v\": 1}")` fixture) intentionally embeds
+    // JSON-shaped content inside a string literal without wanting it
+    // interpolated. `{...}` content that fails to parse as an expression
+    // must keep silently falling back to literal text — turning that
+    // into a hard compile error would break this real, exercised
+    // pattern, not just a hypothetical one.
+    fn non_expression_content_in_braces_falls_back_to_literal_text() {
+        assert!(matches!(parse_expr_src(r#""{\"v\": 1}""#), Expr::Str(s) if s == "{\"v\": 1}"));
     }
 
     #[test]

@@ -213,7 +213,15 @@ impl Lexer {
         }
     }
 
-    fn read_string(&mut self) -> Result<String, String> {
+    // `quote` is the delimiter that opened this string — `"` or `'`. GX
+    // treats both identically (same interpolation, same escapes); the only
+    // difference is which character terminates the literal and which one
+    // needs `\`-escaping inside it. Single-quote support exists so that a
+    // string interpolated inside a double-quoted string (e.g. a method
+    // argument in `"{arr.join(', ')}"`) doesn't need to escape its own
+    // quote character — see `parser.rs::parse_interpolated`, which tracks
+    // both quote kinds while extracting `{...}` expression source.
+    fn read_string(&mut self, quote: char) -> Result<String, String> {
         let line = self.line;
         let col = self.col;
         // consume opening quote
@@ -222,11 +230,11 @@ impl Lexer {
         loop {
             match self.advance() {
                 None => return Err(format!("Line {}, col {}: unterminated string", line, col)),
-                Some('"') => break,
+                Some(c) if c == quote => break,
                 Some('\\') => match self.advance() {
                     Some('n') => s.push('\n'),
                     Some('t') => s.push('\t'),
-                    Some('"') => s.push('"'),
+                    Some(c) if c == quote => s.push(quote),
                     Some('\\') => s.push('\\'),
                     Some(c) => {
                         s.push('\\');
@@ -406,8 +414,8 @@ impl Lexer {
                     self.advance();
                     tokens.push(Token::new(TokenKind::Newline, line, col));
                 }
-                Some('"') => {
-                    let s = self.read_string()?;
+                Some(q @ ('"' | '\'')) => {
+                    let s = self.read_string(q)?;
                     tokens.push(Token::new(TokenKind::StringLit(s), line, col));
                 }
                 Some(c) if c.is_ascii_digit() => {
@@ -549,9 +557,29 @@ impl Lexer {
                     if self.peek() == Some('>') {
                         self.advance();
                         tokens.push(Token::new(TokenKind::Pipe, line, col));
+                    } else if self.peek() == Some('|') {
+                        // `||` — symbolic alias for `or`, documented in the
+                        // language reference but never actually implemented;
+                        // both tokenize to the same `Or` kind the parser
+                        // already handles, so no grammar/AST change needed.
+                        self.advance();
+                        tokens.push(Token::new(TokenKind::Or, line, col));
                     } else {
                         return Err(format!(
-                            "Line {}, col {}: unexpected '|' (did you mean '|>'?)",
+                            "Line {}, col {}: unexpected '|' (did you mean '|>' or '||'?)",
+                            line, col
+                        ));
+                    }
+                }
+                Some('&') => {
+                    self.advance();
+                    if self.peek() == Some('&') {
+                        // `&&` — symbolic alias for `and`; see `||` above.
+                        self.advance();
+                        tokens.push(Token::new(TokenKind::And, line, col));
+                    } else {
+                        return Err(format!(
+                            "Line {}, col {}: unexpected '&' (did you mean '&&'?)",
                             line, col
                         ));
                     }
@@ -610,6 +638,56 @@ mod tests {
     fn test_string_literal() {
         let kinds = tok("\"hello world\"");
         assert_eq!(kinds[0], TokenKind::StringLit("hello world".into()));
+    }
+
+    #[test]
+    // Regression test: the language reference documents `&&`/`||` as
+    // operators, but only the `and`/`or` word forms actually tokenized
+    // before this fix — `&&`/`||` hit "unexpected character" errors.
+    fn double_ampersand_and_double_pipe_tokenize_like_and_or() {
+        let kinds = tok("true && false");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::BoolLit(true),
+                TokenKind::And,
+                TokenKind::BoolLit(false)
+            ]
+        );
+        let kinds = tok("true || false");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::BoolLit(true),
+                TokenKind::Or,
+                TokenKind::BoolLit(false)
+            ]
+        );
+    }
+
+    #[test]
+    fn single_ampersand_and_single_pipe_still_error_with_a_helpful_message() {
+        assert!(Lexer::new("a & b").tokenize().unwrap_err().contains("&&"));
+        assert!(Lexer::new("a | b").tokenize().unwrap_err().contains("|>"));
+    }
+
+    #[test]
+    // Regression test: single-quoted strings weren't supported at all
+    // (any `'` hit "unexpected character"), which is what made a method
+    // call with a quoted-string argument inside `{...}` string
+    // interpolation (e.g. `"{arr.join(', ')}"`) silently fail to parse as
+    // an expression and print the literal `{...}` text back out instead —
+    // see the AgentX feedback review, item 2.5.
+    fn single_quoted_strings_tokenize_the_same_as_double_quoted() {
+        let kinds = tok("'hello world'");
+        assert_eq!(kinds[0], TokenKind::StringLit("hello world".into()));
+    }
+
+    #[test]
+    fn single_quoted_strings_support_escapes_and_can_contain_double_quotes_unescaped() {
+        // GX source: 'it\'s "fine"'
+        let kinds = tok(r#"'it\'s "fine"'"#);
+        assert_eq!(kinds[0], TokenKind::StringLit("it's \"fine\"".into()));
     }
 
     #[test]
