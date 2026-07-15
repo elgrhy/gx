@@ -133,6 +133,7 @@ fn run() {
             let allow_internal_http = flag_args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = flag_args.contains(&"--no-sandbox".to_string());
             let no_limit = flag_args.contains(&"--no-limit".to_string());
+            let project_sandbox = flag_args.contains(&"--project-sandbox".to_string());
             let deny = match parse_deny_flags(flag_args) {
                 Ok(d) => d,
                 Err(e) => {
@@ -166,6 +167,7 @@ fn run() {
                 diagnostics,
                 break_lines,
                 script_args,
+                project_sandbox,
             )
         }
         "check" => {
@@ -336,6 +338,7 @@ fn run() {
             let allow_internal_http = flag_args.contains(&"--allow-internal-http".to_string());
             let no_sandbox = flag_args.contains(&"--no-sandbox".to_string());
             let no_limit = flag_args.contains(&"--no-limit".to_string());
+            let project_sandbox = flag_args.contains(&"--project-sandbox".to_string());
             let deny = match parse_deny_flags(flag_args) {
                 Ok(d) => d,
                 Err(e) => {
@@ -369,6 +372,7 @@ fn run() {
                 diagnostics,
                 break_lines,
                 script_args,
+                project_sandbox,
             )
         }
         cmd => {
@@ -412,6 +416,7 @@ fn cmd_run(
     diagnostics: diagnostics::Diagnostics,
     break_lines: std::collections::HashSet<usize>,
     script_args: Vec<String>,
+    project_sandbox: bool,
 ) -> Result<(), String> {
     // Support `gx run -` to read source from stdin (used by `gx build` launchers).
     let source = if path == "-" {
@@ -470,17 +475,38 @@ fn cmd_run(
     };
     let script_dir = std::fs::canonicalize(&script_dir).unwrap_or(script_dir);
 
-    // Sandbox: restrict file I/O to the directory containing the script.
+    // `--project-sandbox`: root file I/O at the nearest ancestor directory
+    // containing a `gx.json`, instead of the entry script's own directory.
+    // Without this, any project laid out in subdirectories (`agents/`,
+    // `lib/`, a shared `data/`) had no way to let an agent reach a
+    // sibling directory short of flattening the whole project to one
+    // level or dropping to `--no-sandbox` (which removes *all* path
+    // restriction, not just "trust this project") — there was nothing
+    // between "sandboxed to this exact script's own directory" and "no
+    // sandbox at all". Falls back to the script's own directory, exactly
+    // like the default, if no `gx.json` is found in any ancestor —
+    // opting in never *widens* access beyond what was asked for.
+    let sandbox_root = if project_sandbox {
+        find_project_root(&script_dir).unwrap_or_else(|| script_dir.clone())
+    } else {
+        script_dir.clone()
+    };
+
+    // Sandbox: restrict file I/O to the directory containing the script
+    // (or the discovered project root, with `--project-sandbox`).
     if !no_sandbox {
         interp.capabilities.filesystem =
-            capability::FilesystemAccess::Sandboxed(script_dir.clone());
+            capability::FilesystemAccess::Sandboxed(sandbox_root.clone());
     }
 
     // Load gx.json's dependency/capability declarations independent of
     // sandboxing — file-access confinement and the allowlists governing
     // bridges/AI/process/network are different concerns, and disabling one
-    // (`--no-sandbox`) must not silently disable the other.
-    load_capability_manifest(&mut interp.capabilities, &script_dir)?;
+    // (`--no-sandbox`) must not silently disable the other. Loaded from
+    // the same root as the sandbox: with `--project-sandbox`, a gx.json
+    // that lives at the project root (rather than beside this exact
+    // script) is now actually reachable, which it never was before.
+    load_capability_manifest(&mut interp.capabilities, &sandbox_root)?;
 
     for resource in deny {
         interp.capabilities.deny(resource);
@@ -893,7 +919,7 @@ fn require_arg<'a>(args: &'a [String], idx: usize, usage: &str) -> &'a str {
 /// command, not two that can drift apart.
 fn command_usage(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
-        "run" => "gx run <file.gx> [--debug] [--break line1,line2,...] [--allow-shell] [--allow-process] [--allow-internal-http] [--no-sandbox] [--no-limit] [--deny <resource>] [--trace] [--log-level <level>] [-- script-args...]",
+        "run" => "gx run <file.gx> [--debug] [--break line1,line2,...] [--allow-shell] [--allow-process] [--allow-internal-http] [--no-sandbox] [--project-sandbox] [--no-limit] [--deny <resource>] [--trace] [--log-level <level>] [-- script-args...]",
         "debug" => "gx debug <file.gx> [--break line1,line2,...] [--trace] [--log-level <level>] [-- script-args...] — alias for `gx run` with the Debugger Runtime available (see also the breakpoint() builtin)",
         "check" => "gx check <file.gx> [file2.gx ...]",
         "init" | "new" => "gx init <project-name>",
@@ -984,6 +1010,23 @@ fn parse_log_level(s: &str) -> Result<crate::diagnostics::Level, String> {
     })
 }
 
+/// Walk upward from `start` (inclusive) looking for the nearest ancestor
+/// directory containing a `gx.json` — the project root `--project-sandbox`
+/// sandboxes to, instead of `gx run`'s default of the entry script's own
+/// directory. Returns `None` if no ancestor has one (including when the
+/// filesystem root is reached without a match), so callers can fall back
+/// to the existing default rather than silently widening access.
+fn find_project_root(start: &Path) -> Option<std::path::PathBuf> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        if d.join("gx.json").is_file() {
+            return Some(d.to_path_buf());
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 /// Load `gx.json` from `dir` (if present) and apply it to `capabilities` —
 /// shared by `cmd_run` and `cmd_eval` so both behave identically instead of
 /// only one of them honoring the manifest. Deliberately independent of
@@ -1022,6 +1065,7 @@ fn print_help() {
         "  gx run <file.gx> --allow-internal-http         Allow HTTP to private/localhost IPs"
     );
     println!("  gx run <file.gx> --no-sandbox                  Disable file-path sandboxing");
+    println!("  gx run <file.gx> --project-sandbox             Sandbox to the nearest ancestor directory with a gx.json, not just this script's own directory");
     println!("  gx run <file.gx> --deny <resource>             Force-deny a capability, overriding gx.json (repeatable)");
     println!("  gx run <file.gx> --no-limit                    Remove while-loop iteration cap (for REPLs, infinite I/O loops)");
     println!("  gx run <file.gx> -- arg1 arg2                  Pass script arguments, readable inside the script via argv()");
@@ -1236,6 +1280,105 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(parse_deny_flags(&args).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn find_project_root_locates_gx_json_in_an_ancestor_directory() {
+        let root =
+            std::env::temp_dir().join(format!("gx_find_project_root_test_{}", std::process::id()));
+        let nested = root.join("agents").join("sub");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.join("gx.json"), "{}").unwrap();
+
+        assert_eq!(find_project_root(&nested), Some(root.clone()));
+        // The starting directory itself counts too, not just ancestors.
+        assert_eq!(find_project_root(&root), Some(root.clone()));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn find_project_root_returns_none_when_no_ancestor_has_a_gx_json() {
+        let dir = std::env::temp_dir().join(format!(
+            "gx_find_project_root_none_test_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        // No gx.json anywhere under this fresh temp-dir subtree; walking up
+        // from here will eventually reach the real filesystem root, which
+        // (in any sane test environment) has no gx.json either.
+        assert_eq!(find_project_root(&dir), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    // Regression/integration test (CLI level) for a real reported gap
+    // (AgentX feedback, 2026-07, item 2.2): a project laid out in
+    // subdirectories (agents/, lib/, a shared data/) had no way to let
+    // an agent in agents/ reach data/ short of flattening the whole
+    // project to one directory or dropping to --no-sandbox (which
+    // removes *all* path restriction). Lays out exactly that shape and
+    // confirms --project-sandbox (rooted at the gx.json two levels up)
+    // lets the agent read a sibling directory that plain sandboxing
+    // (rooted at agents/ itself) still correctly blocks.
+    fn project_sandbox_lets_a_nested_script_reach_a_sibling_data_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "gx_project_sandbox_cli_test_{}",
+            std::process::id()
+        ));
+        let agents_dir = root.join("agents");
+        let data_dir = root.join("data");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(root.join("gx.json"), "{}").unwrap();
+        fs::write(data_dir.join("shared.txt"), "hello from data/").unwrap();
+
+        // A relative path (not absolute) — `resolve_path` joins a
+        // relative path onto the sandbox's *base* directory (project
+        // root, with --project-sandbox; the script's own directory,
+        // without it), not onto the script's own directory. This also
+        // sidesteps a spurious mismatch on platforms where the system
+        // temp dir itself is a symlink (e.g. macOS's /var ->
+        // /private/var) that an absolute path's own
+        // no-symlink-following normalization wouldn't resolve the same
+        // way the sandbox's already-canonicalized base directory did.
+        let script_path = agents_dir.join("reader.gx");
+        fs::write(
+            &script_path,
+            "content = read_file(\"data/shared.txt\")\nsay content\n",
+        )
+        .unwrap();
+
+        // Plain sandboxing (rooted at agents/, the script's own directory)
+        // must still block reaching data/ — this flag must not be a
+        // blanket widening.
+        let without_flag = std::process::Command::new(gx_binary_path())
+            .arg("run")
+            .arg(&script_path)
+            .output()
+            .expect("failed to spawn gx binary");
+        assert!(
+            !without_flag.status.success(),
+            "without --project-sandbox, a sibling directory must still be blocked"
+        );
+
+        // --project-sandbox (rooted at gx.json, one level up from agents/)
+        // must allow it.
+        let with_flag = std::process::Command::new(gx_binary_path())
+            .arg("run")
+            .arg(&script_path)
+            .arg("--project-sandbox")
+            .output()
+            .expect("failed to spawn gx binary");
+        assert!(
+            with_flag.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&with_flag.stdout),
+            String::from_utf8_lossy(&with_flag.stderr)
+        );
+        assert!(String::from_utf8_lossy(&with_flag.stdout).contains("hello from data/"));
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

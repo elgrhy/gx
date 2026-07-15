@@ -2122,8 +2122,19 @@ GX already used for `dependencies.js`/`dependencies.py`.
 | `--allow-process` | Enable `process_run`/`process_spawn` (independent of `--allow-shell`) |
 | `--allow-internal-http` | Allow HTTP to private/localhost IPs |
 | `--no-sandbox` | Disable file-path sandboxing |
+| `--project-sandbox` | Sandbox to the nearest ancestor directory with a `gx.json`, instead of just this script's own directory (falls back to the default if no ancestor has one — never widens access beyond what was asked for) |
 | `--deny <resource>` | Force-deny a resource, overriding everything else (repeatable) |
 | `--no-limit` | Remove while-loop iteration cap |
+
+`--project-sandbox` exists for a project laid out in subdirectories
+(`agents/`, `lib/`, a shared `data/`) where an agent needs to reach a
+sibling directory it wouldn't otherwise be able to under the default
+per-script sandboxing — a level of access between "sandboxed to this
+exact script's own directory" and `--no-sandbox`'s "no path restriction
+at all". `gx.json`'s own capability/dependency declarations are loaded
+from that same discovered root when the flag is used, so a manifest
+that lives at the project root (rather than beside every individual
+script) is now actually reachable too.
 
 `--deny` always wins — not even `--allow-shell` can override a matching
 `--deny shell`. It exists for the operator invoking `gx` (a deployment
