@@ -48,18 +48,32 @@ use crate::parser::Parser;
 
 /// Returns true if the source should be parsed with the indentation-based parser.
 ///
-/// Detection uses **positive indicators** rather than the absence of braces so
-/// that a valid brace-syntax file that happens to have no braces (e.g. only
+/// Detection uses a **positive indicator on the file's first significant line**
+/// rather than scanning the whole file, and rather than the absence of braces —
+/// so that a valid brace-syntax file that happens to have no braces (e.g. only
 /// variable assignments) is never mis-detected as progressive syntax.
 ///
-/// A file is progressive if **any** of the following are true:
-/// 1. It starts with an un-quoted `Agent Name` or `Helper Name` declaration
-///    (no `"`, no `{` on the same line as the keyword).
-/// 2. It contains a brain-cycle keyword alone on a line followed by a colon:
-///    `Plan:`, `Execute:`, `Remember:`, `Communicate:`.
-/// 3. It contains an `On start:` or `On <expr>:` block header.
+/// Every real progressive-syntax construct (`Plan:`/`Execute:`/`Remember:`/
+/// `Communicate:`, `On start:`, named behavior blocks) only ever appears
+/// *under* an `Agent`/`Helper` header — see every example in this module's
+/// doc comment and every fixture in `tests/`. So the file is progressive if
+/// and only if its first non-blank, non-comment line is:
+/// 1. An un-quoted `Agent Name` or `Helper Name` declaration (no `"`, no `{`
+///    on the same line as the keyword), or
+/// 2. A bare `Agent` / `Helper` keyword with no name (level-1 minimal syntax
+///    where the agent block has no body header).
+///
+/// This used to scan **every** line of the file for those two patterns plus
+/// two more (a bare `plan:`/`execute:`/`remember:`/`communicate:` line, or an
+/// `on ...:` line) anywhere at all — which meant a brace-syntax file with a
+/// line shaped like `On error:` in a comment, a multi-line string, or an
+/// object-literal key *anywhere in the file* (not just the top) would
+/// silently reroute the **entire file** to this parser, which then silently
+/// drops any top-level construct it doesn't recognize (see
+/// `parse_top_level`). Checking only the first real line closes that hole:
+/// a brace-syntax file can contain any of those shapes deep inside a
+/// function body without the file's parse mode changing underneath it.
 pub fn is_indent_syntax(source: &str) -> bool {
-    let brain_keywords = ["plan:", "execute:", "remember:", "communicate:"];
     for raw in source.lines() {
         let t = raw.trim();
         if t.is_empty() || t.starts_with("//") {
@@ -67,29 +81,19 @@ pub fn is_indent_syntax(source: &str) -> bool {
         }
         let lower = t.to_lowercase();
 
-        // Positive indicator 1: unquoted Agent/Helper declaration
+        // Unquoted Agent/Helper declaration: `Agent name` / `Helper name`
         if lower.starts_with("agent ") || lower.starts_with("helper ") {
             let rest = t[t.find(' ').unwrap_or(0) + 1..].trim_start();
-            if !rest.starts_with('"') && !rest.starts_with('{') {
-                return true;
-            }
+            return !rest.starts_with('"') && !rest.starts_with('{');
         }
 
-        // Positive indicator 2: brain-cycle section header alone on a line
-        if brain_keywords.iter().any(|kw| lower == *kw) {
-            return true;
+        // Bare `Agent` / `Helper` keyword with no name (level-1 minimal syntax)
+        if lower == "agent" || lower == "helper" {
+            return !t.contains('{');
         }
 
-        // Positive indicator 3: On start: / On <expr>: event header
-        if lower.starts_with("on ") && lower.ends_with(':') {
-            return true;
-        }
-
-        // Positive indicator 4: bare `Agent` / `Helper` keyword with no name
-        // (level-1 minimal syntax where agent block has no body header)
-        if (lower == "agent" || lower == "helper") && !t.contains('{') {
-            return true;
-        }
+        // Any other first real line means brace syntax.
+        return false;
     }
     false
 }
@@ -685,8 +689,17 @@ pub fn parse(source: &str) -> Result<Program, String> {
     while idx < lines.len() {
         let line = &lines[idx];
         if line.indent != 0 {
-            idx += 1;
-            continue;
+            // By the time control returns here, `parse_agent` has already
+            // consumed every line belonging to the agent/helper block it
+            // parsed, so a stray indented line at this point is always a
+            // real structural mistake (e.g. content indented under nothing,
+            // or a block whose header line wasn't recognized) — silently
+            // skipping it used to hide the mistake entirely instead of
+            // reporting it.
+            return Err(format!(
+                "Line {}: unexpected indentation on `{}` — expected a top-level `import`, `use`, `agent`, or `helper` declaration",
+                line.no, line.text
+            ));
         }
         let lower = line.text.to_lowercase();
 
@@ -724,7 +737,17 @@ pub fn parse(source: &str) -> Result<Program, String> {
             functions.extend(new_fns);
             idx = new_idx;
         } else {
-            idx += 1;
+            // Progressive syntax only recognizes `import`, `use`, `agent`,
+            // and `helper` at the top level. This used to be `idx += 1`
+            // (silently skip and move on), which meant a whole top-level
+            // construct the parser didn't recognize — including an entire
+            // brace-syntax file misrouted here by an over-eager
+            // `is_indent_syntax` match — would vanish with no error and no
+            // warning, producing a program that silently did nothing.
+            return Err(format!(
+                "Line {}: unrecognized top-level statement `{}` — progressive syntax only allows `import`, `use`, `agent`, or `helper` at the top level",
+                line.no, line.text
+            ));
         }
     }
 
@@ -1159,6 +1182,71 @@ On start:
     fn test_detect_indent_syntax() {
         assert!(is_indent_syntax("Agent greeter\nname = \"World\"\n"));
         assert!(!is_indent_syntax("agent \"greeter\" {\n}\n"));
+    }
+
+    #[test]
+    // Regression test for a real production bug (AgentX feedback, 2026-07):
+    // a brace-syntax file using `agent` as a plain variable name deep inside
+    // a function body used to misroute the *entire file* to the indentation
+    // parser, because `is_indent_syntax` scanned every line instead of just
+    // the first. The file would then silently parse to an empty program and
+    // exit 0 with no output. See `Cargo.toml`/CHANGELOG for the fix.
+    fn is_indent_syntax_ignores_agent_as_a_variable_name_deep_in_a_brace_file() {
+        let src = r#"function f() {
+  flag = false
+  agent = "*"
+  flag = (agent == "*")
+  say flag
+}
+f()
+"#;
+        assert!(!is_indent_syntax(src));
+    }
+
+    #[test]
+    // Same class of bug as above, triggered via the `Plan:`/`Execute:`/
+    // `Remember:`/`Communicate:`/`On ...:` indicators instead of `agent`:
+    // any of these shapes appearing anywhere in a brace-syntax file (inside
+    // a string, an object-literal key, etc.) used to misroute the whole
+    // file. They must now only matter as the file's very first line.
+    fn is_indent_syntax_ignores_brain_keywords_and_on_lines_deep_in_a_brace_file() {
+        let msg = r#"function retry_logic() {
+  message = "On error: retry the request"
+  say message
+}
+retry_logic()
+"#;
+        assert!(!is_indent_syntax(msg));
+
+        let obj = r#"function build_step() {
+  step = {
+    execute:
+      true
+  }
+  say step
+}
+build_step()
+"#;
+        assert!(!is_indent_syntax(obj));
+    }
+
+    #[test]
+    // `parse()`'s top-level loop used to silently skip (`idx += 1`) any
+    // top-level line it didn't recognize as `import`/`use`/`agent`/`helper`,
+    // producing an empty `Program` with no error at all. A bare `Agent`
+    // token with no name (matched by `is_indent_syntax`'s "level-1 minimal
+    // syntax" indicator, but never actually handled by `parse_agent`, which
+    // always expects a name after `agent `) is a reliable way to reach that
+    // branch: it must now be a clear error instead of a silently empty
+    // program that exits 0.
+    fn parse_errors_on_an_unrecognized_top_level_line_instead_of_silently_dropping_it() {
+        let src = "Agent\nsay \"hi\"\n";
+        let err = parse(src).unwrap_err();
+        assert!(
+            err.contains("unrecognized top-level statement"),
+            "expected a clear top-level error, got: {}",
+            err
+        );
     }
 
     #[test]
