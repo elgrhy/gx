@@ -150,8 +150,32 @@ fn run() {
             )
         }
         "check" => {
-            let file = require_arg(&args, 2, "gx check <file.gx>");
-            cmd_check(file)
+            // `require_arg` still gives the usual "missing argument" error
+            // when no file was given at all; beyond that, every remaining
+            // positional argument is its own file to check — this used to
+            // silently check only `args[2]` and drop `args[3..]` with no
+            // error or notice, so `gx check a.gx b.gx c.gx` only ever
+            // covered `a.gx`.
+            require_arg(&args, 2, "gx check <file.gx> [file2.gx ...]");
+            let files = &args[2..];
+            let mut failed: Vec<&str> = Vec::new();
+            for f in files {
+                if let Err(e) = cmd_check(f) {
+                    eprintln!("{}", e);
+                    failed.push(f.as_str());
+                }
+            }
+            if failed.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{} of {} file{} failed checks: {}",
+                    failed.len(),
+                    files.len(),
+                    if files.len() == 1 { "" } else { "s" },
+                    failed.join(", ")
+                ))
+            }
         }
         "init" | "new" => {
             let name = require_arg(&args, 2, "gx init <project-name>");
@@ -842,7 +866,7 @@ fn command_usage(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
         "run" => "gx run <file.gx> [--debug] [--break line1,line2,...] [--allow-shell] [--allow-process] [--allow-internal-http] [--no-sandbox] [--no-limit] [--deny <resource>] [--trace] [--log-level <level>]",
         "debug" => "gx debug <file.gx> [--break line1,line2,...] [--trace] [--log-level <level>] — alias for `gx run` with the Debugger Runtime available (see also the breakpoint() builtin)",
-        "check" => "gx check <file.gx>",
+        "check" => "gx check <file.gx> [file2.gx ...]",
         "init" | "new" => "gx init <project-name>",
         "build" => "gx build <file.gx> [-o <name>] [--allow-shell] [--allow-process] [--allow-internal-http] [--deny <resource>]",
         "install" => "gx install [<js.pkg|py.pkg>] [--offline]",
@@ -973,7 +997,7 @@ fn print_help() {
     println!("  gx run <file.gx> --no-limit                    Remove while-loop iteration cap (for REPLs, infinite I/O loops)");
     println!("  gx debug <file.gx> [--break line1,line2,...]   Run with the interactive debugger (also: the breakpoint() builtin)");
     println!("  gx -e '<source>'                       Run inline GX source (no temp file)");
-    println!("  gx check <file.gx>                     Check syntax + static diagnostics (dead agents, bad spawn targets, SQL concat, ...) without running");
+    println!("  gx check <file.gx> [file2.gx ...]      Check syntax + static diagnostics (dead agents, bad spawn targets, SQL concat, ...) without running");
     println!("  gx init <name>                         Create a new GX project");
     println!("  gx build <file.gx> [-o name] [--allow-shell|--allow-process|--allow-internal-http|--deny <r>]");
     println!("                                          Build standalone launcher (capability flags baked in)");
@@ -1317,6 +1341,59 @@ mod tests {
         let src = "function f() {\n  return 1\n}\n";
         let program = parse_file(src, "<test>").unwrap();
         assert!(program_needs_full_run(&program));
+    }
+
+    #[test]
+    // Regression test: `gx check a.gx b.gx c.gx` used to only read
+    // `args[2]` (via `require_arg`) and silently drop every file after
+    // the first — no error, no "ignoring N more files" notice, just
+    // reduced coverage nobody would notice in CI. It must now check
+    // every file given and fail if any one of them has an error, while
+    // still reporting each file's own findings.
+    fn check_processes_every_file_argument_not_just_the_first() {
+        let dir =
+            std::env::temp_dir().join(format!("gx_check_multi_file_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.gx");
+        let bad = dir.join("bad.gx");
+        fs::write(&good, "function f() {\n  return 1\n}\n").unwrap();
+        // Malformed enough to trip a `gx check` parse error, not just a warning.
+        fs::write(&bad, "function f( {\n  return 1\n}\n").unwrap();
+
+        // Two good files: must succeed, and the output must mention both.
+        let out_both_good = std::process::Command::new(gx_binary_path())
+            .arg("check")
+            .arg(&good)
+            .arg(&good)
+            .output()
+            .expect("failed to spawn gx binary");
+        assert!(
+            out_both_good.status.success(),
+            "checking two valid files should succeed"
+        );
+        let stdout_both_good = String::from_utf8_lossy(&out_both_good.stdout);
+        assert_eq!(
+            stdout_both_good.matches("OK").count(),
+            2,
+            "each file argument must be checked and reported, not just the first: {}",
+            stdout_both_good
+        );
+
+        // A good file followed by a bad one: the bad one's error must
+        // surface and the process must fail, proving the second argument
+        // was actually checked rather than silently ignored.
+        let out_second_bad = std::process::Command::new(gx_binary_path())
+            .arg("check")
+            .arg(&good)
+            .arg(&bad)
+            .output()
+            .expect("failed to spawn gx binary");
+        assert!(
+            !out_second_bad.status.success(),
+            "an error in the *second* file argument must fail the command"
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
