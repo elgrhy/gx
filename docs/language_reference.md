@@ -1090,14 +1090,31 @@ easy to get off-by-one wrong (forgetting the `+ 1`, or not flooring).
 
 | Function | Description |
 |---|---|
-| `date_now()` | Current time as ISO 8601 string |
-| `date_timestamp()` | Current Unix timestamp (ms) |
-| `date_parse(str)` | Parse date string → Unix timestamp |
-| `date_format(ts, fmt)` | Format timestamp with strftime pattern |
-| `date_diff(a, b, unit)` | Difference in `"days"`, `"hours"`, `"minutes"`, `"seconds"` |
-| `date_add(ts, n, unit)` | Add n units to timestamp |
-| `date_parts(ts)` | Object: `{ year, month, day, hour, minute, second, weekday }` |
-| `date_from_parts(obj)` | Build timestamp from parts object |
+| `date_now()` | Current time as an ISO-8601 string |
+| `date_timestamp()` | Current Unix timestamp, in **seconds** |
+| `date_parse(str, format?)` | Parse a date string → Unix timestamp (number). Auto-detects ISO-8601/RFC 2822 and several common formats with no `format`; pass a strftime pattern (e.g. `"%Y-%m-%d"`) for anything else |
+| `date_format(date, fmt?)` | Format a timestamp or date string with a strftime pattern (default `"%Y-%m-%d"`) |
+| `date_diff(a, b, unit)` | Difference in `"seconds"`, `"minutes"`, `"hours"`, `"days"`, `"weeks"`, `"months"`, `"years"` |
+| `date_add(date, n, unit)` | Add `n` `unit`s to a date — **always returns a Unix timestamp (number)**, even when `date` was an ISO string. See the callout below. |
+| `date_add_iso(date, n, unit)` | Same arithmetic as `date_add`, but always returns an ISO-8601 string — the recommended function when the result will be stored or compared as a string (e.g. alongside `date_now()` in a `next_action_at` column) |
+| `date_parts(date)` | Object: `{ year, month, day, hour, minute, second, weekday, weekday_name, timestamp, iso }` |
+| `date_from_parts(year, month, day, hour?, minute?, second?)` | Build a Unix timestamp from individual parts |
+
+Every function above **accepts** either a Unix timestamp or an ISO-8601
+string as a date argument, interchangeably. On the **output** side,
+though, only `date_now()` (and the `.iso`/`.weekday_name` fields of
+`date_parts()`) return a string — `date_add`, `date_parse`, and
+`date_from_parts` all return a plain number, matching this module's
+internal canonical representation rather than whatever shape you gave
+it. This is easy to trip over: `date_add(date_now(), 4, "days")` takes
+a string in and silently hands back a number, and storing that number
+into a column that otherwise holds ISO strings — then comparing it
+against another `date_now()` value — produces a **string comparison**
+between a numeric-looking string and an ISO string, which is silently
+always true (`"1784369596"` sorts before any `"2026-..."` string
+lexicographically) regardless of the real date. Use `date_add_iso`
+instead of `date_add` (or wrap it: `date_parts(date_add(...)).iso`)
+whenever the result needs to stay string-typed.
 
 ### Array Methods
 

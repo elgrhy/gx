@@ -129,6 +129,31 @@ pub fn date_diff_impl(args: &[Value]) -> Result<Value, Signal> {
 }
 
 /// date_add(date, amount, unit) → Unix timestamp (number)
+///
+/// **This does not round-trip its own input's representation.** Every
+/// other date-producing builtin in this module deals in ISO-8601 strings
+/// (`date_now()`, and `date_parts(...).iso`) except this one and
+/// `date_parse`/`date_from_parts`, which are numeric-timestamp-canonical
+/// like the rest of the module's *internal* representation — it's only
+/// `date_now()` that's the odd one out on the *output* side, even though
+/// every function here accepts either shape on *input* (see
+/// `to_timestamp`). Concretely: `date_add(date_now(), 4, "days")` takes a
+/// string and returns a number — a real, reported bug (AgentX feedback,
+/// 2026-07, item 1.2), because storing that number into a column that
+/// otherwise holds ISO strings and later comparing it against
+/// `date_now()` in SQL produces a **string comparison** between a
+/// numeric-looking string and an ISO string, which is silently always
+/// true (`"1784369596"` sorts before any `"2026-..."` string
+/// lexicographically) regardless of the real date — a follow-up action
+/// fires immediately instead of after N days, with no error anywhere.
+///
+/// Changing `date_add`'s return type is a breaking change for any
+/// existing call site relying on the current numeric result (arithmetic
+/// on it, storing it in a numeric column, comparing it to
+/// `date_timestamp()`), so it stays as-is here. Use [`date_add_iso_impl`]
+/// (the `date_add_iso` builtin) instead when you want the safe,
+/// string-in-string-out behavior — or wrap this call:
+/// `date_parts(date_add(...)).iso`.
 pub fn date_add_impl(args: &[Value]) -> Result<Value, Signal> {
     let ts = to_timestamp(args.first().unwrap_or(&Value::Null), "date_add")?;
     let amount =
@@ -157,6 +182,29 @@ pub fn date_add_impl(args: &[Value]) -> Result<Value, Signal> {
     };
 
     Ok(Value::Number((ts + secs) as f64))
+}
+
+/// date_add_iso(date, amount, unit) → ISO-8601 string
+///
+/// Same arithmetic as `date_add`, but always returns an ISO-8601 string —
+/// matching `date_now()`'s representation, so the common
+/// `date_add_iso(date_now(), 4, "days")` round-trips string-in-string-out
+/// with no separate `date_parts(...).iso` unwrap needed. This is the
+/// recommended function for computing a future/past date to store or
+/// compare as a string (e.g. a `next_action_at` column also populated by
+/// `date_now()`); see `date_add_impl`'s doc for why `date_add` itself
+/// keeps its existing numeric return instead of changing to match.
+pub fn date_add_iso_impl(args: &[Value]) -> Result<Value, Signal> {
+    match date_add_impl(args)? {
+        Value::Number(ts) => {
+            let dt = Utc
+                .timestamp_opt(ts as i64, 0)
+                .single()
+                .ok_or_else(|| Signal::Error(format!("date_add_iso: invalid timestamp {}", ts)))?;
+            Ok(Value::Str(dt.to_rfc3339()))
+        }
+        other => Ok(other),
+    }
 }
 
 /// date_parts(date) → { year, month, day, hour, minute, second, weekday, timestamp }
@@ -243,4 +291,62 @@ fn parse_with_format(s: &str, fmt: &str) -> Result<Value, Signal> {
         "date_parse: cannot parse '{}' with format '{}'",
         s, fmt
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    // Confirms the exact type asymmetry from the AgentX feedback (item
+    // 1.2): date_now() -> string, but date_add(that string, ...) ->
+    // number, even though date_add happily *accepts* a string as input.
+    // This isn't being changed (see date_add_impl's doc for why), so this
+    // test exists to pin the current, documented behavior rather than
+    // let it drift silently.
+    fn date_add_returns_a_number_even_when_given_a_string_input() {
+        let now = date_now_impl().unwrap();
+        assert!(matches!(now, Value::Str(_)));
+        let future = date_add_impl(&[now, Value::Number(4.0), Value::Str("days".into())]).unwrap();
+        assert!(
+            matches!(future, Value::Number(_)),
+            "date_add's return type is documented as staying numeric; got {:?}",
+            future
+        );
+    }
+
+    #[test]
+    // date_add_iso is the recommended fix for the above: string in,
+    // string out, matching date_now()'s own representation, so a
+    // round-trip like `next_action_at = date_add_iso(date_now(), 4,
+    // "days")` stays comparable against another date_now() value in a
+    // string-typed store.
+    fn date_add_iso_round_trips_a_string_input_to_a_string_output() {
+        let now = date_now_impl().unwrap();
+        let future =
+            date_add_iso_impl(&[now, Value::Number(4.0), Value::Str("days".into())]).unwrap();
+        let Value::Str(iso) = future else {
+            panic!("expected date_add_iso to return a string, got {:?}", future);
+        };
+        // Must actually be a valid ISO-8601/RFC3339 string, not just any string.
+        assert!(DateTime::parse_from_rfc3339(&iso).is_ok());
+    }
+
+    #[test]
+    fn date_add_iso_is_four_days_after_date_now() {
+        let now_ts = date_timestamp_impl().unwrap();
+        let Value::Number(now_secs) = now_ts else {
+            unreachable!()
+        };
+        let now_iso = date_now_impl().unwrap();
+        let future =
+            date_add_iso_impl(&[now_iso, Value::Number(4.0), Value::Str("days".into())]).unwrap();
+        let Value::Str(iso) = future else {
+            panic!("expected a string");
+        };
+        let future_ts = DateTime::parse_from_rfc3339(&iso).unwrap().timestamp() as f64;
+        // Allow a couple of seconds of slack between date_timestamp_impl()
+        // and date_now_impl()'s own `Utc::now()` calls.
+        assert!((future_ts - (now_secs + 4.0 * 86_400.0)).abs() < 5.0);
+    }
 }

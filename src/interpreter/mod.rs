@@ -69,8 +69,8 @@ use builtins_data::{
     toml_stringify_impl, yaml_parse_impl, yaml_stringify_impl,
 };
 use builtins_datetime::{
-    date_add_impl, date_diff_impl, date_format_impl, date_from_parts_impl, date_now_impl,
-    date_parse_impl, date_parts_impl, date_timestamp_impl,
+    date_add_impl, date_add_iso_impl, date_diff_impl, date_format_impl, date_from_parts_impl,
+    date_now_impl, date_parse_impl, date_parts_impl, date_timestamp_impl,
 };
 use builtins_db::{db_exec_on_conn, db_query_on_conn};
 #[cfg(not(target_arch = "wasm32"))]
@@ -4708,6 +4708,8 @@ impl Interpreter {
             #[cfg(not(target_arch = "wasm32"))]
             "date_add" => date_add_impl(&args),
             #[cfg(not(target_arch = "wasm32"))]
+            "date_add_iso" => date_add_iso_impl(&args),
+            #[cfg(not(target_arch = "wasm32"))]
             "date_parts" => date_parts_impl(&args),
             #[cfg(not(target_arch = "wasm32"))]
             "date_from_parts" => date_from_parts_impl(&args),
@@ -8182,6 +8184,7 @@ const KNOWN_BUILTINS: &[&str] = &[
     "date_format",
     "date_diff",
     "date_add",
+    "date_add_iso",
     "date_parts",
     "csv_parse",
     "csv_stringify",
