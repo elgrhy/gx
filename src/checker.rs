@@ -85,6 +85,14 @@ impl AgentMeta {
 
 struct Analysis<'a> {
     metas: &'a HashMap<String, AgentMeta>,
+    /// Needed only for the bare-identifier-statement lint below, to
+    /// distinguish the legitimate "auto-call a zero-arg behavior"
+    /// pattern (`CheckMath` alone on a line) from a discarded,
+    /// no-op identifier — the same map, and the same
+    /// `params.is_empty()` condition, `run_stmt_inner`'s real
+    /// auto-call special case uses at runtime, so a finding here can
+    /// never disagree with actual behavior.
+    functions: &'a HashMap<String, FunctionDef>,
     findings: Vec<Finding>,
     referenced: HashSet<String>,
     current_line: usize,
@@ -92,9 +100,67 @@ struct Analysis<'a> {
 
 impl<'a> Analysis<'a> {
     fn walk_stmts(&mut self, stmts: &[Stmt]) {
-        for s in stmts {
+        // The *last* statement in any block is never flagged by the
+        // bare-identifier lint below: `run_stmts` returns whatever the
+        // last statement evaluated to, which is how a function body,
+        // an `if`/`else` branch, and — most commonly — a `brain{}`
+        // phase's `communicate { result }` all produce their value with
+        // no explicit `return`. A bare identifier in that position is
+        // an idiomatic implicit return, not discarded dead code; only a
+        // *non-last* one is unambiguously inert.
+        let last_idx = stmts.len().saturating_sub(1);
+        for (i, s) in stmts.iter().enumerate() {
+            if i != last_idx {
+                self.check_dead_bare_ident_statement(s);
+            }
             self.walk_stmt(s);
         }
+    }
+
+    /// See `walk_stmts`'s comment on why only a *non-last* statement is
+    /// ever checked here.
+    fn check_dead_bare_ident_statement(&mut self, stmt: &Stmt) {
+        let Stmt::Expr {
+            expr: Expr::Ident(name),
+            ..
+        } = stmt
+        else {
+            return;
+        };
+        // The one legitimate reason a bare identifier appears as a whole
+        // statement is progressive syntax's "named behavior" auto-call
+        // sugar (`CheckMath` alone on a line calls the zero-arg function
+        // `CheckMath`) — the same condition (`self.functions`, zero
+        // params) the real runtime auto-call special case in
+        // `run_stmt_inner` checks, so this can never flag something the
+        // interpreter itself treats as a call. `memory`/`remember` are
+        // also excluded: bare `memory` is an unusual but not meaningless
+        // read of the whole memory object, and `remember` is aliased to
+        // it (see `Expr::Ident`'s own handling).
+        let is_zero_arg_behavior = self
+            .functions
+            .get(name)
+            .map(|f| f.params.is_empty())
+            .unwrap_or(false);
+        if is_zero_arg_behavior || name == "memory" || name == "remember" {
+            return;
+        }
+        // A real, reported bug is exactly this shape: `write "x"` (no
+        // parens; `write` is a plain builtin, not statement-level
+        // grammar like `say`/`log`) doesn't parse as one malformed call —
+        // it silently parses as *two* adjacent, independently-discarded
+        // statements: `write` alone, then `"x"` alone. Both evaluate to
+        // a value nobody reads and produce no error or output — a
+        // script can look completely correct and silently do nothing.
+        self.findings.push(Finding {
+            severity: Severity::Warning,
+            message: format!(
+                "`{name}` on its own has no effect — its value is discarded, and it isn't a \
+                 zero-argument function to auto-call. If you meant to call it, use \
+                 `{name}(...)`; if this is leftover from editing, remove it."
+            ),
+            line: stmt_line(stmt),
+        });
     }
 
     fn walk_stmt(&mut self, stmt: &Stmt) {
@@ -527,6 +593,7 @@ pub fn check_program(
 
     let mut analysis = Analysis {
         metas: &metas,
+        functions,
         findings: Vec::new(),
         referenced: HashSet::new(),
         current_line: 0,
@@ -912,5 +979,100 @@ agent "t" {
         assert!(messages(&findings)
             .iter()
             .all(|m| !m.contains("SQL-injection")));
+    }
+
+    #[test]
+    // Regression test for a real production bug (AgentX feedback,
+    // 2026-07, item 3.2): `write "x"` (no parens — `write` is a plain
+    // builtin, not statement-level grammar like `say`/`log`) doesn't
+    // parse as one malformed call, it silently parses as two adjacent,
+    // independently-discarded statements. The runtime accepts this
+    // silently with no error and no output; `gx check` is the only
+    // place this can be caught, since it's a purely static,
+    // structurally-detectable pattern.
+    fn flags_a_bare_identifier_statement_that_is_not_a_zero_arg_behavior_call() {
+        let findings = check(
+            r#"
+function f() {
+  write "x"
+  say "after"
+}
+"#,
+        );
+        let msgs = messages(&findings);
+        assert!(
+            msgs.iter().any(|m| m.contains('`') && m.contains("write")),
+            "expected a finding naming `write`, got: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    // The one legitimate reason a bare identifier appears as a whole
+    // statement: progressive syntax's "named behavior" auto-call sugar.
+    // The real runtime special case in `run_stmt_inner` auto-calls a
+    // bare identifier that names a *zero-argument* function — this must
+    // never be flagged.
+    fn does_not_flag_a_bare_zero_arg_behavior_call() {
+        let findings = check(
+            r#"
+function greet() {
+  say "hi"
+}
+function f() {
+  greet
+  say "after"
+}
+"#,
+        );
+        assert!(messages(&findings)
+            .iter()
+            .all(|m| !m.contains("has no effect")));
+    }
+
+    #[test]
+    // A bare identifier as the *last* statement of a block is an
+    // idiomatic implicit return (`run_stmts` returns the last
+    // statement's value) — most commonly seen as a `brain{}` phase's
+    // `communicate { result }`, but the same rule applies to any block:
+    // function bodies, if/else branches, loop bodies. Only a *non-last*
+    // bare identifier is unambiguously dead.
+    fn does_not_flag_a_bare_identifier_as_the_last_statement_of_a_block() {
+        let findings = check(
+            r#"
+agent "summarizer" {
+  brain {
+    plan { }
+    execute {
+      summary = "done"
+    }
+    remember { }
+    communicate { summary }
+  }
+}
+"#,
+        );
+        assert!(
+            messages(&findings)
+                .iter()
+                .all(|m| !m.contains("has no effect")),
+            "a bare identifier as a block's last statement (implicit return) must not be flagged: {:?}",
+            messages(&findings)
+        );
+    }
+
+    #[test]
+    fn does_not_flag_a_bare_memory_or_remember_reference() {
+        let findings = check(
+            r#"
+function f() {
+  memory
+  say "after"
+}
+"#,
+        );
+        assert!(messages(&findings)
+            .iter()
+            .all(|m| !m.contains("has no effect")));
     }
 }
