@@ -1,6 +1,6 @@
 [package]
 name = "gxlang"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 description = "GX — brain-first programming language for building transparent, auditable AI assistants and production applications. Capability-sandboxed process/HTTP/database runtimes, task concurrency, diagnostics, testing, and a debugger — every AI call logged, every decision explicit, every agent debuggable."
 authors = ["Ahmed Elgarhy <ahmed@devjsx.com>"]
