@@ -990,6 +990,22 @@ All file operations are sandboxed to the script's directory. Use `--no-sandbox` 
 | `env(key)` | Alias for `get_env` |
 | `config_load(options)` | Layered config: defaults < file < env overrides < explicit overrides, with optional schema validation — see [Configuration Runtime](#configuration-runtime) |
 
+### Script arguments
+
+| Function | Description |
+|---|---|
+| `argv()` | Array of every positional argument after a literal `--` in `gx run file.gx -- arg1 arg2` |
+| `script_args()` | Alias for `argv()` |
+
+`gx run file.gx -- arg1 arg2` (or the `gx file.gx -- arg1 arg2` shorthand)
+passes `arg1`/`arg2` through to the script unchanged — including a value
+that happens to look like one of `gx`'s own flags (`gx run file.gx --
+--allow-shell` passes the literal string `"--allow-shell"` to the
+script; it does not grant that capability). Without a `--`, `argv()`
+returns `[]`. `gx run file.gx foo bar` (no `--`) does **not** make
+`foo`/`bar` reachable — `gx`'s own flag parsing still owns everything
+before `--`.
+
 ### JSON / Serialization
 
 | Function | Description |

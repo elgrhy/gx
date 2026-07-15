@@ -108,28 +108,46 @@ fn run() {
         // script" finds a command that says exactly that, instead of only
         // ever discovering `--break` as an incidental flag on `run`.
         "run" | "debug" => {
-            let file = require_arg(&args, 2, "gx run <file.gx> [--break line1,line2,...]");
-            let debug = args.contains(&"--debug".to_string());
-            let allow_shell = args.contains(&"--allow-shell".to_string());
-            let allow_process = args.contains(&"--allow-process".to_string());
-            let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
-            let no_sandbox = args.contains(&"--no-sandbox".to_string());
-            let no_limit = args.contains(&"--no-limit".to_string());
-            let deny = match parse_deny_flags(&args) {
+            let file = require_arg(
+                &args,
+                2,
+                "gx run <file.gx> [--break line1,line2,...] [-- script-args...]",
+            );
+            // Everything after a literal `--` is passed through to the
+            // script as `argv()` — never interpreted as gx's own flags,
+            // even if a value happens to look like one (`gx run file.gx
+            // -- --allow-shell` passes the literal string "--allow-shell"
+            // as a script argument; it does not grant that capability).
+            // Without this, `gx run file.gx foo bar` simply had no way
+            // to make `foo`/`bar` reachable from inside the script at
+            // all — confirmed by there being no code path anywhere that
+            // read `args[3..]` for anything but flags.
+            let dash_dash_pos = args.iter().position(|a| a == "--");
+            let (flag_args, script_args): (&[String], Vec<String>) = match dash_dash_pos {
+                Some(pos) => (&args[..pos], args[pos + 1..].to_vec()),
+                None => (&args[..], Vec::new()),
+            };
+            let debug = flag_args.contains(&"--debug".to_string());
+            let allow_shell = flag_args.contains(&"--allow-shell".to_string());
+            let allow_process = flag_args.contains(&"--allow-process".to_string());
+            let allow_internal_http = flag_args.contains(&"--allow-internal-http".to_string());
+            let no_sandbox = flag_args.contains(&"--no-sandbox".to_string());
+            let no_limit = flag_args.contains(&"--no-limit".to_string());
+            let deny = match parse_deny_flags(flag_args) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     process::exit(1);
                 }
             };
-            let diagnostics = match parse_diagnostics_flags(&args) {
+            let diagnostics = match parse_diagnostics_flags(flag_args) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     process::exit(1);
                 }
             };
-            let break_lines = match parse_break_flag(&args) {
+            let break_lines = match parse_break_flag(flag_args) {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("Error: {}", e);
@@ -147,6 +165,7 @@ fn run() {
                 deny,
                 diagnostics,
                 break_lines,
+                script_args,
             )
         }
         "check" => {
@@ -304,27 +323,34 @@ fn run() {
         }
         // Shorthand: gx file.gx
         file if file.ends_with(".gx") => {
-            let debug = args.contains(&"--debug".to_string());
-            let allow_shell = args.contains(&"--allow-shell".to_string());
-            let allow_process = args.contains(&"--allow-process".to_string());
-            let allow_internal_http = args.contains(&"--allow-internal-http".to_string());
-            let no_sandbox = args.contains(&"--no-sandbox".to_string());
-            let no_limit = args.contains(&"--no-limit".to_string());
-            let deny = match parse_deny_flags(&args) {
+            // Same `--`-separated script-args handling as the `run`/`debug`
+            // branch above — see its comment.
+            let dash_dash_pos = args.iter().position(|a| a == "--");
+            let (flag_args, script_args): (&[String], Vec<String>) = match dash_dash_pos {
+                Some(pos) => (&args[..pos], args[pos + 1..].to_vec()),
+                None => (&args[..], Vec::new()),
+            };
+            let debug = flag_args.contains(&"--debug".to_string());
+            let allow_shell = flag_args.contains(&"--allow-shell".to_string());
+            let allow_process = flag_args.contains(&"--allow-process".to_string());
+            let allow_internal_http = flag_args.contains(&"--allow-internal-http".to_string());
+            let no_sandbox = flag_args.contains(&"--no-sandbox".to_string());
+            let no_limit = flag_args.contains(&"--no-limit".to_string());
+            let deny = match parse_deny_flags(flag_args) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     process::exit(1);
                 }
             };
-            let diagnostics = match parse_diagnostics_flags(&args) {
+            let diagnostics = match parse_diagnostics_flags(flag_args) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     process::exit(1);
                 }
             };
-            let break_lines = match parse_break_flag(&args) {
+            let break_lines = match parse_break_flag(flag_args) {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("Error: {}", e);
@@ -342,6 +368,7 @@ fn run() {
                 deny,
                 diagnostics,
                 break_lines,
+                script_args,
             )
         }
         cmd => {
@@ -384,6 +411,7 @@ fn cmd_run(
     deny: Vec<capability::Resource>,
     diagnostics: diagnostics::Diagnostics,
     break_lines: std::collections::HashSet<usize>,
+    script_args: Vec<String>,
 ) -> Result<(), String> {
     // Support `gx run -` to read source from stdin (used by `gx build` launchers).
     let source = if path == "-" {
@@ -423,6 +451,7 @@ fn cmd_run(
     interp.capabilities.process = allow_process;
     interp.capabilities.internal_network = allow_internal_http;
     interp.no_loop_limit = no_limit;
+    interp.script_args = script_args;
 
     // The directory a manifest/sandbox would be rooted at: the script's own
     // directory, or cwd when reading from stdin (`gx run -`).
@@ -864,8 +893,8 @@ fn require_arg<'a>(args: &'a [String], idx: usize, usage: &str) -> &'a str {
 /// command, not two that can drift apart.
 fn command_usage(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
-        "run" => "gx run <file.gx> [--debug] [--break line1,line2,...] [--allow-shell] [--allow-process] [--allow-internal-http] [--no-sandbox] [--no-limit] [--deny <resource>] [--trace] [--log-level <level>]",
-        "debug" => "gx debug <file.gx> [--break line1,line2,...] [--trace] [--log-level <level>] — alias for `gx run` with the Debugger Runtime available (see also the breakpoint() builtin)",
+        "run" => "gx run <file.gx> [--debug] [--break line1,line2,...] [--allow-shell] [--allow-process] [--allow-internal-http] [--no-sandbox] [--no-limit] [--deny <resource>] [--trace] [--log-level <level>] [-- script-args...]",
+        "debug" => "gx debug <file.gx> [--break line1,line2,...] [--trace] [--log-level <level>] [-- script-args...] — alias for `gx run` with the Debugger Runtime available (see also the breakpoint() builtin)",
         "check" => "gx check <file.gx> [file2.gx ...]",
         "init" | "new" => "gx init <project-name>",
         "build" => "gx build <file.gx> [-o <name>] [--allow-shell] [--allow-process] [--allow-internal-http] [--deny <resource>]",
@@ -995,6 +1024,7 @@ fn print_help() {
     println!("  gx run <file.gx> --no-sandbox                  Disable file-path sandboxing");
     println!("  gx run <file.gx> --deny <resource>             Force-deny a capability, overriding gx.json (repeatable)");
     println!("  gx run <file.gx> --no-limit                    Remove while-loop iteration cap (for REPLs, infinite I/O loops)");
+    println!("  gx run <file.gx> -- arg1 arg2                  Pass script arguments, readable inside the script via argv()");
     println!("  gx debug <file.gx> [--break line1,line2,...]   Run with the interactive debugger (also: the breakpoint() builtin)");
     println!("  gx -e '<source>'                       Run inline GX source (no temp file)");
     println!("  gx check <file.gx> [file2.gx ...]      Check syntax + static diagnostics (dead agents, bad spawn targets, SQL concat, ...) without running");
@@ -1341,6 +1371,46 @@ mod tests {
         let src = "function f() {\n  return 1\n}\n";
         let program = parse_file(src, "<test>").unwrap();
         assert!(program_needs_full_run(&program));
+    }
+
+    #[test]
+    // Regression test (CLI level) for the same `argv()` gap covered at
+    // the interpreter level in `interpreter::tests`: confirms the real
+    // `gx` binary actually parses `--` and threads everything after it
+    // through as script args, distinct from gx's own flags — including
+    // a script arg that looks exactly like a gx flag (`--allow-shell`
+    // after `--` must reach the script as a literal string, not enable
+    // the capability).
+    fn run_passes_everything_after_dash_dash_to_the_script_as_argv() {
+        let dir = std::env::temp_dir().join(format!("gx_argv_cli_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let script_path = dir.join("script.gx");
+        fs::write(
+            &script_path,
+            r#"
+result = argv()
+assert result == ["foo", "--allow-shell"] "argv() must contain everything after -- verbatim, including flag-shaped values"
+"#,
+        )
+        .unwrap();
+
+        let output = std::process::Command::new(gx_binary_path())
+            .arg("run")
+            .arg(&script_path)
+            .arg("--")
+            .arg("foo")
+            .arg("--allow-shell")
+            .output()
+            .expect("failed to spawn gx binary");
+
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

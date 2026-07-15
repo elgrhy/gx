@@ -392,6 +392,15 @@ pub struct Interpreter {
     /// Variables assigned at file root (top_level_stmts). Injected into every agent's env
     /// so they are accessible as normal locals alongside memory.*.
     global_vars: HashMap<String, Value>,
+    /// Positional arguments after a literal `--` in `gx run file.gx --
+    /// arg1 arg2` — exposed to the script via the `argv()` builtin. Never
+    /// interpreted as gx's own flags, even if a value looks like one
+    /// (`gx run file.gx -- --allow-shell` passes the literal string
+    /// "--allow-shell" through, it does not grant the capability).
+    /// Empty for every entry point other than `gx run`/`gx debug`
+    /// (REPL, `gx test`, `eval`, ...), matching the previous total
+    /// absence of any script-arguments mechanism.
+    pub script_args: Vec<String>,
     /// Call stack of frame names (agent / function / closure) for error traces.
     call_stack: Vec<String>,
     /// Cumulative tokens used across all AI calls this session (exposed via `tokens_used()`).
@@ -549,6 +558,7 @@ impl Interpreter {
             tools: HashMap::new(),
             no_loop_limit: false,
             global_vars: HashMap::new(),
+            script_args: Vec::new(),
             call_stack: Vec::new(),
             total_tokens_used: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -6692,6 +6702,22 @@ impl Interpreter {
             // tokens_used() — cumulative tokens across every AI call this session.
             "tokens_used" | "total_tokens" => Ok(Value::Number(self.total_tokens_used as f64)),
 
+            // argv() — positional arguments after `--` in `gx run file.gx
+            // -- arg1 arg2 ...`. Previously there was no way at all for a
+            // script to receive command-line arguments (confirmed by
+            // reading main.rs directly: it parsed flags but never
+            // threaded anything positional past the filename into the
+            // interpreter), which forced real programs wanting
+            // per-invocation input into workarounds like an environment
+            // variable or an interactive readline() prompt instead of
+            // ordinary argv-style arguments.
+            "argv" | "script_args" => Ok(Value::Array(
+                self.script_args
+                    .iter()
+                    .map(|s| Value::Str(s.clone()))
+                    .collect(),
+            )),
+
             // ── AI Context Runtime ──────────────────────────────────────────────
             "context_create" => self.context_create(&args),
             "context_set_system" => self.context_set_system(&args),
@@ -8061,6 +8087,7 @@ const KNOWN_BUILTINS: &[&str] = &[
     "truncate",
     "token_count",
     "tokens_used",
+    "argv",
     "context_create",
     "context_set_system",
     "context_add_message",
@@ -8577,6 +8604,40 @@ mod tests {
         let tokens = Lexer::new(src).tokenize()?;
         let program = Parser::new(tokens).parse()?;
         Interpreter::new().run_program(&program)
+    }
+
+    #[test]
+    // Regression test for a real gap (AgentX feedback, 2026-07, item
+    // 2.3): there was previously no way at all for a script to receive
+    // command-line arguments — `gx run file.gx foo bar` didn't error,
+    // but `foo`/`bar` were simply unreachable from inside the script
+    // (confirmed by reading main.rs directly: it parsed flags but never
+    // threaded anything positional past the filename into the
+    // interpreter). `argv()` now exposes whatever `Interpreter::run`'s
+    // caller set on `script_args` (wired up in main.rs from everything
+    // after a literal `--`).
+    fn argv_returns_the_interpreters_script_args() {
+        let tokens = Lexer::new(
+            r#"
+result = argv()
+assert result == ["foo", "bar"] "argv() must return exactly the script args the caller set"
+assert script_args() == ["foo", "bar"] "script_args() is an alias for argv()"
+"#,
+        )
+        .tokenize()
+        .unwrap();
+        let program = Parser::new(tokens).parse().unwrap();
+        let mut interp = Interpreter::new();
+        interp.script_args = vec!["foo".to_string(), "bar".to_string()];
+        interp.run_program(&program).unwrap();
+    }
+
+    #[test]
+    fn argv_is_empty_when_no_script_args_were_set() {
+        run(
+            r#"assert argv() == [] "argv() must be an empty array when no script args were given""#,
+        )
+        .unwrap();
     }
 
     #[test]
