@@ -947,10 +947,15 @@ impl Interpreter {
                 }
                 Err(other) => return Err(format!("unexpected control flow: {:?}", other)),
             }
-        }
-        for (k, v) in &env.vars {
-            if k != "memory" {
-                self.global_vars.insert(k.clone(), v.clone());
+            // Sync after every statement, not just once at the end of this
+            // batch — see the identical fix (and reasoning) in
+            // `run_program`. A multi-line paste at the REPL (`X = 1` then
+            // `func()` in the same input) needs `func()` to see `X` even
+            // though both lines run in this one `run_repl_stmts` call.
+            for (k, v) in &env.vars {
+                if k != "memory" {
+                    self.global_vars.insert(k.clone(), v.clone());
+                }
             }
         }
         Ok(last)
@@ -1081,18 +1086,28 @@ impl Interpreter {
 
         // Execute top-level statements (x = 1, load_env(".env"), config = yaml_parse(...))
         // before any agent runs. Results are stored as global_vars and injected into
-        // every agent's env so they are accessible as ordinary locals.
+        // every agent's env — and, per `call_user_function`/
+        // `call_user_function_propagating`, every plain function call —
+        // so they are accessible as ordinary locals.
         if !program.top_level_stmts.is_empty() {
             let mut global_env = Env::new();
             for stmt in &program.top_level_stmts.clone() {
                 self.run_stmt(stmt, &mut global_env).map_err(|e| {
                     format!("top-level statement: {}", self.describe_stray_signal(e))
                 })?;
-            }
-            // Store everything that was assigned (excluding memory object itself)
-            for (k, v) in &global_env.vars {
-                if k != "memory" {
-                    self.global_vars.insert(k.clone(), v.clone());
+                // Sync into `self.global_vars` after *every* statement, not
+                // just once after the whole loop finishes. A top-level
+                // statement can itself call a function (`MY_CONST = 14`
+                // followed by `show()`, where `show` reads `MY_CONST`) —
+                // that call goes through `call_user_function[_propagating]`,
+                // which only ever sees globals already synced into
+                // `self.global_vars`, so syncing only at the end meant a
+                // function called from later in this very statement list
+                // still couldn't see a global assigned earlier in it.
+                for (k, v) in &global_env.vars {
+                    if k != "memory" {
+                        self.global_vars.insert(k.clone(), v.clone());
+                    }
                 }
             }
         }
@@ -3322,6 +3337,37 @@ impl Interpreter {
                     if let Some(v) = mem.get(name) {
                         return Ok(v.clone());
                     }
+                    // A named `function foo() { ... }` declaration used to
+                    // be visible *only* through call syntax (`foo(...)`,
+                    // handled by `eval_call`'s own `self.functions` lookup)
+                    // — a bare reference like `say foo` or
+                    // `task_spawn(foo)` fell all the way through to here
+                    // and silently returned `Null`, even though `fn(){}`
+                    // closures assigned to a variable work fine as bare
+                    // values. This was a real, reported bug: passing a
+                    // named function where "a zero-arg closure" was
+                    // documented to work (`task_spawn(refresh_loop)`)
+                    // failed with a confusing "expected a function, got
+                    // null", not a "did you mean `refresh_loop()`?".
+                    //
+                    // Synthesizing a `Value::Closure` here — the exact
+                    // same runtime representation `fn(){}` produces —
+                    // unifies the two: a named function is now a real,
+                    // passable value, not just something callable by name.
+                    // It's seeded with `self.global_vars` as its captured
+                    // scope, the same file-root globals `run_helper`
+                    // already injects into every agent's env, so a
+                    // function referenced this way sees them exactly as
+                    // it would if called directly via `foo()` (see
+                    // `call_user_function`/`call_user_function_propagating`,
+                    // which inject the same globals for that call path).
+                    if let Some(func) = self.functions.get(name) {
+                        return Ok(Value::Closure(
+                            func.params.clone(),
+                            func.body.clone(),
+                            self.global_vars.clone(),
+                        ));
+                    }
                 }
                 Ok(val)
             }
@@ -4307,6 +4353,15 @@ impl Interpreter {
     ) -> IResult {
         self.check_recursion_depth()?;
         let mut env = Env::new();
+        // Inject file-root globals as ordinary locals, exactly like
+        // `run_helper` already does for every agent's env — see that
+        // function's comment. Without this, a top-level `NAME = value`
+        // was invisible from inside any function defined later in the
+        // same file (a real, reported bug: a top-level constant or list
+        // silently read as `null` inside every function, with no error).
+        for (k, v) in &self.global_vars {
+            env.set(k, v.clone());
+        }
         if let Some(mem) = parent_memory {
             env.set_memory(mem);
         }
@@ -4335,6 +4390,12 @@ impl Interpreter {
         self.check_recursion_depth()?;
         let initial_mem = caller_env.get_memory();
         let mut env = Env::new();
+        // See the identical injection in `call_user_function` above —
+        // same fix, same reasoning, for the memory-propagating call path
+        // (used for agent-level and inline functions).
+        for (k, v) in &self.global_vars {
+            env.set(k, v.clone());
+        }
         env.set_memory(initial_mem.clone());
         for (i, param) in func.params.iter().enumerate() {
             env.set(param, args.get(i).cloned().unwrap_or(Value::Null));
@@ -8516,6 +8577,154 @@ mod tests {
         let tokens = Lexer::new(src).tokenize()?;
         let program = Parser::new(tokens).parse()?;
         Interpreter::new().run_program(&program)
+    }
+
+    #[test]
+    // Regression test for a real production bug (AgentX feedback,
+    // 2026-07, item 1.3): a top-level `NAME = value` assignment was
+    // invisible from inside any function defined later in the same
+    // file — `env` (per-call scope) and `self.global_vars` (top-level
+    // bare-assignment storage) were entirely disjoint, so the read
+    // silently evaluated to `null` instead of erroring or seeing the
+    // value. Fixed by injecting `self.global_vars` into every function
+    // call's env, the same way `run_helper` already did for agents.
+    fn top_level_constant_is_visible_inside_a_function_defined_later_in_the_file() {
+        run(r#"
+MY_CONST = 14
+function show() {
+  assert MY_CONST == 14 "a top-level constant must be visible inside a function"
+}
+show()
+"#)
+        .unwrap();
+    }
+
+    #[test]
+    // The bug above was actually two bugs: even after injecting
+    // `self.global_vars` into function calls, a function *called from
+    // within the same top-level statement list* (e.g. `X = 1` then
+    // `f()` where `f` reads `X`, both at file root) still saw `null` —
+    // `run_program` only copied the top-level `Env` into
+    // `self.global_vars` once, *after* the whole top-level statement
+    // loop finished, so a call partway through that loop read a
+    // not-yet-synced `self.global_vars`. Fixed by syncing after every
+    // top-level statement instead of once at the end.
+    fn a_global_assigned_earlier_in_the_same_top_level_statement_list_is_visible_to_a_call_later_in_it(
+    ) {
+        run(r#"
+MY_CONST = 14
+function show() {
+  assert MY_CONST == 14 "a global assigned earlier in this very statement list must be visible"
+}
+show()
+"#)
+        .unwrap();
+    }
+
+    #[test]
+    // A same-named local reassignment inside the function must still
+    // shadow the injected global within that call — and, matching the
+    // pre-existing precedent this fix generalizes (`run_helper`'s
+    // one-way global injection into an agent's env), the reassignment
+    // must NOT write back to the actual global once the call returns.
+    fn a_local_reassignment_of_an_injected_global_shadows_it_without_mutating_the_real_global() {
+        run(r#"
+LIMIT = 100
+function f() {
+  LIMIT = 5
+  return LIMIT
+}
+assert f() == 5 "the local reassignment must shadow the global inside the call"
+assert LIMIT == 100 "the real global must be unchanged after the call returns"
+"#)
+        .unwrap();
+    }
+
+    #[test]
+    // A function parameter with the same name as a global must shadow
+    // it too — params are bound *after* the global injection, so this
+    // also guards against a regression that injected globals in the
+    // wrong order relative to parameter binding.
+    fn a_function_parameter_shadows_a_same_named_global() {
+        run(r#"
+x = "global"
+function f(x) {
+  return x
+}
+assert f("param") == "param" "the parameter must shadow the same-named global"
+"#)
+        .unwrap();
+    }
+
+    #[test]
+    // Regression test for a real production bug (AgentX feedback,
+    // 2026-07, item 1.5): `function name() { ... }` declarations were
+    // only ever visible through call syntax (`name(...)`) — a bare
+    // reference (`say name`, or passing `name` to `task_spawn`, which
+    // documents its argument as "a zero-arg closure") silently
+    // evaluated to `null`, unlike `x = fn() { ... }`, which produces a
+    // real, passable `Value::Closure`. Fixed by synthesizing the same
+    // `Value::Closure` representation for a bare reference to a named
+    // function, unifying the two.
+    fn a_named_function_is_a_real_referenceable_value_like_a_fn_closure() {
+        run(r#"
+function named() {
+  return 42
+}
+value = named
+assert typeof(value) == "function" "a bare reference to a named function must be a real function value, not null"
+assert value() == 42 "the synthesized closure must still be callable and run the original body"
+"#)
+        .unwrap();
+    }
+
+    #[test]
+    fn task_spawn_accepts_a_bare_named_function_not_just_a_fn_closure() {
+        run(r#"
+function get_value() {
+  return 99
+}
+handle = task_spawn(get_value)
+result = task_wait(handle)
+assert result.ok == true "task_spawn(named_function) must succeed, not error with 'expected a function, got null'"
+assert result.value == 99
+"#)
+        .unwrap();
+    }
+
+    #[test]
+    // A named function referenced bare must also see file-root globals,
+    // exactly as calling it directly (`named_fn()`) already does — the
+    // synthesized closure is seeded with `self.global_vars` as its
+    // captured scope for this reason.
+    fn a_bare_named_function_reference_still_sees_file_root_globals_when_called() {
+        run(r#"
+MY_CONST = 7
+function reads_global() {
+  return MY_CONST
+}
+value = reads_global
+assert value() == 7 "the synthesized closure must see the same globals a direct call would"
+"#)
+        .unwrap();
+    }
+
+    #[test]
+    // Regression test for a real production bug (AgentX feedback,
+    // 2026-07, item 2.5): a method call inside `{...}` string
+    // interpolation whose argument was itself a single-quoted string
+    // literal — e.g. `arr.unique().join(', ')` — silently failed to
+    // evaluate and printed the literal, un-interpolated `{...}` text
+    // instead, with no error. Root cause was that GX's lexer had no
+    // single-quote string syntax at all, so the interpolation's internal
+    // re-lex of the expression source failed and fell back to literal
+    // text. Fixed by adding single-quote string support to the lexer.
+    fn interpolated_method_call_with_a_single_quoted_string_argument_evaluates() {
+        run(r#"
+arr = ["a", "b", "a"]
+result = "types: {arr.unique().join(', ')}"
+assert result == "types: a, b" "method call with a single-quoted arg must evaluate inside interpolation"
+"#).unwrap();
     }
 
     #[test]
