@@ -4,7 +4,15 @@
 
 set -e
 
-GX_VERSION="0.1.0"
+# Resolved from GitHub's "latest release" API at install time (see
+# detect_latest_version below) unless the caller already set GX_VERSION —
+# e.g. `GX_VERSION=0.6.1 sh install.sh` to pin a specific release. This
+# used to be a hardcoded literal here, which meant every install after
+# the version it was hardcoded to went stale: a fresh machine following
+# this exact script would silently get an old release with none of the
+# fixes documented in the CHANGELOG since, several versions behind
+# whatever `gx --version` on the maintainer's own machine reported.
+GX_VERSION="${GX_VERSION:-}"
 GX_REPO="elgrhy/gx"
 GX_HOME="${GX_HOME:-$HOME/.gx}"
 GX_BIN="$GX_HOME/bin"
@@ -28,26 +36,31 @@ detect_target() {
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
 
+    # ARCHIVE names must match release.yml's `matrix.archive` exactly —
+    # see build_from_source's fallback for the one target (Linux armv7)
+    # release.yml's build matrix doesn't publish a pre-built binary for
+    # at all, where ARCHIVE is deliberately left empty.
     case "$OS" in
         linux)
             case "$ARCH" in
-                x86_64)  TARGET="x86_64-unknown-linux-gnu" ;;
-                aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
-                armv7l)  TARGET="armv7-unknown-linux-gnueabihf" ;;
+                x86_64)  TARGET="x86_64-unknown-linux-gnu"; ARCHIVE="gx-linux-x64.tar.gz" ;;
+                aarch64) TARGET="aarch64-unknown-linux-gnu"; ARCHIVE="gx-linux-arm64.tar.gz" ;;
+                armv7l)  TARGET="armv7-unknown-linux-gnueabihf"; ARCHIVE="" ;;
                 *)       error "Unsupported Linux architecture: $ARCH" ;;
             esac
             EXT=""
             ;;
         darwin)
             case "$ARCH" in
-                x86_64) TARGET="x86_64-apple-darwin" ;;
-                arm64)  TARGET="aarch64-apple-darwin" ;;
+                x86_64) TARGET="x86_64-apple-darwin"; ARCHIVE="gx-macos-x64.tar.gz" ;;
+                arm64)  TARGET="aarch64-apple-darwin"; ARCHIVE="gx-macos-arm64.tar.gz" ;;
                 *)      error "Unsupported macOS architecture: $ARCH" ;;
             esac
             EXT=""
             ;;
         mingw*|cygwin*|msys*)
             TARGET="x86_64-pc-windows-msvc"
+            ARCHIVE="gx-windows-x64.zip"
             EXT=".exe"
             ;;
         *)
@@ -56,24 +69,102 @@ detect_target() {
     esac
 }
 
-# ── Download ──────────────────────────────────────────────────────────────────
+# ── Resolve version ───────────────────────────────────────────────────────────
 
-download_gx() {
-    DOWNLOAD_URL="https://github.com/$GX_REPO/releases/download/v$GX_VERSION/gx-$TARGET$EXT"
+detect_latest_version() {
+    info "Looking up the latest GX release..."
 
-    info "Downloading GX v$GX_VERSION for $TARGET..."
-
-    mkdir -p "$GX_BIN"
-
+    API_URL="https://api.github.com/repos/$GX_REPO/releases/latest"
     if command -v curl >/dev/null 2>&1; then
-        curl -sSfL "$DOWNLOAD_URL" -o "$GX_BIN/gx$EXT"
+        LATEST_TAG=$(curl -sSfL "$API_URL" 2>/dev/null | grep '"tag_name"' | head -n 1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
     elif command -v wget >/dev/null 2>&1; then
-        wget -q "$DOWNLOAD_URL" -O "$GX_BIN/gx$EXT"
+        LATEST_TAG=$(wget -qO- "$API_URL" 2>/dev/null | grep '"tag_name"' | head -n 1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
     else
         error "Neither curl nor wget found. Please install one and try again."
     fi
 
-    chmod +x "$GX_BIN/gx$EXT"
+    if [ -z "$LATEST_TAG" ]; then
+        error "Could not determine the latest GX release from GitHub (network issue, or the API response shape changed). Set GX_VERSION explicitly to install a specific release, e.g.: GX_VERSION=0.6.1 sh install.sh"
+    fi
+
+    # Release tags are "v0.7.0" — strip the leading "v".
+    GX_VERSION="${LATEST_TAG#v}"
+    info "Latest GX release: v$GX_VERSION"
+}
+
+# ── Download ──────────────────────────────────────────────────────────────────
+
+# Downloads and unpacks the pre-built release archive for this target.
+# Returns non-zero (rather than exiting) on *any* failure — missing
+# ARCHIVE, a failed download, or a failed extraction — so `main`'s `if !
+# download_gx; then build_from_source; fi` can actually fall back, the
+# way it always should have. The previous version's last statement was
+# always a `success` print (which itself always exits 0), so the
+# function's own exit status could never reflect a failed curl/wget
+# call underneath it — every download failure silently fell through to
+# `chmod`/`success` on a file that was never written, and the fallback
+# to `build_from_source` never ran.
+#
+# The download URL itself was also simply wrong: it requested
+# `gx-$TARGET$EXT` (e.g. `gx-aarch64-apple-darwin`), a literal binary
+# file that release.yml has never published under any name — every
+# real release asset is a `.tar.gz`/`.zip` archive named
+# `gx-<os>-<arch>.<ext>` (see `matrix.archive` in
+# .github/workflows/release.yml), containing the binary inside it. This
+# was never version-dependent — every install of every past release hit
+# this, always fell through to build_from_source (silently, since the
+# failure was swallowed) rather than actually installing the pre-built
+# binary it claimed to.
+download_gx() {
+    if [ -z "$ARCHIVE" ]; then
+        # No pre-built binary is published for this target.
+        return 1
+    fi
+
+    DOWNLOAD_URL="https://github.com/$GX_REPO/releases/download/v$GX_VERSION/$ARCHIVE"
+    info "Downloading GX v$GX_VERSION for $TARGET..."
+
+    mkdir -p "$GX_BIN"
+    TMP_ARCHIVE=$(mktemp)
+
+    if command -v curl >/dev/null 2>&1; then
+        if ! curl -sSfL "$DOWNLOAD_URL" -o "$TMP_ARCHIVE"; then
+            rm -f "$TMP_ARCHIVE"
+            return 1
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if ! wget -q "$DOWNLOAD_URL" -O "$TMP_ARCHIVE"; then
+            rm -f "$TMP_ARCHIVE"
+            return 1
+        fi
+    else
+        error "Neither curl nor wget found. Please install one and try again."
+    fi
+
+    case "$ARCHIVE" in
+        *.tar.gz)
+            if ! tar xzf "$TMP_ARCHIVE" -C "$GX_BIN" "gx$EXT" 2>/dev/null; then
+                rm -f "$TMP_ARCHIVE"
+                return 1
+            fi
+            ;;
+        *.zip)
+            if ! command -v unzip >/dev/null 2>&1; then
+                warn "unzip not found — cannot extract the pre-built Windows archive, falling back to a source build."
+                rm -f "$TMP_ARCHIVE"
+                return 1
+            fi
+            if ! unzip -qo "$TMP_ARCHIVE" -d "$GX_BIN" 2>/dev/null; then
+                rm -f "$TMP_ARCHIVE"
+                return 1
+            fi
+            ;;
+    esac
+    rm -f "$TMP_ARCHIVE"
+
+    if ! chmod +x "$GX_BIN/gx$EXT"; then
+        return 1
+    fi
     success "Downloaded gx to $GX_BIN/gx$EXT"
 }
 
@@ -157,6 +248,12 @@ main() {
     printf "Brain-first programming language\n\n"
 
     detect_target
+
+    if [ -z "$GX_VERSION" ]; then
+        detect_latest_version
+    else
+        info "Using pinned GX_VERSION=$GX_VERSION"
+    fi
 
     # Try pre-built binary first, fall back to source build
     if ! download_gx 2>/dev/null; then
