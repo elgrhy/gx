@@ -41,7 +41,7 @@ git clone https://github.com/elgrhy/gx.git && cd gx && cargo build --release
 ```
 
 ```bash
-gx --version   # gx 0.6.1
+gx --version   # gx 0.7.0
 ```
 
 ---
@@ -58,10 +58,51 @@ gx run main.gx
 agent "hello" {
   when started {
     name = "World"
-    say "Hello, {name}! GX v0.6.1 is running."
+    say "Hello, {name}! GX v0.7.0 is running."
   }
 }
 ```
+
+---
+
+## What's New in v0.7.0
+
+Findings from building AgentX (~6,000 lines, 34 files, 17 agents) end-to-end
+on v0.6.1, plus a full engineering review of the underlying architectural
+causes (see `docs/language-review-agentx-feedback-2026-07.md`). Backward
+compatible — every change is additive or fixes behavior nothing could have
+intentionally depended on. Full detail in [CHANGELOG.md](CHANGELOG.md).
+
+- **A brace-syntax file using `agent` as a variable name (or any text shaped
+  like `"On error:"`) no longer silently misroutes to the indentation
+  parser** — syntax-mode detection now only checks the file's first line,
+  where every real progressive-syntax header actually lives, instead of
+  scanning the whole file.
+- **Top-level constants and named functions are now real, visible values
+  from anywhere** — a top-level `NAME = value` is visible inside every
+  function (previously silently read as `null`), and a bare reference to a
+  named function (`task_spawn(my_func)`) now works exactly like `fn(){}`
+  instead of silently evaluating to `null`.
+- **String interpolation with a single-quoted string argument now
+  evaluates** (`"{arr.join(', ')}"`) — GX gained single-quoted string
+  literal support, which is what this needed.
+- **`&&`/`||`** now work, as documented. **`argv()`/`script_args()`** give
+  scripts real command-line arguments for the first time
+  (`gx run file.gx -- arg1 arg2`). **`--project-sandbox`** lets a
+  multi-directory project (`agents/`, `lib/`, a shared `data/`) share file
+  access without flattening the layout or disabling sandboxing entirely.
+  **`date_add_iso()`** is the safe, string-in-string-out alternative to
+  `date_add` (which keeps its existing numeric return for compatibility).
+- **`gx check`** now warns on a bare identifier used as a whole discarded
+  statement (the `write "x"`-without-parens footgun), and **`gx check
+  a.gx b.gx`** actually checks every file given instead of silently only
+  the first.
+- **`gx fmt`** fixes a real non-idempotency bug on progressive-syntax
+  files and uses conventional, dense call-site spacing (`f(x)`, not
+  `f ( x )`).
+- **`install.sh`** no longer points at a stale, broken hardcoded version —
+  resolved dynamically from GitHub's latest release, with the download
+  itself fixed (it never actually worked, at any version).
 
 ---
 
@@ -1341,6 +1382,7 @@ gx repl                     # Interactive REPL
 
 | Version | Highlights |
 |---|---|
+| **v0.7.0** | **AgentX feedback & scope-chain unification** — top-level constants and named functions now visible as real values everywhere; syntax-mode misdetection fix; single-quote strings; `&&`/`||`; `argv()`; `--project-sandbox`; `date_add_iso()`; `gx check` bare-identifier lint + multi-file fix; `gx fmt` idempotency fix + denser spacing; `install.sh` fixed. Backward compatible. See [What's New in v0.7.0](#whats-new-in-v070) and [CHANGELOG.md](CHANGELOG.md). |
 | **v0.6.1** | **Production hardening** — GClaw migration feedback: `spawn agent`/fire-and-forget target validation, HTTP string-body fix, strict manifest validation, bridge syntax + local-path fixes, Ollama timeout/managed-context support, whole-project `gx check` diagnostics, OpenAI structured output. Backward compatible. See [What's New in v0.6.1](#whats-new-in-v061) and [CHANGELOG.md](CHANGELOG.md). |
 | **v0.6.0** | **Production Runtime** — Capability/Crypto/Process/HTTP/Database/Task/AI Context/Module & Package runtimes, Diagnostics & Observability, Testing Framework, Debugger, REPL, Configuration/Serialization/Template runtimes, LSP, formatter, doc generation · security and resource-cap hardening · progressive-syntax parity fixes. See [What's New in v0.6.0](#whats-new-in-v060) and [CHANGELOG.md](CHANGELOG.md). |
 | **v0.5.1** | **Production patch** — `db_transaction` block · `sleep(seconds)` · `500ms`/`5s` duration literals · array-form `db_exec(db, sql, [params])` · regex quantifier interpolation fix |

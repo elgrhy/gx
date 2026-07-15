@@ -1,5 +1,13 @@
 # GX Roadmap — v0.5.0 through v0.8.0
 
+> **Note (2026-07-15):** this plan predates v0.6.1 and v0.7.0, neither of
+> which is reflected below — both were unplanned, feedback-driven
+> releases (see CHANGELOG.md). v0.7.0 in particular shipped as the
+> AgentX-feedback/scope-chain-unification release, not the "Phase 3 LSP /
+> IDE" phase this document originally reserved that version number for.
+> Treat the phase numbering below as stale; the phase *content* (what's
+> still undone) is still a reasonable reference for what comes next.
+
 **v0.5.0, v0.5.1, and v0.6.0 are shipped.** v0.7.0 is next. Sequenced in **phases**, each a shippable release.
 Decisions locked with the owner:
 - **Phased delivery** (not one big release).

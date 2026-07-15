@@ -1,6 +1,6 @@
 # GX Language — Reference
 
-Complete reference for GX v0.6.1 syntax, built-in functions, and AI primitives.
+Complete reference for GX v0.7.0 syntax, built-in functions, and AI primitives.
 
 ---
 

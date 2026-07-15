@@ -227,8 +227,8 @@ print("test_repeat: all passed")
 To cut a release:
 ```bash
 # Bump version in Cargo.toml and npm/package.json first
-git tag v0.6.1
-git push origin v0.6.1
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 ---
@@ -247,8 +247,8 @@ git push origin v0.6.1
 | v0.5.0 | Shipped | 2026-05-31 |
 | v0.5.1 | Shipped | 2026-06-06 |
 | v0.6.0 | Shipped | 2026-07-11 |
-| **v0.6.1** | **Shipped** | **2026-07-12** |
-| v0.7.0 | Planned | — |
+| v0.6.1 | Shipped | 2026-07-12 |
+| **v0.7.0** | **Shipped** | **2026-07-15** |
 | v0.8.0 | Planned | — |
 
 See [ROADMAP_v0.5_to_v0.8.md](../ROADMAP_v0.5_to_v0.8.md) for what's next.

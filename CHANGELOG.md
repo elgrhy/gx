@@ -8,6 +8,179 @@ release notes since the first release.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.0] — 2026-07-15 — AgentX Feedback & Scope-Chain Unification
+
+Findings from building AgentX (~6,000 lines, 34 files, 17 agents, 11 lib
+modules, a scheduler, a live-dashboard CLI, a full test suite) end-to-end
+on v0.6.1. A full engineering review of the underlying architectural
+causes is in `docs/language-review-agentx-feedback-2026-07.md`. Backward
+compatible — every change below is additive, a bug fix for behavior
+nothing could have intentionally depended on, or a fix that only ever
+makes a *previously silently broken* program work correctly instead of
+changing a previously *correct* one. Two items the review identified as
+genuinely breaking (see "Deferred" below) were deliberately **not**
+shipped in this release.
+
+### Fixed — Critical
+
+- **A brace-syntax file using `agent` as a plain variable name inside a
+  function body — or containing any string/comment/object-key shaped
+  like `"On error:"` anywhere in the file — silently misrouted the
+  *entire file* to the indentation parser**, which then dropped every
+  construct it didn't recognize, producing an empty program that exited
+  0 with no output or error. Root cause: syntax-mode detection scanned
+  every line of the file for four patterns instead of only the file's
+  first line, where every real progressive-syntax file's header
+  actually lives. Both this and the indentation parser's previous
+  silent-skip of any unrecognized top-level line are now loud, specific
+  parse errors instead.
+- **A top-level `NAME = value` assignment was invisible from inside any
+  function defined later in the same file** — a real, reported
+  data-corruption-class bug (a top-level constant/array silently read as
+  `null` inside every function, for an entire development period, with
+  no error). `Env` had no lexical scope chain; top-level globals and
+  named `function` declarations lived in side-tables only `run_helper`
+  (for agents) ever read. `call_user_function`/
+  `call_user_function_propagating` now inject file-root globals into
+  every function call, the same way agents already worked — with normal
+  shadowing (a same-named parameter or local reassignment wins, and
+  never writes back to the real global).
+- **A named `function foo() {}` was not a referenceable value** — `say
+  foo` (bare, no parens) silently printed `null`, and `task_spawn(foo)`
+  (documented as taking "a zero-arg closure") failed with a confusing
+  "expected a function, got null" instead of working, unlike `x = fn()
+  {}; task_spawn(x)`. A bare reference to a named function now
+  synthesizes the same `Value::Closure` representation `fn(){}` produces,
+  unifying the two as real, passable values.
+- **A method call inside `{...}` string interpolation whose argument was
+  itself a quoted string silently failed to evaluate** — `"{arr.join(',
+  ')}"` printed the literal, un-interpolated `{...}` text with no error,
+  because GX's lexer had no single-quote string syntax at all and the
+  interpolation's internal re-lex of the expression silently fell back
+  to literal text on failure. Single-quoted strings are now supported
+  (identical semantics to double-quoted), which fixes this directly; the
+  interpolation scanner is also now aware of both quote kinds while
+  extracting expression source, so a brace or the other quote character
+  inside a nested string no longer perturbs extraction.
+
+### Fixed — High
+
+- `"{{" + "x" + "}}"` (concatenated at runtime) produced `"{x}}"` instead
+  of the correct `"{x}"` — a string containing only a doubled `}}` with
+  no `{` at all skipped the `{{`/`}}`-unescaping loop entirely.
+- `gx check a.gx b.gx c.gx` silently checked only the first file argument
+  and dropped the rest with no error or notice — now checks every file
+  given and fails if any one of them has an error.
+- `gx fmt` on progressive-syntax files was not idempotent — a second
+  `gx fmt`/`gx fmt --check` pass would report the file as needing
+  reformatting again, because the indentation-normalizing pass computed a
+  line's trimmed body with a method that only strips *trailing*
+  whitespace, so the original leading indentation was written a second
+  time right after the freshly computed one, growing on every pass. Found
+  while investigating a separate, reported-but-unreproduced formatter bug
+  (see "Investigated, not reproduced" below) — this is unrelated to that
+  report but was a real bug in the same subsystem.
+- `install.sh` was broken independent of which version it pointed at:
+  the download URL requested a literal binary filename release.yml has
+  never published under (every real release asset is an archive), and
+  the function's own success/failure status could never reflect a failed
+  download underneath it, so the designed fallback to a source build
+  never actually triggered. `GX_VERSION` is also no longer a hardcoded
+  literal — it's resolved from GitHub's latest-release API at install
+  time (or pinned explicitly: `GX_VERSION=x.y.z sh install.sh`).
+
+### Added
+
+- **`&&`/`||`** now tokenize as documented (previously only the `and`/`or`
+  word forms worked; `&&`/`||` hit "unexpected character" errors).
+- **`argv()` / `script_args()`** — `gx run file.gx -- arg1 arg2` (and the
+  `gx file.gx -- arg1 arg2` shorthand) passes everything after a literal
+  `--` through to the script unchanged, including a value that happens to
+  look like one of `gx`'s own flags. There was previously no way at all
+  for a script to receive command-line arguments.
+- **`--project-sandbox`** — sandbox file I/O to the nearest ancestor
+  directory containing a `gx.json`, instead of only the entry script's own
+  directory, for projects laid out in subdirectories (`agents/`, `lib/`, a
+  shared `data/`) that need to reach a sibling directory without
+  flattening the whole project or dropping to `--no-sandbox`. Falls back
+  to the existing default if no ancestor has a `gx.json` — opting in never
+  widens access beyond what was asked for.
+- **`date_add_iso(date, n, unit)`** — same arithmetic as `date_add`, but
+  always returns an ISO-8601 string, matching `date_now()`'s
+  representation. `date_add` itself keeps its existing numeric return
+  (see "Deferred" below) but is now documented prominently as the one
+  date-producing builtin whose output type doesn't match its own input.
+- **`gx check` now warns on a bare identifier used as a whole, discarded,
+  non-last statement** (e.g. `write "x"` without parens, which silently
+  parses as two independent no-op statements rather than one call) —
+  exempting progressive syntax's zero-argument "named behavior" auto-call
+  sugar and a block's last statement (an idiomatic implicit return),
+  verified against the entire real `.gx` test corpus with zero false
+  positives.
+- `gx fmt`'s canonical style now uses conventional, dense spacing around
+  parentheses/brackets (`f(x)`, not `f ( x )`) instead of padding every
+  delimiter uniformly.
+
+### Investigated, not reproduced
+
+- The report's most severe finding — `gx fmt` silently truncating the
+  last character of an identifier immediately before a closing `}` — did
+  **not** reproduce against this exact source tree across the original
+  repro plus eight structural variants. `format_source` is a genuine
+  token-stream reprinter with an exhaustive match over every token kind;
+  no code path exists that could plausibly cause it. A *related but
+  distinct* bug (whole-keyword deletion via a non-exhaustive match) was
+  already fixed one day before the v0.6.1 tag, which is the most likely
+  explanation if the reporter's binary predated that fix. A permanent
+  identifier-round-trip property test was added regardless — formatter
+  trust doesn't depend on this specific mechanism ever having existed.
+
+### Deferred
+
+Two items from the engineering review are genuinely breaking changes and
+were deliberately **not** shipped in this release, to keep it backward
+compatible:
+
+- Making an unbound identifier a hard runtime error (rather than
+  evaluating to `null`) would immediately break any program relying on
+  the previous behavior in ways Tier 0/1 of this release don't already
+  fix. The recommended migration path — ship as a `gx check` warning
+  first (done, see "Added" above, though scoped narrowly to the
+  bare-statement case rather than every expression position), observe,
+  only then consider a hard error in a future major version — is
+  followed here.
+- Changing `date_add`'s return type to match `date_now()`'s ISO-string
+  representation would break any call site relying on the current
+  numeric result. `date_add_iso` ships as the non-breaking alternative
+  instead (see "Added" above).
+
+### Migration notes
+
+Nothing in this release requires a code change. Two things are worth
+knowing about if you're upgrading a large existing project, since both
+are genuine (if narrow) behavior changes — neither can turn a
+previously-*correct* program incorrect, only make a previously-*broken*
+one start working, or change cosmetic formatter output:
+
+- **A function can now see a top-level constant of the same name it
+  previously couldn't.** If any function reassigns a local variable
+  whose name happens to collide with an unrelated top-level global
+  *and* was — knowingly or not — relying on the two being invisible to
+  each other, the local reassignment still correctly shadows the global
+  within that function (see the regression tests in
+  `interpreter::tests` for the exact shadowing semantics), so this can
+  only matter if code was *reading* that name expecting `null` and
+  branching on it. This was already undefined, silently-wrong behavior
+  before this release; if anything depended on it, that dependency was
+  itself the bug.
+- **`gx fmt`'s output has changed** (denser call-site spacing, and a
+  fixed non-idempotency bug on progressive-syntax files). Every
+  previously-formatted file will show as "changed" on the next `gx fmt`
+  run — purely cosmetic, but worth knowing about before a CI
+  `gx fmt --check` gate runs on an existing codebase for the first time
+  after upgrading. Run `gx fmt .` once to pick up the new style in one
+  commit.
+
 ## [0.6.1] — 2026-07-12 — GClaw Production Feedback & Hardening
 
 Findings from migrating GClaw (~55 files, 23 agents, 8 bridge integrations)

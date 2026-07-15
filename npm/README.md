@@ -20,7 +20,7 @@ complete picture.
 
 ```bash
 npm install -g gxlang
-gx --version   # gx 0.6.1
+gx --version   # gx 0.7.0
 ```
 
 Downloads the correct native binary for your platform (macOS arm64/x64, Linux x64/arm64, Windows x64). No Rust required.
@@ -32,6 +32,29 @@ gx init my-agent
 cd my-agent
 gx run main.gx
 ```
+
+## What's New in v0.7.0
+
+Findings from building a large GX application (~6,000 lines, 34 files, 17
+agents) end-to-end on v0.6.1. Backward compatible. Full detail in
+[CHANGELOG.md](https://github.com/elgrhy/gx/blob/main/CHANGELOG.md).
+
+- Top-level constants and named functions are now real, visible values from
+  anywhere — a top-level `NAME = value` is visible inside every function,
+  and a bare reference to a named function works like `fn(){}` instead of
+  silently evaluating to `null`
+- A brace-syntax file using `agent` as a variable name (or text shaped like
+  `"On error:"`) no longer silently misroutes to the indentation parser
+  and produces an empty program
+- String interpolation with a single-quoted string argument now evaluates
+  (`"{arr.join(', ')}"`) — single-quoted string literals are supported
+- `&&`/`||` now work, as documented; `argv()`/`script_args()` give scripts
+  real command-line arguments; `--project-sandbox` supports multi-directory
+  projects; `date_add_iso()` is the safe alternative to `date_add`
+- `gx check` warns on a discarded bare-identifier statement and actually
+  checks every file argument given, not just the first
+- `gx fmt` fixes a real non-idempotency bug and uses denser, more
+  conventional call-site spacing
 
 ## What's New in v0.6.1
 
